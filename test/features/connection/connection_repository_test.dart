@@ -66,4 +66,20 @@ void main() {
       );
     },
   );
+
+  test('rejects public HTTP origins before making a request', () async {
+    final client = MockClient((_) async => http.Response('', 200));
+    final repository = ConnectionRepository(OpenCodeHealthService(client));
+    final publicProfile = ServerProfile(
+      origin: Uri.parse('http://198.51.100.1:4096'),
+    );
+
+    final result = await repository.test(publicProfile, null);
+
+    expect(result, isA<ConnectionFailed>());
+    expect(
+      (result as ConnectionFailed).failure,
+      ConnectionFailure.invalidAddress,
+    );
+  });
 }

@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- OpenCode is reachable only through the private WireGuard address. -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.80.0.1</domain>
-    </domain-config>
+    <!-- Dart rejects HTTP unless its address is a private WireGuard address. -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

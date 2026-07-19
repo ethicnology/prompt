@@ -18,3 +18,11 @@ fvm flutter pub get
 fvm flutter analyze
 fvm flutter test
 ```
+
+## Android APK
+
+```sh
+fvm flutter build apk --debug
+```
+
+The debug APK is written to `build/app/outputs/flutter-apk/app-debug.apk`.

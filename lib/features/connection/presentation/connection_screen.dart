@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../domain/connection_result.dart';
+import '../domain/connection_origin_policy.dart';
 import '../domain/server_profile.dart';
 import 'connection_view_model.dart';
 
@@ -21,9 +22,7 @@ class ConnectionScreen extends StatefulWidget {
 
 class _ConnectionScreenState extends State<ConnectionScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _originController = TextEditingController(
-    text: 'http://10.80.0.1:4096',
-  );
+  final _originController = TextEditingController();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
@@ -57,33 +56,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     if (origin == null || origin.host.isEmpty) {
       return 'Use a complete private server address.';
     }
-    if (origin.scheme == 'https') {
-      return null;
-    }
-    if (origin.scheme != 'http') {
-      return 'Use an HTTP or HTTPS address.';
-    }
-    if (kIsWeb) {
+    if (origin.scheme == 'http' && kIsWeb) {
       return 'Web browsers require HTTPS, even through WireGuard.';
     }
-    if (!_isPrivateIpv4(origin.host)) {
-      return 'HTTP is only permitted for a private WireGuard IPv4 address.';
+    if (!ConnectionOriginPolicy.supports(origin)) {
+      return 'HTTP is only permitted for a private WireGuard address.';
     }
     return null;
-  }
-
-  bool _isPrivateIpv4(String host) {
-    final octets = host.split('.').map(int.tryParse).toList();
-    if (octets.length != 4 || octets.any((octet) => octet == null)) {
-      return false;
-    }
-    final values = octets.cast<int>();
-    if (values.any((octet) => octet < 0 || octet > 255)) {
-      return false;
-    }
-    return values[0] == 10 ||
-        (values[0] == 172 && values[1] >= 16 && values[1] <= 31) ||
-        (values[0] == 192 && values[1] == 168);
   }
 
   @override
@@ -145,7 +124,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                           textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Private server address',
-                            hintText: 'http://10.80.0.1:4096',
+                            hintText: 'http://10.0.0.1:4096',
                           ),
                           validator: _validateOrigin,
                         ),

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../domain/connection_result.dart';
+import '../domain/connection_origin_policy.dart';
 import '../domain/server_profile.dart';
 import 'opencode_health_service.dart';
 
@@ -12,8 +13,7 @@ class ConnectionRepository {
   final OpenCodeHealthService _healthService;
 
   Future<ConnectionResult> test(ServerProfile profile, String? password) async {
-    if (!{'http', 'https'}.contains(profile.origin.scheme) ||
-        profile.origin.host.isEmpty) {
+    if (!ConnectionOriginPolicy.supports(profile.origin)) {
       return const ConnectionFailed(ConnectionFailure.invalidAddress);
     }
 

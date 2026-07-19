@@ -14,7 +14,7 @@ This document defines the target architecture before implementation begins. It i
 
 Prompt is a private Flutter client for a user-controlled OpenCode server. It targets Android, Linux, and Web. The server is reachable over WireGuard; the Web client additionally requires HTTPS. Prompt is not an OpenCode server, an autonomous background worker, or a cloud synchronization service.
 
-The current native server profile is `http://10.80.0.1:4096`. Cleartext is permitted only for this WireGuard address in Android's network security configuration. HTTP origins are rejected unless they are private IPv4 addresses, and Web always rejects HTTP. Adding a cleartext address is a security architecture change requiring review and documentation.
+Native clients accept HTTP only for RFC1918 IPv4 or IPv6 ULA origins, so each WireGuard user can configure their own server without a hard-coded address. Android enables cleartext transport solely because Android's static network policy cannot express private address ranges; the application validates the origin before every request. Web always rejects HTTP. Widening the client-side origin policy is a security architecture change requiring review and documentation.
 
 OpenCode is the authoritative source for projects, sessions, messages, provider state, workspace operations, and agent execution. Prompt owns presentation state, local preference state, its durable prompt queue, and a bounded cache.
 
