@@ -31,6 +31,9 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Cross-platform HTTP transport for the OpenCode REST API and SSE bootstrap.
+  http: ^1.6.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -21,6 +21,8 @@ Client Flutter rapide, prive et adapte au mobile pour un serveur OpenCode person
 
 Le serveur OpenCode, le serveur de transcription eventuel et le reverse proxy sont ecoutes uniquement sur l'adresse de l'interface WireGuard. Le pare-feu n'autorise que le sous-reseau WireGuard.
 
+Le profil natif initial est `http://10.80.0.1:4096`, protege par WireGuard. Android et Linux peuvent l'utiliser; Android autorise explicitement le trafic clair uniquement vers cette adresse. Le client Web doit utiliser une origine HTTPS, meme si elle est elle aussi joignable seulement par WireGuard.
+
 Le client Web est servi en HTTPS par le reverse proxy, idealement sous la meme origine que l'API OpenCode :
 
 ```text
