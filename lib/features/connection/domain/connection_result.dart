@@ -17,6 +17,7 @@ enum ConnectionFailure {
   unauthorized,
   unavailable,
   unexpectedResponse,
+  secureStorageUnavailable,
 }
 
 extension ConnectionFailureMessage on ConnectionFailure {
@@ -30,6 +31,8 @@ extension ConnectionFailureMessage on ConnectionFailure {
         'Prompt cannot reach this server. Check WireGuard and the address.',
       ConnectionFailure.unexpectedResponse =>
         'The server responded, but is not ready for Prompt.',
+      ConnectionFailure.secureStorageUnavailable =>
+        'Prompt cannot store the server credential securely on this device.',
     };
   }
 }

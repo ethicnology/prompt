@@ -5,6 +5,8 @@
 # Flutter and Dart build output
 .dart_tool/
 build/
+.flutter-plugins
+.flutter-plugins-dependencies
 
 # Local IDE state
 .idea/

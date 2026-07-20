@@ -1,0 +1,32 @@
+import 'open_code_session.dart';
+
+sealed class SessionLoadResult {
+  const SessionLoadResult();
+}
+
+class SessionsLoaded extends SessionLoadResult {
+  const SessionsLoaded(this.sessions);
+
+  final List<OpenCodeSession> sessions;
+}
+
+class SessionsLoadFailed extends SessionLoadResult {
+  const SessionsLoadFailed(this.failure);
+
+  final SessionsFailure failure;
+}
+
+enum SessionsFailure { unauthorized, unavailable, unexpectedResponse }
+
+extension SessionsFailureMessage on SessionsFailure {
+  String get message {
+    return switch (this) {
+      SessionsFailure.unauthorized =>
+        'The server rejected the saved credentials.',
+      SessionsFailure.unavailable =>
+        'Prompt cannot reach the server. Check WireGuard and try again.',
+      SessionsFailure.unexpectedResponse =>
+        'The server returned sessions Prompt could not read.',
+    };
+  }
+}

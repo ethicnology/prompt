@@ -44,4 +44,8 @@ class ConnectionViewModel extends ValueNotifier<ConnectionUiState> {
         value = ConnectionError(failure);
     }
   }
+
+  void reset() {
+    value = const ConnectionIdle();
+  }
 }

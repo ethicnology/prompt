@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../../connection/connection.dart';
+import '../../sessions/sessions.dart';
+import '../../sessions/presentation/sessions_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({
     required this.profile,
+    required this.sessionsViewModel,
     required this.onDisconnect,
     super.key,
   });
 
   final ServerProfile profile;
+  final SessionsViewModel sessionsViewModel;
   final VoidCallback onDisconnect;
 
   @override
@@ -42,11 +46,20 @@ class _HomeShellState extends State<HomeShell> {
     final wideLayout = MediaQuery.sizeOf(context).width >= 840;
     final labels = ['Sessions', 'Changes', 'Settings'];
 
-    final content = _ConnectedEmptyState(
-      title: labels[_selectedIndex],
-      profile: widget.profile,
-      onDisconnect: widget.onDisconnect,
-    );
+    final content = _selectedIndex == 0
+        ? _ShellPage(
+            title: labels[_selectedIndex],
+            onDisconnect: widget.onDisconnect,
+            child: SessionsScreen(
+              profile: widget.profile,
+              viewModel: widget.sessionsViewModel,
+            ),
+          )
+        : _ConnectedEmptyState(
+            title: labels[_selectedIndex],
+            profile: widget.profile,
+            onDisconnect: widget.onDisconnect,
+          );
 
     if (wideLayout) {
       return Scaffold(
@@ -152,6 +165,35 @@ class _ConnectedEmptyState extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ShellPage extends StatelessWidget {
+  const _ShellPage({
+    required this.title,
+    required this.onDisconnect,
+    required this.child,
+  });
+
+  final String title;
+  final VoidCallback onDisconnect;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          IconButton(
+            onPressed: onDisconnect,
+            icon: const Icon(Icons.link_off),
+            tooltip: 'Disconnect',
+          ),
+        ],
+      ),
+      body: child,
     );
   }
 }

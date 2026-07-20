@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/features/connection/data/connection_repository.dart';
 import 'package:prompt/features/connection/data/opencode_health_service.dart';
 import 'package:prompt/features/connection/domain/connection_result.dart';
@@ -22,7 +23,11 @@ void main() {
         request = incomingRequest;
         return http.Response('', 200);
       });
-      final repository = ConnectionRepository(OpenCodeHealthService(client));
+      final credentials = _FakeCredentialsStore();
+      final repository = ConnectionRepository(
+        OpenCodeHealthService(client),
+        credentials,
+      );
 
       final result = await repository.test(profile, 'secret');
 
@@ -32,12 +37,16 @@ void main() {
         request.headers['authorization'],
         'Basic ${base64Encode(utf8.encode('prompt:secret'))}',
       );
+      expect(credentials.password, 'secret');
     },
   );
 
   test('maps rejected credentials to a recoverable failure', () async {
     final client = MockClient((_) async => http.Response('', 401));
-    final repository = ConnectionRepository(OpenCodeHealthService(client));
+    final repository = ConnectionRepository(
+      OpenCodeHealthService(client),
+      _FakeCredentialsStore(),
+    );
 
     final result = await repository.test(profile, 'wrong-secret');
 
@@ -52,7 +61,10 @@ void main() {
     'rejects unsupported connection schemes before making a request',
     () async {
       final client = MockClient((_) async => http.Response('', 200));
-      final repository = ConnectionRepository(OpenCodeHealthService(client));
+      final repository = ConnectionRepository(
+        OpenCodeHealthService(client),
+        _FakeCredentialsStore(),
+      );
       final unsupportedProfile = ServerProfile(
         origin: Uri(scheme: 'ftp', host: '10.80.0.1', port: 4096),
       );
@@ -69,7 +81,10 @@ void main() {
 
   test('rejects public HTTP origins before making a request', () async {
     final client = MockClient((_) async => http.Response('', 200));
-    final repository = ConnectionRepository(OpenCodeHealthService(client));
+    final repository = ConnectionRepository(
+      OpenCodeHealthService(client),
+      _FakeCredentialsStore(),
+    );
     final publicProfile = ServerProfile(
       origin: Uri.parse('http://198.51.100.1:4096'),
     );
@@ -82,4 +97,21 @@ void main() {
       ConnectionFailure.invalidAddress,
     );
   });
+}
+
+class _FakeCredentialsStore implements CredentialsStore {
+  String? password;
+
+  @override
+  Future<void> clearPassword() async {
+    password = null;
+  }
+
+  @override
+  Future<String?> readPassword() async => password;
+
+  @override
+  Future<void> savePassword(String? value) async {
+    password = value;
+  }
 }
