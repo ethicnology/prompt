@@ -5,10 +5,14 @@ class ConnectionOriginPolicy {
     if (origin.host.isEmpty) {
       return false;
     }
-    if (origin.scheme == 'https') {
-      return true;
+    if (origin.userInfo.isNotEmpty ||
+        origin.query.isNotEmpty ||
+        origin.fragment.isNotEmpty ||
+        origin.path.isNotEmpty && origin.path != '/') {
+      return false;
     }
-    return origin.scheme == 'http' && isPrivateNetworkAddress(origin.host);
+    return (origin.scheme == 'http' || origin.scheme == 'https') &&
+        isPrivateNetworkAddress(origin.host);
   }
 
   static bool isPrivateNetworkAddress(String host) {

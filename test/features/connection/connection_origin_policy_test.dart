@@ -25,7 +25,7 @@ void main() {
       );
     });
 
-    test('rejects public HTTP origins but permits HTTPS', () {
+    test('rejects public origins even when they use HTTPS', () {
       expect(
         ConnectionOriginPolicy.supports(Uri.parse('http://198.51.100.1:4096')),
         isFalse,
@@ -34,6 +34,10 @@ void main() {
         ConnectionOriginPolicy.supports(
           Uri.parse('https://opencode.example.test'),
         ),
+        isFalse,
+      );
+      expect(
+        ConnectionOriginPolicy.supports(Uri.parse('https://10.80.0.1:4096')),
         isTrue,
       );
     });

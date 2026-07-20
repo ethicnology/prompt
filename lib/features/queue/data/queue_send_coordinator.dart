@@ -242,6 +242,12 @@ class QueueSendCoordinator {
       _pendingSendNowPromptId = null;
       return const Err(QueueSendNowFailure.abortFailed);
     }
+    if (abortResult case Ok<bool, ChatFailure>(value: final didAbort)) {
+      if (!didAbort) {
+        _pendingSendNowPromptId = null;
+        return const Err(QueueSendNowFailure.abortFailed);
+      }
+    }
 
     final statusResult = await _chatRepository.sessionStatus(profile, session);
     if (_isStale(token)) {
@@ -251,6 +257,9 @@ class QueueSendCoordinator {
       value: final state,
     )) {
       _applySessionState(session.id, state);
+    } else {
+      _pendingSendNowPromptId = null;
+      return const Err(QueueSendNowFailure.statusUnavailable);
     }
 
     _maybeDispatch();
@@ -339,6 +348,9 @@ class QueueSendCoordinator {
     if (sendResult is Ok<void, ChatFailure>) {
       // A `204` from `prompt_async` is the server's definitive acceptance.
       await _queueRepository.markAcknowledged(prompt.id);
+      // Do not dispatch the next queue entry until the server reports an
+      // explicit terminal state. The busy event may arrive after this 204.
+      _applySessionState(session.id, const SessionBusy());
     } else {
       // Any other outcome leaves acceptance genuinely unknown; Prompt
       // never retries automatically.

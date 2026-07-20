@@ -15,6 +15,8 @@ enum QueueSendNowFailure {
   /// The explicit `abort` request failed; Prompt never sends the chosen
   /// prompt without a definitive abort outcome.
   abortFailed,
+
+  statusUnavailable,
 }
 
 extension QueueSendNowFailureMessage on QueueSendNowFailure {
@@ -28,6 +30,8 @@ extension QueueSendNowFailureMessage on QueueSendNowFailure {
         'Only a queued prompt can be sent now.',
       QueueSendNowFailure.abortFailed =>
         'Prompt could not cancel the current generation.',
+      QueueSendNowFailure.statusUnavailable =>
+        'Prompt could not confirm that the session stopped.',
     };
   }
 }

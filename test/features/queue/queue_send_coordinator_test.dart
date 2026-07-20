@@ -337,6 +337,14 @@ void main() {
       );
       expect(
         queue.firstWhere((p) => p.id == next.id).state,
+        QueuedPromptState.queued,
+      );
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+      queue = await currentQueue();
+      expect(
+        queue.firstWhere((p) => p.id == next.id).state,
         QueuedPromptState.acknowledged,
       );
     });
