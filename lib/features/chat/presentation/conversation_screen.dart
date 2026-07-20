@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../connection/domain/server_profile.dart';
 import '../../queue/queue.dart';
@@ -58,11 +60,14 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   final _composerController = TextEditingController();
+  final _transcriptController = ScrollController();
   StreamSubscription<String>? _queueErrorSubscription;
+  bool _showJumpToLatest = false;
 
   @override
   void initState() {
     super.initState();
+    _transcriptController.addListener(_updateJumpToLatestVisibility);
     widget.viewModel.open(widget.profile, widget.session);
     _queueErrorSubscription = widget.viewModel.queueErrors.listen((message) {
       if (!mounted) {
@@ -78,6 +83,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   void dispose() {
     _queueErrorSubscription?.cancel();
     _composerController.dispose();
+    _transcriptController
+      ..removeListener(_updateJumpToLatestVisibility)
+      ..dispose();
     widget.viewModel.leave();
     super.dispose();
   }
@@ -118,6 +126,67 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (confirmed ?? false) {
       await widget.viewModel.sendNow(prompt.id);
     }
+  }
+
+  void _updateJumpToLatestVisibility() {
+    if (!_transcriptController.hasClients) {
+      return;
+    }
+    final position = _transcriptController.position;
+    final shouldShow = position.maxScrollExtent - position.pixels > 48;
+    if (shouldShow != _showJumpToLatest && mounted) {
+      setState(() => _showJumpToLatest = shouldShow);
+    }
+  }
+
+  void _scheduleScrollToLatestIfFollowing() {
+    if (_showJumpToLatest) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_transcriptController.hasClients) {
+        return;
+      }
+      _transcriptController.jumpTo(
+        _transcriptController.position.maxScrollExtent,
+      );
+    });
+  }
+
+  void _jumpToLatest() {
+    _transcriptController.animateTo(
+      _transcriptController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+  }
+
+  Widget _buildTranscript(List<ChatMessage> messages) {
+    _scheduleScrollToLatestIfFollowing();
+    return Stack(
+      children: [
+        _Transcript(
+          messages: messages,
+          onRefresh: widget.viewModel.reload,
+          controller: _transcriptController,
+        ),
+        if (_showJumpToLatest)
+          Positioned(
+            right: 20,
+            bottom: 20,
+            child: Semantics(
+              button: true,
+              label: 'Scroll to latest message',
+              child: FloatingActionButton.small(
+                heroTag: 'scroll-to-latest',
+                onPressed: _jumpToLatest,
+                tooltip: 'Scroll to latest message',
+                child: const Icon(Icons.south),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
   @override
@@ -164,9 +233,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       ),
                     ),
                   ),
-                  ConversationReady(:final messages) => _Transcript(
-                    messages: messages,
-                    onRefresh: widget.viewModel.reload,
+                  ConversationReady(:final messages) => _buildTranscript(
+                    messages,
                   ),
                 };
               },
@@ -225,10 +293,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
 }
 
 class _Transcript extends StatelessWidget {
-  const _Transcript({required this.messages, required this.onRefresh});
+  const _Transcript({
+    required this.messages,
+    required this.onRefresh,
+    required this.controller,
+  });
 
   final List<ChatMessage> messages;
   final Future<void> Function() onRefresh;
+  final ScrollController controller;
 
   @override
   Widget build(BuildContext context) {
@@ -239,6 +312,7 @@ class _Transcript extends StatelessWidget {
     return RefreshIndicator(
       onRefresh: onRefresh,
       child: CustomScrollView(
+        controller: controller,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverPadding(
@@ -815,13 +889,69 @@ class _MessageBubble extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.all(14),
-            child: SelectableText(
-              message.text,
+            child: _LinkifiedMessageText(
+              text: message.text,
               style: theme.textTheme.bodyLarge,
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+class _LinkifiedMessageText extends StatefulWidget {
+  const _LinkifiedMessageText({required this.text, this.style});
+
+  final String text;
+  final TextStyle? style;
+
+  @override
+  State<_LinkifiedMessageText> createState() => _LinkifiedMessageTextState();
+}
+
+class _LinkifiedMessageTextState extends State<_LinkifiedMessageText> {
+  final _recognizers = <TapGestureRecognizer>[];
+
+  @override
+  void dispose() {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    _recognizers.clear();
+    final theme = Theme.of(context);
+    final linkStyle = widget.style?.copyWith(
+      color: theme.colorScheme.primary,
+      decoration: TextDecoration.underline,
+    );
+    final spans = <TextSpan>[];
+    final expression = RegExp(r'https?://[^\s)\]>]+');
+    var start = 0;
+    for (final match in expression.allMatches(widget.text)) {
+      if (match.start > start) {
+        spans.add(TextSpan(text: widget.text.substring(start, match.start)));
+      }
+      final urlText = match.group(0)!;
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () =>
+            launchUrl(Uri.parse(urlText), mode: LaunchMode.externalApplication);
+      _recognizers.add(recognizer);
+      spans.add(
+        TextSpan(text: urlText, style: linkStyle, recognizer: recognizer),
+      );
+      start = match.end;
+    }
+    if (start < widget.text.length) {
+      spans.add(TextSpan(text: widget.text.substring(start)));
+    }
+    return SelectableText.rich(TextSpan(style: widget.style, children: spans));
   }
 }

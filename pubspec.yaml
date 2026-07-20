@@ -46,6 +46,7 @@ dependencies:
   # legacy-plaintext detection below inspects the exact file drift later
   # opens.
   path_provider: ^2.1.5
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

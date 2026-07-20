@@ -47,26 +47,94 @@ class _SessionsScreenState extends State<SessionsScreen> {
             failure: failure,
             onRetry: () => widget.viewModel.load(widget.profile),
           ),
-          SessionsReady(:final sessions) => RefreshIndicator(
+          SessionsReady(:final sessions) => _PrimarySessionsList(
+            sessions: sessions,
             onRefresh: () => widget.viewModel.load(widget.profile),
-            child: CustomScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              slivers: [
-                SliverList.builder(
-                  itemCount: sessions.length,
-                  itemBuilder: (context, index) {
-                    final session = sessions[index];
-                    return _SessionTile(
-                      session: session,
-                      onTap: () => widget.onOpenSession(session),
-                    );
-                  },
-                ),
-              ],
-            ),
+            onOpenSession: widget.onOpenSession,
           ),
         };
       },
+    );
+  }
+}
+
+class _PrimarySessionsList extends StatelessWidget {
+  const _PrimarySessionsList({
+    required this.sessions,
+    required this.onRefresh,
+    required this.onOpenSession,
+  });
+
+  final List<OpenCodeSession> sessions;
+  final Future<void> Function() onRefresh;
+  final ValueChanged<OpenCodeSession> onOpenSession;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = sessions
+        .where(
+          (session) => session.parentId == null || session.parentId!.isEmpty,
+        )
+        .toList(growable: false);
+    final subagents = sessions
+        .where(
+          (session) => session.parentId != null && session.parentId!.isNotEmpty,
+        )
+        .toList(growable: false);
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (subagents.isNotEmpty)
+            SliverToBoxAdapter(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  child: TextButton.icon(
+                    onPressed: () => _showSubagents(context, subagents),
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: Text('${subagents.length} subagents'),
+                  ),
+                ),
+              ),
+            ),
+          SliverList.builder(
+            itemCount: primary.length,
+            itemBuilder: (context, index) {
+              final session = primary[index];
+              return _SessionTile(
+                session: session,
+                onTap: () => onOpenSession(session),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSubagents(BuildContext context, List<OpenCodeSession> subagents) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView.builder(
+          itemCount: subagents.length,
+          itemBuilder: (context, index) {
+            final session = subagents[index];
+            return _SessionTile(
+              session: session,
+              onTap: () {
+                Navigator.of(context).pop();
+                onOpenSession(session);
+              },
+            );
+          },
+        ),
+      ),
     );
   }
 }
