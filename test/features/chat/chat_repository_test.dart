@@ -1,12 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_load_result.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
@@ -67,6 +69,189 @@ void main() {
 
     expect(result, isA<ChatLoadFailed>());
     expect((result as ChatLoadFailed).failure, ChatFailure.unauthorized);
+  });
+
+  group('sendPrompt', () {
+    test('accepts a prompt on an empty 204 response', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/session/session-1/prompt_async');
+        expect(request.url.queryParameters['directory'], session.directory);
+        return http.Response('', 204);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.sendPrompt(
+        profile,
+        session,
+        'Explain this',
+      );
+
+      expect(result, isA<Ok<void, ChatFailure>>());
+    });
+
+    test('maps a rejected send to an authorization failure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.sendPrompt(
+        profile,
+        session,
+        'Explain this',
+      );
+
+      expect(result, isA<Err<void, ChatFailure>>());
+      expect(
+        (result as Err<void, ChatFailure>).failure,
+        ChatFailure.unauthorized,
+      );
+    });
+
+    test(
+      'maps a malformed 204 body to an unexpected-response failure',
+      () async {
+        final client = MockClient((_) async => http.Response('{}', 204));
+        final repository = ChatRepository(
+          OpenCodeChatService(OpenCodeTransport(client)),
+          const _PasswordStore('secret'),
+        );
+
+        final result = await repository.sendPrompt(
+          profile,
+          session,
+          'Explain this',
+        );
+
+        expect(result, isA<Err<void, ChatFailure>>());
+        expect(
+          (result as Err<void, ChatFailure>).failure,
+          ChatFailure.unexpectedResponse,
+        );
+      },
+    );
+  });
+
+  group('abortSession', () {
+    test('returns the server-reported abort outcome', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/session/session-1/abort');
+        expect(request.url.queryParameters['directory'], session.directory);
+        return http.Response('true', 200);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.abortSession(profile, session);
+
+      expect(result, isA<Ok<bool, ChatFailure>>());
+      expect((result as Ok<bool, ChatFailure>).value, isTrue);
+    });
+
+    test('maps a rejected abort to an authorization failure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.abortSession(profile, session);
+
+      expect(result, isA<Err<bool, ChatFailure>>());
+      expect(
+        (result as Err<bool, ChatFailure>).failure,
+        ChatFailure.unauthorized,
+      );
+    });
+  });
+
+  group('sessionStatus', () {
+    test('maps this session\'s entry from the status response', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/session/status');
+        expect(request.url.queryParameters['directory'], session.directory);
+        return http.Response(
+          '{"session-1":{"type":"busy"},"session-2":{"type":"idle"}}',
+          200,
+        );
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.sessionStatus(profile, session);
+
+      expect(result, isA<Ok<SessionExecutionState, ChatFailure>>());
+      expect(
+        (result as Ok<SessionExecutionState, ChatFailure>).value,
+        isA<SessionBusy>(),
+      );
+    });
+
+    test(
+      'defaults to idle when the session is absent from the response',
+      () async {
+        final client = MockClient((_) async => http.Response('{}', 200));
+        final repository = ChatRepository(
+          OpenCodeChatService(OpenCodeTransport(client)),
+          const _PasswordStore('secret'),
+        );
+
+        final result = await repository.sessionStatus(profile, session);
+
+        expect(result, isA<Ok<SessionExecutionState, ChatFailure>>());
+        expect(
+          (result as Ok<SessionExecutionState, ChatFailure>).value,
+          isA<SessionIdle>(),
+        );
+      },
+    );
+
+    test(
+      'maps a rejected status request to an authorization failure',
+      () async {
+        final client = MockClient((_) async => http.Response('', 401));
+        final repository = ChatRepository(
+          OpenCodeChatService(OpenCodeTransport(client)),
+          const _PasswordStore('secret'),
+        );
+
+        final result = await repository.sessionStatus(profile, session);
+
+        expect(result, isA<Err<SessionExecutionState, ChatFailure>>());
+        expect(
+          (result as Err<SessionExecutionState, ChatFailure>).failure,
+          ChatFailure.unauthorized,
+        );
+      },
+    );
+
+    test('maps a malformed status response to an unexpected-response '
+        'failure', () async {
+      final client = MockClient((_) async => http.Response('not-json', 200));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.sessionStatus(profile, session);
+
+      expect(result, isA<Err<SessionExecutionState, ChatFailure>>());
+      expect(
+        (result as Err<SessionExecutionState, ChatFailure>).failure,
+        ChatFailure.unexpectedResponse,
+      );
+    });
   });
 }
 

@@ -5,12 +5,6 @@ import 'package:http/http.dart' as http;
 import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 
-class OpenCodeHttpFailure implements Exception {
-  const OpenCodeHttpFailure(this.statusCode);
-
-  final int statusCode;
-}
-
 class OpenCodeSessionsService {
   OpenCodeSessionsService(this._transport);
 

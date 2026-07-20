@@ -2,13 +2,14 @@ import 'dart:async';
 
 import 'package:http/http.dart' as http;
 
+import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
-import '../../sessions/data/opencode_sessions_service.dart';
 import '../../sessions/domain/open_code_session.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
+import '../domain/session_execution_state.dart';
 import 'opencode_chat_service.dart';
 
 class ChatRepository {
@@ -59,6 +60,69 @@ class ChatRepository {
       return const ChatLoadFailed(ChatFailure.unavailable);
     } on FormatException {
       return const ChatLoadFailed(ChatFailure.unexpectedResponse);
+    }
+  }
+
+  /// Sends [text] to [session] without waiting for the assistant's reply.
+  /// Never logs [text]; a caller must not log the returned failure's raw
+  /// server detail either, since none is carried on [ChatFailure].
+  Future<Result<void, ChatFailure>> sendPrompt(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String text,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      await _chatService.sendPromptAsync(profile, password, session, text);
+    });
+  }
+
+  /// Explicitly cancels [session]'s active generation. The success value
+  /// reports whether the server actually aborted something.
+  Future<Result<bool, ChatFailure>> abortSession(
+    ServerProfile profile,
+    OpenCodeSession session,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      return _chatService.abortSession(profile, password, session);
+    });
+  }
+
+  /// The execution state of [session], as reported by the authoritative
+  /// `GET /session/status` endpoint rather than an SSE event. A session the
+  /// server omits from its response has no active or retrying work.
+  Future<Result<SessionExecutionState, ChatFailure>> sessionStatus(
+    ServerProfile profile,
+    OpenCodeSession session,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      final statuses = await _chatService.fetchSessionStatuses(
+        profile,
+        password,
+        session.directory,
+      );
+      return statuses[session.id] ?? const SessionIdle();
+    });
+  }
+
+  Future<Result<T, ChatFailure>> _run<T>(Future<T> Function() operation) async {
+    try {
+      return Ok(await operation());
+    } on OpenCodeHttpFailure catch (failure) {
+      if (failure.statusCode == 401 || failure.statusCode == 403) {
+        return const Err(ChatFailure.unauthorized);
+      }
+      return const Err(ChatFailure.unexpectedResponse);
+    } on TimeoutException {
+      return const Err(ChatFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const Err(ChatFailure.unexpectedResponse);
+    } on http.ClientException {
+      return const Err(ChatFailure.unavailable);
+    } on FormatException {
+      return const Err(ChatFailure.unexpectedResponse);
     }
   }
 }

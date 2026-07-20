@@ -14,6 +14,12 @@ class OpenCodeTransportFailure implements Exception {
   final int statusCode;
 }
 
+class OpenCodeHttpFailure implements Exception {
+  const OpenCodeHttpFailure(this.statusCode);
+
+  final int statusCode;
+}
+
 class OpenCodeTransport {
   OpenCodeTransport(this._client);
 
