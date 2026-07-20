@@ -261,6 +261,41 @@ void main() {
       );
     });
 
+    test('follows queued -> sending -> paused(submissionUnknown)', () async {
+      final prompt = await enqueue('go');
+      await repository.markSending(prompt.id);
+
+      final result = await repository.markSubmissionUnknown(prompt.id);
+
+      expect(result, isA<Ok<QueuedPrompt, QueueFailure>>());
+      final unknown = (result as Ok<QueuedPrompt, QueueFailure>).value;
+      expect(unknown.state, QueuedPromptState.paused);
+      expect(unknown.pauseReason, QueuePauseReason.submissionUnknown);
+      // Never counted as a retry attempt: no send was ever confirmed.
+      expect(unknown.attemptCount, 1);
+
+      final resumed = await repository.markQueued(prompt.id);
+      expect(
+        (resumed as Ok<QueuedPrompt, QueueFailure>).value.state,
+        QueuedPromptState.queued,
+      );
+    });
+
+    test(
+      'rejects marking submission-unknown from a non-sending state',
+      () async {
+        final prompt = await enqueue('go');
+
+        final result = await repository.markSubmissionUnknown(prompt.id);
+
+        expect(result, isA<Err<QueuedPrompt, QueueFailure>>());
+        expect(
+          (result as Err<QueuedPrompt, QueueFailure>).failure,
+          QueueFailure.invalidTransition,
+        );
+      },
+    );
+
     test('does not retry automatically after a failure', () async {
       final prompt = await enqueue('go');
       await repository.markSending(prompt.id);

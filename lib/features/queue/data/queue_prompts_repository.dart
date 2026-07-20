@@ -166,6 +166,28 @@ class QueuePromptsRepository {
     });
   }
 
+  /// Moves a `sending` prompt straight to `paused` with
+  /// [QueuePauseReason.submissionUnknown].
+  ///
+  /// Callers use this both to reconcile a `sending` prompt found persisted
+  /// at activation (the app restarted, or the session was reactivated,
+  /// while a send was in flight) and after a transport-uncertain failure
+  /// from `prompt_async` itself. Either way, whether the server actually
+  /// received the prompt is genuinely unknown; Prompt never retries this
+  /// automatically, and a human must resume or remove it after checking the
+  /// conversation.
+  Future<Result<QueuedPrompt, QueueFailure>> markSubmissionUnknown(
+    String promptId,
+  ) async {
+    return _run(() async {
+      final row = await _dao.markSubmissionUnknown(
+        promptId,
+        now: DateTime.now(),
+      );
+      return _toDomain(row);
+    });
+  }
+
   Future<Result<T, QueueFailure>> _run<T>(
     Future<T> Function() operation,
   ) async {

@@ -247,6 +247,28 @@ class QueuePromptsDao {
     );
   }
 
+  /// Transitions a `sending` prompt directly to `paused` with reason
+  /// `submissionUnknown`, without touching [db.QueuedPrompt.attemptCount].
+  ///
+  /// `prompt_async` is fire-and-forget: a transport failure, an app
+  /// restart, or reactivating a session never tells Prompt whether the
+  /// server actually received the prompt. This transition is the only way
+  /// a `sending` row leaves that state without a definitive server
+  /// response, and it never retries automatically.
+  Future<db.QueuedPrompt> markSubmissionUnknown(
+    String id, {
+    required DateTime now,
+  }) {
+    return _transition(
+      id,
+      from: const {'sending'},
+      to: 'paused',
+      apply: (companion) =>
+          companion.copyWith(pauseReason: const Value('submissionUnknown')),
+      now: now,
+    );
+  }
+
   Future<db.QueuedPrompt> _transition(
     String id, {
     required Set<String> from,
