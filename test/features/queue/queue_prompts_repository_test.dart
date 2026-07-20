@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/data/local/prompt_database.dart' show PromptDatabase;
 import 'package:prompt/features/connection/domain/server_profile.dart';
+import 'package:prompt/features/queue/data/in_memory_queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
 import 'package:prompt/features/queue/domain/queue_failure.dart';
@@ -11,6 +12,8 @@ import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
 /// Lets a Drift `watch()` stream's `Timer.run`-scheduled re-query and
 /// notification reach this test's listener before the next assertion.
+/// `InMemoryQueuePromptsDao`'s stream is synchronous, so this is a no-op
+/// delay for it, which is harmless.
 Future<void> _settle() async {
   for (var i = 0; i < 5; i++) {
     await Future<void>.delayed(Duration.zero);
@@ -18,6 +21,31 @@ Future<void> _settle() async {
 }
 
 void main() {
+  // Both backends must satisfy `QueuePromptsRepository` identically:
+  // `DriftQueuePromptsDao` is Android/Linux's encrypted, on-disk storage,
+  // and `InMemoryQueuePromptsDao` is Web's memory-only default. Running
+  // the exact same test bodies against both is what actually guarantees
+  // Web never diverges from the state machine Android/Linux enforces.
+  group('DriftQueuePromptsDao', () {
+    late PromptDatabase database;
+    _runQueuePromptsRepositoryTests(
+      createDao: () {
+        database = PromptDatabase.forTesting(NativeDatabase.memory());
+        return DriftQueuePromptsDao(database);
+      },
+      tearDownDao: () => database.close(),
+    );
+  });
+
+  group('InMemoryQueuePromptsDao', () {
+    _runQueuePromptsRepositoryTests(createDao: () => InMemoryQueuePromptsDao());
+  });
+}
+
+void _runQueuePromptsRepositoryTests({
+  required QueuePromptsDao Function() createDao,
+  Future<void> Function()? tearDownDao,
+}) {
   final profile = ServerProfile(
     origin: Uri.parse('http://10.80.0.1:4096'),
     username: 'opencode',
@@ -39,21 +67,19 @@ void main() {
     updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
   );
 
-  late PromptDatabase database;
   late QueuePromptsRepository repository;
   var nextId = 0;
 
   setUp(() {
-    database = PromptDatabase.forTesting(NativeDatabase.memory());
     nextId = 0;
     repository = QueuePromptsRepository(
-      QueuePromptsDao(database),
+      createDao(),
       idGenerator: () => 'prompt-${nextId++}',
     );
   });
 
   tearDown(() async {
-    await database.close();
+    await tearDownDao?.call();
   });
 
   Future<QueuedPrompt> enqueue(

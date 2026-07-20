@@ -1,5 +1,4 @@
 import 'package:drift/drift.dart';
-import 'package:drift_flutter/drift_flutter.dart';
 
 part 'prompt_database.g.dart';
 
@@ -39,11 +38,16 @@ class QueuedPrompts extends Table {
 
 @DriftDatabase(tables: [ServerProfiles, QueuedPrompts])
 class PromptDatabase extends _$PromptDatabase {
-  PromptDatabase() : super(driftDatabase(name: 'prompt'));
+  /// Opens a [PromptDatabase] over an already-configured [QueryExecutor].
+  ///
+  /// Production code never opens a [QueryExecutor] here directly: see
+  /// `prompt_local_storage.dart`, whose platform-specific implementations
+  /// apply Android/Linux's encryption pragmas (or Web's in-memory-only
+  /// default) before this class runs any query.
+  PromptDatabase.opened(super.executor);
 
   /// Opens a [PromptDatabase] over an explicit [QueryExecutor]. Tests use
-  /// this to run against an in-memory Drift executor instead of the
-  /// platform-backed file database `PromptDatabase()` opens.
+  /// this to run against an in-memory Drift executor.
   PromptDatabase.forTesting(super.executor);
 
   @override

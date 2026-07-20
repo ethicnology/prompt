@@ -37,6 +37,15 @@ dependencies:
   http: ^1.6.0
   drift: ^2.34.2
   drift_flutter: ^0.3.1
+  # Direct dependency (not just transitive through drift) because Android/Linux
+  # local storage opens its own encrypted `CommonDatabase` and applies
+  # SQLite3MultipleCiphers pragmas before drift ever touches it; see
+  # lib/data/local/prompt_local_storage_native.dart.
+  sqlite3: ^3.5.0
+  # Resolves the same on-disk database path drift_flutter would use, so the
+  # legacy-plaintext detection below inspects the exact file drift later
+  # opens.
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
@@ -50,6 +59,25 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   drift_dev: ^2.34.4
   build_runner: ^2.15.1
+  # Lets SecureDatabaseKeyStore's test install a fake through the same
+  # federated-plugin seam (`FlutterSecureStoragePlatform.instance`) the
+  # package itself uses, instead of touching a real platform keystore.
+  flutter_secure_storage_platform_interface: ^2.0.1
+  # Lets the native local storage test satisfy `driftDatabase()`'s one-time
+  # `getTemporaryDirectory()` call through `PathProviderPlatform.instance`
+  # instead of a real, unavailable platform channel in `flutter test`.
+  path_provider_platform_interface: ^2.1.2
+
+# Bundles SQLite3MultipleCiphers instead of plain SQLite for the `sqlite3`
+# package's native-asset build hook, on every platform that hook runs for
+# (Android and Linux; the web build never runs this hook). This is what
+# makes `PRAGMA cipher`/`PRAGMA key` available to
+# lib/data/local/prompt_local_storage_native.dart. See
+# https://drift.simonbinder.eu/platforms/encryption/#setup.
+hooks:
+  user_defines:
+    sqlite3:
+      source: sqlite3mc
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

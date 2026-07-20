@@ -159,7 +159,7 @@ void main() {
   late ConversationViewModel viewModel;
 
   QueuePromptsRepository buildQueueRepository() {
-    return QueuePromptsRepository(QueuePromptsDao(database));
+    return QueuePromptsRepository(DriftQueuePromptsDao(database));
   }
 
   setUp(() {

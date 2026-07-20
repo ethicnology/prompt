@@ -30,6 +30,21 @@ class LazyServerProfileStore implements ServerProfileStore {
   }
 }
 
+/// Web's memory-only default: never persists past the current page
+/// session, since Web has no equivalent to SQLite3MultipleCiphers-at-rest
+/// encryption in this build. See `prompt_local_storage_web.dart`.
+class InMemoryServerProfileStore implements ServerProfileStore {
+  ServerProfile? _last;
+
+  @override
+  Future<void> save(ServerProfile profile) async {
+    _last = profile;
+  }
+
+  @override
+  Future<ServerProfile?> loadLast() async => _last;
+}
+
 class DriftServerProfileStore implements ServerProfileStore {
   DriftServerProfileStore(this._database);
 

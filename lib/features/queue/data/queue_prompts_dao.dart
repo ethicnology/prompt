@@ -29,17 +29,98 @@ class InvalidQueueReorder implements Exception {
 /// without racing an in-flight send.
 const _reorderableStates = {'queued', 'paused', 'failed'};
 
+/// Backing storage for the local prompt queue.
+///
+/// [DriftQueuePromptsDao] is the Android/Linux implementation, backed by
+/// an encrypted on-disk Drift database. [InMemoryQueuePromptsDao] (in
+/// `in_memory_queue_prompts_dao.dart`) is Web's memory-only default: it
+/// implements the exact same state machine without persisting anything,
+/// since Web has no equivalent to SQLite3MultipleCiphers-at-rest
+/// encryption in this build.
+///
+/// No implementation may log [db.QueuedPrompt.promptText] or send network
+/// requests; each only reads and writes its own local storage.
+abstract interface class QueuePromptsDao {
+  Future<db.QueuedPrompt> enqueue({
+    required String id,
+    required String serverProfileId,
+    required String sessionId,
+    required String directory,
+    required String promptText,
+    required DateTime now,
+  });
+
+  Future<db.QueuedPrompt> editText({
+    required String id,
+    required String promptText,
+    required DateTime now,
+  });
+
+  /// Deletes the prompt and returns the row as it was immediately before
+  /// deletion. Rejects removing a prompt that is currently `sending`.
+  Future<db.QueuedPrompt> remove(String id);
+
+  Stream<List<db.QueuedPrompt>> watchQueue({
+    required String serverProfileId,
+    required String sessionId,
+  });
+
+  /// Reassigns positions for the session's `queued`, `paused`, and `failed`
+  /// prompts to match [orderedIds]. Rejects the reorder unless [orderedIds]
+  /// is exactly the set of that session's reorderable prompt ids, and
+  /// unless none of that session's prompts are currently `sending`.
+  Future<List<db.QueuedPrompt>> reorder({
+    required String serverProfileId,
+    required String sessionId,
+    required List<String> orderedIds,
+  });
+
+  Future<db.QueuedPrompt> markSending(String id, {required DateTime now});
+
+  Future<db.QueuedPrompt> markAcknowledged(String id, {required DateTime now});
+
+  Future<db.QueuedPrompt> markFailed(
+    String id, {
+    String? reason,
+    required DateTime now,
+  });
+
+  Future<db.QueuedPrompt> markPaused(
+    String id, {
+    required String reason,
+    required DateTime now,
+  });
+
+  Future<db.QueuedPrompt> markQueued(String id, {required DateTime now});
+
+  /// Transitions a `sending` prompt directly to `paused` with reason
+  /// `submissionUnknown`, without touching [db.QueuedPrompt.attemptCount].
+  ///
+  /// Callers use this both to reconcile a `sending` prompt found persisted
+  /// at activation (the app restarted, or the session was reactivated,
+  /// while a send was in flight) and after a transport-uncertain failure
+  /// from `prompt_async` itself. Either way, whether the server actually
+  /// received the prompt is genuinely unknown; no implementation retries
+  /// this automatically, and a human must resume or remove it after
+  /// checking the conversation.
+  Future<db.QueuedPrompt> markSubmissionUnknown(
+    String id, {
+    required DateTime now,
+  });
+}
+
 /// Drift-backed access to the `QueuedPrompts` table. Every mutation that
 /// checks or changes a prompt's state runs inside a single transaction so
 /// concurrent callers never observe or act on a half-applied change.
 ///
 /// This DAO never logs [db.QueuedPrompt.promptText] and never sends
 /// network requests; it only reads and writes the local database.
-class QueuePromptsDao {
-  QueuePromptsDao(this._database);
+class DriftQueuePromptsDao implements QueuePromptsDao {
+  DriftQueuePromptsDao(this._database);
 
   final db.PromptDatabase _database;
 
+  @override
   Future<db.QueuedPrompt> enqueue({
     required String id,
     required String serverProfileId,
@@ -70,6 +151,7 @@ class QueuePromptsDao {
     });
   }
 
+  @override
   Future<db.QueuedPrompt> editText({
     required String id,
     required String promptText,
@@ -89,8 +171,7 @@ class QueuePromptsDao {
     });
   }
 
-  /// Deletes the prompt and returns the row as it was immediately before
-  /// deletion. Rejects removing a prompt that is currently `sending`.
+  @override
   Future<db.QueuedPrompt> remove(String id) {
     return _database.transaction(() async {
       final row = await _requireRow(id);
@@ -104,6 +185,7 @@ class QueuePromptsDao {
     });
   }
 
+  @override
   Stream<List<db.QueuedPrompt>> watchQueue({
     required String serverProfileId,
     required String sessionId,
@@ -118,10 +200,7 @@ class QueuePromptsDao {
         .watch();
   }
 
-  /// Reassigns positions for the session's `queued`, `paused`, and `failed`
-  /// prompts to match [orderedIds]. Rejects the reorder unless [orderedIds]
-  /// is exactly the set of that session's reorderable prompt ids, and
-  /// unless none of that session's prompts are currently `sending`.
+  @override
   Future<List<db.QueuedPrompt>> reorder({
     required String serverProfileId,
     required String sessionId,
@@ -183,6 +262,7 @@ class QueuePromptsDao {
     });
   }
 
+  @override
   Future<db.QueuedPrompt> markSending(String id, {required DateTime now}) {
     return _transition(
       id,
@@ -196,6 +276,7 @@ class QueuePromptsDao {
     );
   }
 
+  @override
   Future<db.QueuedPrompt> markAcknowledged(String id, {required DateTime now}) {
     return _transition(
       id,
@@ -209,6 +290,7 @@ class QueuePromptsDao {
     );
   }
 
+  @override
   Future<db.QueuedPrompt> markFailed(
     String id, {
     String? reason,
@@ -223,6 +305,7 @@ class QueuePromptsDao {
     );
   }
 
+  @override
   Future<db.QueuedPrompt> markPaused(
     String id, {
     required String reason,
@@ -237,6 +320,7 @@ class QueuePromptsDao {
     );
   }
 
+  @override
   Future<db.QueuedPrompt> markQueued(String id, {required DateTime now}) {
     return _transition(
       id,
@@ -247,14 +331,12 @@ class QueuePromptsDao {
     );
   }
 
-  /// Transitions a `sending` prompt directly to `paused` with reason
-  /// `submissionUnknown`, without touching [db.QueuedPrompt.attemptCount].
-  ///
   /// `prompt_async` is fire-and-forget: a transport failure, an app
   /// restart, or reactivating a session never tells Prompt whether the
   /// server actually received the prompt. This transition is the only way
   /// a `sending` row leaves that state without a definitive server
   /// response, and it never retries automatically.
+  @override
   Future<db.QueuedPrompt> markSubmissionUnknown(
     String id, {
     required DateTime now,

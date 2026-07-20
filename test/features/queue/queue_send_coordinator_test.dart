@@ -252,7 +252,7 @@ void main() {
     database = PromptDatabase.forTesting(NativeDatabase.memory());
     nextId = 0;
     queueRepository = QueuePromptsRepository(
-      QueuePromptsDao(database),
+      DriftQueuePromptsDao(database),
       idGenerator: () => 'prompt-${nextId++}',
     );
     backend = _ScriptedChatBackend();

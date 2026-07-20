@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import '../core/async/result.dart';
 import '../core/security/credentials_store.dart';
 import '../core/security/secure_credentials_service.dart';
-import '../data/local/prompt_database.dart' hide ServerProfile;
+import '../data/local/prompt_local_storage.dart';
 import '../data/remote/opencode_event_service.dart';
 import '../data/remote/opencode_transport.dart';
 import '../features/chat/data/chat_repository.dart';
@@ -19,7 +20,6 @@ import '../features/connection/domain/server_profile.dart';
 import '../features/connection/presentation/connection_screen.dart';
 import '../features/connection/presentation/connection_view_model.dart';
 import '../features/home/presentation/home_shell.dart';
-import '../features/queue/data/queue_prompts_dao.dart';
 import '../features/queue/data/queue_prompts_repository.dart';
 import '../features/queue/data/queue_send_coordinator.dart';
 import '../features/sessions/data/opencode_sessions_service.dart';
@@ -44,10 +44,10 @@ class _PromptAppState extends State<PromptApp> {
   ServerProfile? _connectedProfile;
 
   // Opened lazily on the first conversation, not at app startup: opening
-  // the queue's database starts a background isolate and a platform file
-  // lookup that a user (or a test) who never opens a session should never
-  // pay for.
-  PromptDatabase? _database;
+  // the queue's local storage starts a background isolate and a platform
+  // file lookup that a user (or a test) who never opens a session should
+  // never pay for.
+  Future<PromptLocalStorageHandle>? _localStorage;
   QueueSendCoordinator? _queueCoordinator;
 
   // The app/session lifecycle owner: forwards `AppLifecycleState` into the
@@ -78,7 +78,7 @@ class _PromptAppState extends State<PromptApp> {
         OpenCodeHealthService(transport),
         credentials,
         LazyServerProfileStore(
-          () async => DriftServerProfileStore(_ensureDatabase()),
+          () async => (await _ensureLocalStorage()).serverProfiles,
         ),
       ),
     );
@@ -96,11 +96,21 @@ class _PromptAppState extends State<PromptApp> {
     );
   }
 
-  PromptDatabase _ensureDatabase() => _database ??= PromptDatabase();
+  Future<PromptLocalStorageHandle> _ensureLocalStorage() {
+    return _localStorage ??= _openLocalStorage();
+  }
+
+  Future<PromptLocalStorageHandle> _openLocalStorage() async {
+    final result = await openPromptLocalStorage();
+    return switch (result) {
+      Ok(:final value) => value,
+      Err(:final failure) => throw LocalStorageUnavailableException(failure),
+    };
+  }
 
   Future<QueuePromptsRepository> _ensureQueueRepository() async {
-    final database = _ensureDatabase();
-    return QueuePromptsRepository(QueuePromptsDao(database));
+    final storage = await _ensureLocalStorage();
+    return QueuePromptsRepository(storage.queuedPrompts);
   }
 
   Future<QueueSendCoordinator> _ensureQueueCoordinator({
@@ -130,7 +140,10 @@ class _PromptAppState extends State<PromptApp> {
     _sessionsViewModel.dispose();
     unawaited(_conversationViewModel.dispose());
     unawaited(_queueCoordinator?.dispose());
-    unawaited(_database?.close());
+    final localStorage = _localStorage;
+    if (localStorage != null) {
+      unawaited(localStorage.then((storage) => storage.close()));
+    }
     _httpClient.close();
     super.dispose();
   }
@@ -184,7 +197,8 @@ class _PromptAppState extends State<PromptApp> {
     );
   }
 
-  Future<ServerProfile?> _loadLastProfile() {
-    return DriftServerProfileStore(_ensureDatabase()).loadLast();
+  Future<ServerProfile?> _loadLastProfile() async {
+    final storage = await _ensureLocalStorage();
+    return storage.serverProfiles.loadLast();
   }
 }
