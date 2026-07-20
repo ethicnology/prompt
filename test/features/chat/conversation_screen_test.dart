@@ -203,16 +203,17 @@ void main() {
     expect(viewModel.openCalled, isTrue);
   });
 
-  testWidgets('shows an empty queue and a multi-line composer by default', (
-    tester,
-  ) async {
-    await pumpScreen(tester);
+  testWidgets(
+    'hides an empty queue and shows a multi-line composer by default',
+    (tester) async {
+      await pumpScreen(tester);
 
-    expect(find.text('Queue: empty'), findsOneWidget);
-    final textField = tester.widget<TextField>(find.byType(TextField));
-    expect(textField.maxLines, greaterThan(1));
-    expect(find.byTooltip('Queue this prompt'), findsOneWidget);
-  });
+      expect(find.text('Queue: empty'), findsNothing);
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      expect(textField.maxLines, greaterThan(1));
+      expect(find.byTooltip('Queue this prompt'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'submitting the composer enqueues the prompt instead of sending it '
@@ -241,7 +242,7 @@ void main() {
     await tester.pump();
 
     expect(viewModel.enqueueCallCount, 0);
-    expect(find.text('Queue: empty'), findsOneWidget);
+    expect(find.text('Queue: empty'), findsNothing);
   });
 
   testWidgets(
@@ -324,7 +325,7 @@ void main() {
 
     expect(viewModel.removeCallCount, 1);
     expect(viewModel.lastRemovedId, promptId);
-    expect(find.text('Queue: empty'), findsOneWidget);
+    expect(find.text('Queue: empty'), findsNothing);
   });
 
   testWidgets('renders the loaded transcript', (tester) async {

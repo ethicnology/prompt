@@ -215,15 +215,27 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ValueListenableBuilder<List<QueuedPrompt>>(
             valueListenable: widget.viewModel.queue,
             builder: (context, prompts, _) {
-              return _QueuePanel(
-                prompts: prompts,
-                onRemove: (prompt) =>
-                    widget.viewModel.removeFromQueue(prompt.id),
-                onSendNow: _confirmSendNow,
+              final activePrompts = prompts
+                  .where(
+                    (prompt) => prompt.state != QueuedPromptState.acknowledged,
+                  )
+                  .toList(growable: false);
+              if (activePrompts.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return Column(
+                children: [
+                  const Divider(height: 1),
+                  _QueuePanel(
+                    prompts: activePrompts,
+                    onRemove: (prompt) =>
+                        widget.viewModel.removeFromQueue(prompt.id),
+                    onSendNow: _confirmSendNow,
+                  ),
+                ],
               );
             },
           ),
-          const Divider(height: 1),
           _Composer(controller: _composerController, onSubmit: _submitComposer),
         ],
       ),
@@ -259,39 +271,28 @@ class _QueuePanel extends StatelessWidget {
               child: Semantics(
                 liveRegion: true,
                 child: Text(
-                  prompts.isEmpty
-                      ? 'Queue: empty'
-                      : 'Queue: ${prompts.length} '
-                            '${prompts.length == 1 ? 'prompt' : 'prompts'}',
+                  'Queue: ${prompts.length} '
+                  '${prompts.length == 1 ? 'prompt' : 'prompts'}',
                   style: theme.textTheme.labelLarge,
                 ),
               ),
             ),
-            if (prompts.isEmpty)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text(
-                  'Prompts you send join this queue and are delivered once '
-                  'the session is free.',
-                ),
-              )
-            else
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: prompts.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final prompt = prompts[index];
-                    return _QueueRow(
-                      prompt: prompt,
-                      position: index + 1,
-                      onRemove: () => onRemove(prompt),
-                      onSendNow: () => onSendNow(prompt),
-                    );
-                  },
-                ),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: prompts.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final prompt = prompts[index];
+                  return _QueueRow(
+                    prompt: prompt,
+                    position: index + 1,
+                    onRemove: () => onRemove(prompt),
+                    onSendNow: () => onSendNow(prompt),
+                  );
+                },
               ),
+            ),
           ],
         ),
       ),
