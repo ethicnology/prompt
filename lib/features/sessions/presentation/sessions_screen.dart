@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../connection/domain/server_profile.dart';
 import '../domain/open_code_session.dart';
@@ -66,6 +67,17 @@ class _SessionsScreenState extends State<SessionsScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.content_copy_outlined),
+              title: const Text('Copy session ID'),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: session.id));
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  const SnackBar(content: Text('Session ID copied')),
+                );
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text('Rename session'),
