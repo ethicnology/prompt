@@ -28,6 +28,8 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_event_service.dart';
@@ -64,6 +66,29 @@ class QueueSendCoordinator {
 
   List<QueuedPrompt> _queue = const <QueuedPrompt>[];
   ConversationState _conversationState = const ConversationState();
+
+  /// Backs [conversationStateUpdates]. Never read from outside this class;
+  /// external callers only ever get the read-only [ValueListenable] view.
+  final ValueNotifier<ConversationState> _liveConversationState = ValueNotifier(
+    const ConversationState(),
+  );
+
+  /// Read-only, session-scoped view of the active session's live
+  /// conversation, reduced from `message.updated`, `message.part.updated`,
+  /// and the other conversation SSE events since it was [activate]d. Carries
+  /// only reduced conversation domain data (message ids, roles, parts) —
+  /// never queued prompt text, raw OpenCode JSON, or failure detail — so a
+  /// listener must never log its value.
+  ///
+  /// Resets to an empty [ConversationState] on [deactivate] (and therefore
+  /// on every [activate] switching to a different session), so a listener
+  /// that stays subscribed across a session switch sees the next session's
+  /// state rebuilt from scratch rather than a mix of two sessions. A
+  /// [ValueListenable] already coalesces to "latest value wins": a burst of
+  /// token-level part updates between two rebuilds still yields a single
+  /// rebuild carrying the final text, not one per token.
+  ValueListenable<ConversationState> get conversationStateUpdates =>
+      _liveConversationState;
 
   bool _dispatchInProgress = false;
   String? _pendingSendNowPromptId;
@@ -167,9 +192,8 @@ class QueueSendCoordinator {
               // or malformed payload): ignored, never gates the queue.
               return;
             }
-            _conversationState = reduceConversationEvent(
-              _conversationState,
-              event,
+            _updateConversationState(
+              reduceConversationEvent(_conversationState, event),
             );
             _maybeDispatch();
           },
@@ -202,7 +226,7 @@ class QueueSendCoordinator {
     _profile = null;
     _session = null;
     _queue = const <QueuedPrompt>[];
-    _conversationState = const ConversationState();
+    _updateConversationState(const ConversationState());
     _dispatchInProgress = false;
     _pendingSendNowPromptId = null;
   }
@@ -274,13 +298,21 @@ class QueueSendCoordinator {
     }
     await deactivate();
     _disposed = true;
+    _liveConversationState.dispose();
   }
 
   void _applySessionState(String sessionId, SessionExecutionState state) {
-    _conversationState = reduceConversationEvent(
-      _conversationState,
-      SessionStatusEvent(sessionId: sessionId, state: state),
+    _updateConversationState(
+      reduceConversationEvent(
+        _conversationState,
+        SessionStatusEvent(sessionId: sessionId, state: state),
+      ),
     );
+  }
+
+  void _updateConversationState(ConversationState next) {
+    _conversationState = next;
+    _liveConversationState.value = next;
   }
 
   void _maybeDispatch() {

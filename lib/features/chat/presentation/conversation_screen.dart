@@ -133,7 +133,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           sliver: SliverList.separated(
                             itemCount: messages.length,
                             itemBuilder: (context, index) {
-                              return _MessageBubble(message: messages[index]);
+                              final message = messages[index];
+                              return _MessageBubble(
+                                key: ValueKey(message.id),
+                                message: message,
+                              );
                             },
                             separatorBuilder: (_, _) =>
                                 const SizedBox(height: 12),
@@ -350,7 +354,7 @@ class _Composer extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, super.key});
 
   final ChatMessage message;
 

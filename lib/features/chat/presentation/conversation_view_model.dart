@@ -9,6 +9,8 @@ import '../../sessions/domain/open_code_session.dart';
 import '../data/chat_repository.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
+import '../domain/conversation_message.dart';
+import '../domain/conversation_state.dart';
 
 sealed class ConversationUiState {
   const ConversationUiState();
@@ -81,6 +83,14 @@ class ConversationViewModel {
   ServerProfile? _profile;
   OpenCodeSession? _session;
   StreamSubscription<List<QueuedPrompt>>? _queueSubscription;
+
+  /// The open session's live conversation state, as exposed by
+  /// [QueueSendCoordinator.conversationStateUpdates]. Cleared in [leave]
+  /// and [dispose] so a rebuild from a session this view model has since
+  /// left can never reach [_applyLiveConversationState].
+  ValueListenable<ConversationState>? _liveConversationState;
+  VoidCallback? _liveConversationStateListener;
+
   bool _disposed = false;
 
   /// Loads [session]'s transcript, activates queue coordination for it, and
@@ -113,6 +123,29 @@ class ConversationViewModel {
         });
 
     await queueCoordinator.activate(profile: profile, session: session);
+    if (_disposed || _session != session) {
+      return;
+    }
+
+    // Subscribed before the REST load below so no live event is ever
+    // missed while it is in flight; any event reduced during that window
+    // is still reconciled from the coordinator's authoritative snapshot
+    // once the load finishes (see `_loadMessages`).
+    final liveConversationState = queueCoordinator.conversationStateUpdates;
+    void onLiveConversationStateChanged() {
+      if (_disposed || _session != session) {
+        // This session is no longer the one open in this view model
+        // (left, or superseded by a faster-finishing `open` for another
+        // session); never apply its live state to the visible transcript.
+        return;
+      }
+      _applyLiveConversationState(liveConversationState.value);
+    }
+
+    _liveConversationState = liveConversationState;
+    _liveConversationStateListener = onLiveConversationStateChanged;
+    liveConversationState.addListener(onLiveConversationStateChanged);
+
     await _loadMessages();
   }
 
@@ -133,8 +166,42 @@ class ConversationViewModel {
     switch (result) {
       case ChatLoaded(messages: final loadedMessages):
         messages.value = ConversationReady(loadedMessages);
+        // Reconciles against whatever the live conversation state has
+        // already accumulated for this session (including any event
+        // reduced while this REST load was in flight), rather than
+        // waiting for the next SSE event to reveal it.
+        final liveState = _liveConversationState?.value;
+        if (liveState != null) {
+          _applyLiveConversationState(liveState);
+        }
       case ChatLoadFailed(:final failure):
         messages.value = ConversationError(failure);
+    }
+  }
+
+  /// Merges [liveState] — the active session's live conversation, reduced
+  /// from SSE `message.updated`/`message.part.updated` events — onto the
+  /// currently visible transcript.
+  ///
+  /// Only messages [liveState] has actually rendered text for are merged:
+  /// this never overwrites an already-loaded REST message with a blank
+  /// transcript before its own SSE events have caught up, and never shows
+  /// an empty placeholder bubble before a new message's first text part
+  /// arrives. `message.removed`/`message.part.removed` are reduced by
+  /// `conversation_state.dart` but intentionally not reflected here; a
+  /// removal is reconciled by the next REST [reload], consistent with this
+  /// app's reconnect-then-REST-reconcile rule for the transcript.
+  void _applyLiveConversationState(ConversationState liveState) {
+    final current = messages.value;
+    if (current is! ConversationReady) {
+      // Still loading, or the previous load failed; nothing to merge onto
+      // yet. `_loadMessages` reconciles against the coordinator's current
+      // snapshot itself once it reaches `ConversationReady`.
+      return;
+    }
+    final merged = _mergeLiveConversationState(current.messages, liveState);
+    if (!identical(merged, current.messages)) {
+      messages.value = ConversationReady(merged);
     }
   }
 
@@ -193,6 +260,7 @@ class ConversationViewModel {
   Future<void> leave() async {
     await _queueSubscription?.cancel();
     _queueSubscription = null;
+    _detachLiveConversationState();
     await _queueCoordinator?.deactivate();
     _profile = null;
     _session = null;
@@ -205,9 +273,96 @@ class ConversationViewModel {
     _disposed = true;
     await _queueSubscription?.cancel();
     _queueSubscription = null;
+    _detachLiveConversationState();
     await _queueCoordinator?.deactivate();
     messages.dispose();
     queue.dispose();
     unawaited(_queueErrors.close());
   }
+
+  void _detachLiveConversationState() {
+    final liveConversationState = _liveConversationState;
+    final listener = _liveConversationStateListener;
+    if (liveConversationState != null && listener != null) {
+      liveConversationState.removeListener(listener);
+    }
+    _liveConversationState = null;
+    _liveConversationStateListener = null;
+  }
+}
+
+/// Merges [liveState] onto [restMessages], preserving [restMessages]'
+/// order and reusing its unchanged entries by reference (so an unaffected
+/// row's [ChatMessage] instance is unchanged, not merely equal) — this
+/// lets a display layer that memoizes per-row widgets on message identity
+/// rebuild only the rows a live update actually changed. A message with no
+/// rendered text yet is skipped entirely; see [_applyLiveConversationState]
+/// for why.
+///
+/// Returns [restMessages] itself, unchanged, if nothing in [liveState]
+/// changes the visible transcript.
+List<ChatMessage> _mergeLiveConversationState(
+  List<ChatMessage> restMessages,
+  ConversationState liveState,
+) {
+  if (liveState.messages.isEmpty) {
+    return restMessages;
+  }
+
+  final byId = <String, ChatMessage>{
+    for (final message in restMessages) message.id: message,
+  };
+  final order = restMessages.map((message) => message.id).toList();
+  var changed = false;
+
+  for (final liveMessage in liveState.orderedMessages) {
+    final role = switch (liveMessage.role) {
+      ConversationRole.user => ChatMessageRole.user,
+      ConversationRole.assistant => ChatMessageRole.assistant,
+      // No `message.updated` observed yet for this id in this session;
+      // nothing displayable.
+      ConversationRole.unknown => null,
+    };
+    if (role == null) {
+      continue;
+    }
+    final text = _renderTextParts(liveMessage.parts);
+    if (text == null) {
+      continue;
+    }
+    final existing = byId[liveMessage.id];
+    if (existing != null && existing.role == role && existing.text == text) {
+      continue;
+    }
+    if (existing == null) {
+      order.add(liveMessage.id);
+    }
+    byId[liveMessage.id] = ChatMessage(
+      id: liveMessage.id,
+      role: role,
+      createdAt: existing?.createdAt ?? DateTime.now(),
+      text: text,
+    );
+    changed = true;
+  }
+
+  if (!changed) {
+    return restMessages;
+  }
+  return [for (final id in order) byId[id]!];
+}
+
+/// Concatenates every [TextMessagePart] in [parts], in order. Returns
+/// `null` if [parts] carries no rendered text yet (for example a message
+/// whose only parts so far are a tool call or a step marker), so a caller
+/// never confuses "nothing to show yet" with an intentionally empty
+/// message.
+String? _renderTextParts(List<MessagePart> parts) {
+  final buffer = StringBuffer();
+  for (final part in parts) {
+    if (part is TextMessagePart) {
+      buffer.write(part.text);
+    }
+  }
+  return buffer.isEmpty ? null : buffer.toString();
 }

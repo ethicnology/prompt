@@ -11,6 +11,7 @@ import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
+import 'package:prompt/features/chat/domain/chat_message.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
@@ -50,6 +51,10 @@ class _ScriptedChatBackend {
   int abortStatusCode = 200;
   bool abortReturnValue = true;
 
+  /// Seeds the REST transcript returned by `GET .../message`, in the raw
+  /// OpenCode message-record shape (`{info: {...}, parts: [...]}`).
+  List<Map<String, dynamic>> restMessages = <Map<String, dynamic>>[];
+
   int promptAsyncCallCount = 0;
   int abortCallCount = 0;
   final List<String> promptAsyncOrder = <String>[];
@@ -59,7 +64,7 @@ class _ScriptedChatBackend {
   Future<http.Response> _handle(http.Request request) async {
     final path = request.url.path;
     if (path.endsWith('/message')) {
-      return http.Response('[]', 200);
+      return http.Response(jsonEncode(restMessages), 200);
     }
     if (path.endsWith('/prompt_async')) {
       promptAsyncCallCount++;
@@ -195,6 +200,151 @@ void main() {
     expect(viewModel.queue.value, isEmpty);
     expect(repositoryProviderCallCount, 1);
     expect(coordinatorProviderCallCount, 1);
+  });
+
+  test('a live message.updated + message.part.updated event updates the '
+      'visible transcript without a manual reload', () async {
+    backend.sessionStatusType = 'idle';
+    await viewModel.open(profile, session);
+    await _settle();
+
+    final before = viewModel.messages.value;
+    expect(before, isA<ConversationReady>());
+    expect((before as ConversationReady).messages, isEmpty);
+
+    eventClient.emit('message.updated', {
+      'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+    });
+    eventClient.emit('message.part.updated', {
+      'part': {
+        'id': 'part-1',
+        'messageID': 'msg-1',
+        'sessionID': session.id,
+        'type': 'text',
+        'text': 'Streamed reply',
+      },
+    });
+    await _settle();
+
+    final after = viewModel.messages.value;
+    expect(after, isA<ConversationReady>());
+    final messages = (after as ConversationReady).messages;
+    expect(messages, hasLength(1));
+    expect(messages.single.id, 'msg-1');
+    expect(messages.single.text, 'Streamed reply');
+    expect(messages.single.role, ChatMessageRole.assistant);
+  });
+
+  test('a live update for a new message is added alongside the REST history '
+      'instead of discarding it', () async {
+    backend.sessionStatusType = 'idle';
+    backend.restMessages = [
+      {
+        'info': {
+          'id': 'msg-0',
+          'role': 'user',
+          'time': {'created': 1000},
+        },
+        'parts': [
+          {'type': 'text', 'text': 'Original REST message'},
+        ],
+      },
+    ];
+
+    await viewModel.open(profile, session);
+    await _settle();
+
+    final loaded = viewModel.messages.value as ConversationReady;
+    expect(loaded.messages.single.text, 'Original REST message');
+
+    eventClient.emit('message.updated', {
+      'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+    });
+    eventClient.emit('message.part.updated', {
+      'part': {
+        'id': 'part-1',
+        'messageID': 'msg-1',
+        'sessionID': session.id,
+        'type': 'text',
+        'text': 'Streamed reply',
+      },
+    });
+    await _settle();
+
+    final updated = viewModel.messages.value as ConversationReady;
+    expect(updated.messages, hasLength(2));
+    expect(updated.messages.first.text, 'Original REST message');
+    expect(updated.messages.last.text, 'Streamed reply');
+    expect(updated.messages.last.role, ChatMessageRole.assistant);
+  });
+
+  test('never overwrites an already-loaded REST message before its own live '
+      'text part has arrived', () async {
+    backend.sessionStatusType = 'idle';
+    backend.restMessages = [
+      {
+        'info': {
+          'id': 'msg-0',
+          'role': 'assistant',
+          'time': {'created': 1000},
+        },
+        'parts': [
+          {'type': 'text', 'text': 'Already delivered reply'},
+        ],
+      },
+    ];
+
+    await viewModel.open(profile, session);
+    await _settle();
+
+    // A metadata-only update for the same message id, with no part
+    // event yet, must not blank out its already-loaded text.
+    eventClient.emit('message.updated', {
+      'info': {'id': 'msg-0', 'sessionID': session.id, 'role': 'assistant'},
+    });
+    await _settle();
+
+    final messages = (viewModel.messages.value as ConversationReady).messages;
+    expect(messages.single.text, 'Already delivered reply');
+  });
+
+  test("a live update for a session that is no longer open doesn't leak into "
+      'the newly opened session\'s transcript', () async {
+    final otherSession = OpenCodeSession(
+      id: 'session-2',
+      projectId: 'project-1',
+      directory: '/workspace/project',
+      title: 'Another session',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
+    );
+    backend.sessionStatusType = 'idle';
+
+    await viewModel.open(profile, session);
+    await _settle();
+
+    await viewModel.open(profile, otherSession);
+    await _settle();
+
+    // Tagged with the previous session's id: must not affect the
+    // transcript now open for `otherSession`.
+    eventClient.emit('message.updated', {
+      'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+    });
+    eventClient.emit('message.part.updated', {
+      'part': {
+        'id': 'part-1',
+        'messageID': 'msg-1',
+        'sessionID': session.id,
+        'type': 'text',
+        'text': 'Stale text',
+      },
+    });
+    await _settle();
+
+    final state = viewModel.messages.value;
+    expect(state, isA<ConversationReady>());
+    expect((state as ConversationReady).messages, isEmpty);
   });
 
   test('enqueuePrompt durably queues text and the coordinator dispatches it '

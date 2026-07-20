@@ -12,6 +12,7 @@ import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
+import 'package:prompt/features/chat/domain/conversation_message.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
@@ -366,6 +367,71 @@ void main() {
     await _settle();
 
     expect(backend.abortCallCount, 0);
+  });
+
+  group('conversationStateUpdates', () {
+    test(
+      'reflects a message.updated followed by message.part.updated',
+      () async {
+        backend.sessionStatusType = 'idle';
+        await coordinator.activate(profile: profile, session: session);
+        await _settle();
+
+        eventClient.emit('message.updated', {
+          'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+        });
+        eventClient.emit('message.part.updated', {
+          'part': {
+            'id': 'part-1',
+            'messageID': 'msg-1',
+            'sessionID': session.id,
+            'type': 'text',
+            'text': 'Hello from SSE',
+          },
+        });
+        await _settle();
+
+        final state = coordinator.conversationStateUpdates.value;
+        final message = state.messages['msg-1'];
+        expect(message, isNotNull);
+        expect(message!.role, ConversationRole.assistant);
+        final part = message.parts.single as TextMessagePart;
+        expect(part.text, 'Hello from SSE');
+      },
+    );
+
+    test('ignores an SSE event for another session', () async {
+      backend.sessionStatusType = 'idle';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('message.updated', {
+        'info': {
+          'id': 'msg-1',
+          'sessionID': 'unrelated-session',
+          'role': 'assistant',
+        },
+      });
+      await _settle();
+
+      expect(coordinator.conversationStateUpdates.value.messages, isEmpty);
+    });
+
+    test('resets to empty once the session is deactivated', () async {
+      backend.sessionStatusType = 'idle';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('message.updated', {
+        'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+      });
+      await _settle();
+      expect(coordinator.conversationStateUpdates.value.messages, isNotEmpty);
+
+      await coordinator.deactivate();
+
+      expect(coordinator.conversationStateUpdates.value.messages, isEmpty);
+    });
   });
 
   group('sendNow', () {
