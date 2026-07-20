@@ -12,6 +12,8 @@ import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/pending_approval.dart';
+import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
@@ -59,6 +61,10 @@ class _ScriptedChatBackend {
   int abortCallCount = 0;
   final List<String> promptAsyncOrder = <String>[];
 
+  int permissionResponseCallCount = 0;
+  int questionReplyCallCount = 0;
+  int questionRejectCallCount = 0;
+
   late final http.Client client = MockClient(_handle);
 
   Future<http.Response> _handle(http.Request request) async {
@@ -74,6 +80,18 @@ class _ScriptedChatBackend {
     if (path.endsWith('/abort')) {
       abortCallCount++;
       return http.Response(jsonEncode(abortReturnValue), abortStatusCode);
+    }
+    if (path.contains('/permissions/')) {
+      permissionResponseCallCount++;
+      return http.Response(jsonEncode(true), 200);
+    }
+    if (path.endsWith('/reply')) {
+      questionReplyCallCount++;
+      return http.Response(jsonEncode(true), 200);
+    }
+    if (path.endsWith('/reject')) {
+      questionRejectCallCount++;
+      return http.Response(jsonEncode(true), 200);
     }
     if (path == '/session/status') {
       return http.Response(
@@ -444,6 +462,118 @@ void main() {
     await _settle();
 
     expect(backend.promptAsyncCallCount, 0);
+  });
+
+  group('pendingApproval', () {
+    test('surfaces a live permission.updated event with full detail', () async {
+      backend.sessionStatusType = 'busy';
+      await viewModel.open(profile, session);
+      await _settle();
+      expect(viewModel.pendingApproval.value, isNull);
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      final detail =
+          viewModel.pendingApproval.value as PendingPermissionApproval;
+      expect(detail.permissionId, 'perm_1');
+      expect(detail.toolType, 'bash');
+      expect(detail.title, 'Run a shell command');
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(viewModel.pendingApproval.value, isNull);
+    });
+
+    test(
+      'respondToPermission submits the response and clears the dock',
+      () async {
+        backend.sessionStatusType = 'busy';
+        await viewModel.open(profile, session);
+        await _settle();
+
+        eventClient.emit('permission.updated', {
+          'id': 'perm_1',
+          'type': 'bash',
+          'sessionID': session.id,
+          'messageID': 'msg_1',
+          'title': 'Run a shell command',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        });
+        await _settle();
+
+        await viewModel.respondToPermission('perm_1', PermissionResponse.once);
+        await _settle();
+
+        expect(backend.permissionResponseCallCount, 1);
+        expect(viewModel.pendingApproval.value, isNull);
+      },
+    );
+
+    test(
+      'replyToQuestion and rejectQuestion submit and clear the dock',
+      () async {
+        backend.sessionStatusType = 'busy';
+        await viewModel.open(profile, session);
+        await _settle();
+
+        eventClient.emit('question.asked', {
+          'id': 'que_1',
+          'sessionID': session.id,
+          'questions': [
+            {
+              'question': 'Which database should I use?',
+              'header': 'Database choice',
+              'options': [
+                {'label': 'Postgres', 'description': 'Relational, robust'},
+              ],
+            },
+          ],
+        });
+        await _settle();
+        expect(viewModel.pendingApproval.value, isA<PendingQuestionApproval>());
+
+        await viewModel.replyToQuestion('que_1', [
+          ['Postgres'],
+        ]);
+        await _settle();
+
+        expect(backend.questionReplyCallCount, 1);
+        expect(viewModel.pendingApproval.value, isNull);
+      },
+    );
+
+    test('leave clears the pending approval', () async {
+      backend.sessionStatusType = 'busy';
+      await viewModel.open(profile, session);
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+      expect(viewModel.pendingApproval.value, isNotNull);
+
+      await viewModel.leave();
+
+      expect(viewModel.pendingApproval.value, isNull);
+    });
   });
 
   test('opening a different session tears down coordination for the '

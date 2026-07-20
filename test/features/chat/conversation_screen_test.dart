@@ -7,6 +7,8 @@ import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/pending_approval.dart';
+import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/presentation/conversation_screen.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
@@ -57,6 +59,17 @@ class _FakeConversationViewModel extends ConversationViewModel {
   bool openCalled = false;
   bool leaveCalled = false;
 
+  int respondToPermissionCallCount = 0;
+  String? lastPermissionId;
+  PermissionResponse? lastPermissionResponse;
+
+  int replyToQuestionCallCount = 0;
+  String? lastQuestionRequestId;
+  List<List<String>>? lastQuestionAnswers;
+
+  int rejectQuestionCallCount = 0;
+  String? lastRejectedRequestId;
+
   int _nextId = 0;
 
   @override
@@ -95,6 +108,35 @@ class _FakeConversationViewModel extends ConversationViewModel {
   Future<void> sendNow(String promptId) async {
     sendNowCallCount++;
     lastSendNowId = promptId;
+  }
+
+  @override
+  Future<void> respondToPermission(
+    String permissionId,
+    PermissionResponse response,
+  ) async {
+    respondToPermissionCallCount++;
+    lastPermissionId = permissionId;
+    lastPermissionResponse = response;
+    pendingApproval.value = null;
+  }
+
+  @override
+  Future<void> replyToQuestion(
+    String requestId,
+    List<List<String>> answers,
+  ) async {
+    replyToQuestionCallCount++;
+    lastQuestionRequestId = requestId;
+    lastQuestionAnswers = answers;
+    pendingApproval.value = null;
+  }
+
+  @override
+  Future<void> rejectQuestion(String requestId) async {
+    rejectQuestionCallCount++;
+    lastRejectedRequestId = requestId;
+    pendingApproval.value = null;
   }
 
   QueuedPrompt _prompt(String id, String text, QueuedPromptState state) {
@@ -309,5 +351,188 @@ void main() {
     await tester.pumpWidget(const SizedBox());
 
     expect(viewModel.leaveCalled, isTrue);
+  });
+
+  group('approval dock', () {
+    testWidgets('shows nothing when there is no pending approval', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      expect(find.text('Allow once'), findsNothing);
+      expect(find.text('Submit answers'), findsNothing);
+    });
+
+    testWidgets('renders a pending permission with allow once/always/deny, and '
+        'submitting once calls respondToPermission', (tester) async {
+      viewModel.pendingApproval.value = const PendingPermissionApproval(
+        sessionId: 'session-1',
+        permissionId: 'perm-1',
+        toolType: 'bash',
+        title: 'Run rm -rf /tmp/build',
+      );
+
+      await pumpScreen(tester);
+
+      expect(find.textContaining('bash'), findsOneWidget);
+      expect(find.text('Run rm -rf /tmp/build'), findsOneWidget);
+      expect(find.text('Allow once'), findsOneWidget);
+      expect(find.text('Always allow'), findsOneWidget);
+      expect(find.text('Deny'), findsOneWidget);
+
+      await tester.tap(find.text('Allow once'));
+      await tester.pump();
+
+      expect(viewModel.respondToPermissionCallCount, 1);
+      expect(viewModel.lastPermissionId, 'perm-1');
+      expect(viewModel.lastPermissionResponse, PermissionResponse.once);
+    });
+
+    testWidgets('always allow and deny call respondToPermission with the '
+        'matching response', (tester) async {
+      viewModel.pendingApproval.value = const PendingPermissionApproval(
+        sessionId: 'session-1',
+        permissionId: 'perm-1',
+        toolType: 'edit',
+        title: 'Edit a file',
+      );
+      await pumpScreen(tester);
+
+      await tester.tap(find.text('Always allow'));
+      await tester.pump();
+      expect(viewModel.lastPermissionResponse, PermissionResponse.always);
+
+      viewModel.pendingApproval.value = const PendingPermissionApproval(
+        sessionId: 'session-1',
+        permissionId: 'perm-2',
+        toolType: 'edit',
+        title: 'Edit another file',
+      );
+      await tester.pump();
+
+      await tester.tap(find.text('Deny'));
+      await tester.pump();
+      expect(viewModel.lastPermissionResponse, PermissionResponse.reject);
+      expect(viewModel.lastPermissionId, 'perm-2');
+    });
+
+    testWidgets(
+      'renders a pending question with selectable options, and submitting '
+      'calls replyToQuestion with the selected label',
+      (tester) async {
+        viewModel.pendingApproval.value = PendingQuestionApproval(
+          sessionId: 'session-1',
+          requestId: 'que-1',
+          questions: const [
+            QuestionPrompt(
+              question: 'Which database should I use?',
+              header: 'Database choice',
+              options: [
+                QuestionOption(label: 'Postgres', description: 'Relational'),
+                QuestionOption(label: 'SQLite', description: 'Embedded'),
+              ],
+            ),
+          ],
+        );
+
+        await pumpScreen(tester);
+
+        expect(find.text('Which database should I use?'), findsOneWidget);
+        expect(find.text('Postgres'), findsOneWidget);
+        expect(find.text('SQLite'), findsOneWidget);
+
+        // Submit is disabled until an answer is chosen.
+        final submitButtonFinder = find.widgetWithText(
+          FilledButton,
+          'Submit answers',
+        );
+        expect(
+          tester.widget<FilledButton>(submitButtonFinder).onPressed,
+          isNull,
+        );
+
+        await tester.tap(find.text('Postgres'));
+        await tester.pump();
+
+        expect(
+          tester.widget<FilledButton>(submitButtonFinder).onPressed,
+          isNotNull,
+        );
+
+        await tester.tap(submitButtonFinder);
+        await tester.pump();
+
+        expect(viewModel.replyToQuestionCallCount, 1);
+        expect(viewModel.lastQuestionRequestId, 'que-1');
+        expect(viewModel.lastQuestionAnswers, [
+          ['Postgres'],
+        ]);
+      },
+    );
+
+    testWidgets('a typed custom answer also enables submit', (tester) async {
+      viewModel.pendingApproval.value = PendingQuestionApproval(
+        sessionId: 'session-1',
+        requestId: 'que-1',
+        questions: const [
+          QuestionPrompt(
+            question: 'Anything else you want me to know?',
+            header: 'Other',
+            options: [],
+          ),
+        ],
+      );
+
+      await pumpScreen(tester);
+
+      final submitButtonFinder = find.widgetWithText(
+        FilledButton,
+        'Submit answers',
+      );
+      expect(tester.widget<FilledButton>(submitButtonFinder).onPressed, isNull);
+
+      // The dock's custom-answer field renders before the composer's
+      // `TextField` in the tree.
+      await tester.enterText(find.byType(TextField).first, 'Keep it concise');
+      await tester.pump();
+
+      expect(
+        tester.widget<FilledButton>(submitButtonFinder).onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(submitButtonFinder);
+      await tester.pump();
+
+      expect(viewModel.lastQuestionAnswers, [
+        ['Keep it concise'],
+      ]);
+    });
+
+    testWidgets('reject calls rejectQuestion with the request id', (
+      tester,
+    ) async {
+      viewModel.pendingApproval.value = PendingQuestionApproval(
+        sessionId: 'session-1',
+        requestId: 'que-1',
+        questions: const [
+          QuestionPrompt(
+            question: 'Which database should I use?',
+            header: 'Database choice',
+            options: [
+              QuestionOption(label: 'Postgres', description: 'Relational'),
+            ],
+          ),
+        ],
+      );
+
+      await pumpScreen(tester);
+
+      await tester.tap(find.text('Reject'));
+      await tester.pump();
+
+      expect(viewModel.rejectQuestionCallCount, 1);
+      expect(viewModel.lastRejectedRequestId, 'que-1');
+    });
   });
 }

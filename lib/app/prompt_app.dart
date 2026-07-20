@@ -50,9 +50,22 @@ class _PromptAppState extends State<PromptApp> {
   PromptDatabase? _database;
   QueueSendCoordinator? _queueCoordinator;
 
+  // The app/session lifecycle owner: forwards `AppLifecycleState` into the
+  // queue coordinator so its active SSE connection is cancelled while
+  // inactive and reconnects (through the coordinator's own bounded
+  // backoff) once foreground, rather than a background connection or
+  // aggressive reconnect loop persisting. There is at most one
+  // `QueueSendCoordinator` for the app's lifetime, opened lazily above, so
+  // this listener only ever needs to forward to `_queueCoordinator`
+  // itself rather than tracking a set of active sessions.
+  late final AppLifecycleListener _appLifecycleListener;
+
   @override
   void initState() {
     super.initState();
+    _appLifecycleListener = AppLifecycleListener(
+      onStateChange: _handleAppLifecycleStateChange,
+    );
     _httpClient = http.Client();
     final credentials = SecureCredentialsService(const FlutterSecureStorage());
     final transport = OpenCodeTransport(_httpClient);
@@ -112,6 +125,7 @@ class _PromptAppState extends State<PromptApp> {
 
   @override
   void dispose() {
+    _appLifecycleListener.dispose();
     _connectionViewModel.dispose();
     _sessionsViewModel.dispose();
     unawaited(_conversationViewModel.dispose());
@@ -119,6 +133,23 @@ class _PromptAppState extends State<PromptApp> {
     unawaited(_database?.close());
     _httpClient.close();
     super.dispose();
+  }
+
+  /// Only `resumed` counts as foreground; `inactive`, `hidden`, `paused`,
+  /// and `detached` all cancel the live SSE connection immediately. This
+  /// app never maintains a background connection or an aggressive
+  /// reconnect loop (see `ARCHITECTURE.md`'s battery/data rules), so
+  /// anything short of fully resumed is treated the same way.
+  void _handleAppLifecycleStateChange(AppLifecycleState state) {
+    final coordinator = _queueCoordinator;
+    if (coordinator == null) {
+      return;
+    }
+    if (state == AppLifecycleState.resumed) {
+      coordinator.notifyAppForeground();
+    } else {
+      coordinator.notifyAppInactive();
+    }
   }
 
   void _openConnectedServer(ServerProfile profile) {

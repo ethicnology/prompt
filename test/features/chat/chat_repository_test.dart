@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -8,6 +10,7 @@ import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_load_result.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
@@ -170,6 +173,128 @@ void main() {
         (result as Err<bool, ChatFailure>).failure,
         ChatFailure.unauthorized,
       );
+    });
+  });
+
+  group('respondToPermission', () {
+    test('succeeds when the server processes the response', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/session/session-1/permissions/perm-1');
+        expect(jsonDecode(request.body), {'response': 'once'});
+        return http.Response('true', 200);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.respondToPermission(
+        profile,
+        session,
+        'perm-1',
+        PermissionResponse.once,
+      );
+
+      expect(result, isA<Ok<void, ChatFailure>>());
+    });
+
+    test('maps a rejected response to an authorization failure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.respondToPermission(
+        profile,
+        session,
+        'perm-1',
+        PermissionResponse.reject,
+      );
+
+      expect(result, isA<Err<void, ChatFailure>>());
+      expect(
+        (result as Err<void, ChatFailure>).failure,
+        ChatFailure.unauthorized,
+      );
+    });
+  });
+
+  group('replyToQuestion', () {
+    test('sends every question\'s answers in order', () async {
+      final client = MockClient((request) async {
+        expect(request.url.path, '/question/que-1/reply');
+        expect(jsonDecode(request.body), {
+          'answers': [
+            ['Postgres'],
+          ],
+        });
+        return http.Response('true', 200);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.replyToQuestion(
+        profile,
+        session,
+        'que-1',
+        [
+          ['Postgres'],
+        ],
+      );
+
+      expect(result, isA<Ok<void, ChatFailure>>());
+    });
+
+    test('maps a rejected reply to an authorization failure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.replyToQuestion(
+        profile,
+        session,
+        'que-1',
+        [
+          ['Postgres'],
+        ],
+      );
+
+      expect(result, isA<Err<void, ChatFailure>>());
+    });
+  });
+
+  group('rejectQuestion', () {
+    test('succeeds when the server rejects the question', () async {
+      final client = MockClient((request) async {
+        expect(request.url.path, '/question/que-1/reject');
+        return http.Response('true', 200);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.rejectQuestion(profile, session, 'que-1');
+
+      expect(result, isA<Ok<void, ChatFailure>>());
+    });
+
+    test('maps a rejected reject call to an authorization failure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.rejectQuestion(profile, session, 'que-1');
+
+      expect(result, isA<Err<void, ChatFailure>>());
     });
   });
 

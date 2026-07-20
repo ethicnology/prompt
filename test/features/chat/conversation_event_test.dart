@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/features/chat/domain/conversation_event.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
+import 'package:prompt/features/chat/domain/pending_approval.dart';
 import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 
@@ -422,32 +423,214 @@ void main() {
       expect(event, isNull);
     });
 
-    test(
-      'maps a sensitive edit permission down to sessionId and reason only',
-      () {
-        final event = mapConversationEvent(
-          _envelope('permission.updated', {
-            'id': 'perm_1',
-            'type': 'edit',
-            'pattern': '/home/user/.ssh/*',
-            'sessionID': sessionId,
-            'messageID': 'msg_1',
-            'title': 'Edit ~/.ssh/authorized_keys',
-            'metadata': {'secret': 'sensitive-detail'},
-            'time': {'created': 1700000000000},
-          }),
-          sessionId: sessionId,
-        );
+    test('a sensitive edit permission never carries pattern or metadata, only '
+        'title', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'id': 'perm_1',
+          'type': 'edit',
+          'pattern': '/home/user/.ssh/*',
+          'sessionID': sessionId,
+          'messageID': 'msg_1',
+          'title': 'Edit ~/.ssh/authorized_keys',
+          'metadata': {'secret': 'sensitive-detail'},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
 
-        // `SessionBlockedEvent` declares only `sessionId` and `reason`;
-        // the permission's title, pattern, and metadata (which may
-        // describe a sensitive path or command) have no field to reach
-        // through on the returned event at all.
-        final blocked = event as SessionBlockedEvent;
-        expect(blocked.sessionId, sessionId);
-        expect(blocked.reason, SessionBlockReason.permission);
-      },
-    );
+      // `SessionBlockedEvent.reason` never carries sensitive detail;
+      // `detail` carries only `id`/`type`/`title` — never `pattern` or
+      // `metadata`, which have no field to reach through at all.
+      final blocked = event as SessionBlockedEvent;
+      expect(blocked.sessionId, sessionId);
+      expect(blocked.reason, SessionBlockReason.permission);
+      final detail = blocked.detail as PendingPermissionApproval;
+      expect(detail.permissionId, 'perm_1');
+      expect(detail.toolType, 'edit');
+      expect(detail.title, 'Edit ~/.ssh/authorized_keys');
+    });
+
+    test('carries the full permission detail for the approval UI', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'id': 'perm_1',
+          'type': 'bash',
+          'sessionID': sessionId,
+          'messageID': 'msg_1',
+          'title': 'Run rm -rf /tmp/build',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
+
+      final detail =
+          (event as SessionBlockedEvent).detail as PendingPermissionApproval;
+      expect(detail.sessionId, sessionId);
+      expect(detail.permissionId, 'perm_1');
+      expect(detail.toolType, 'bash');
+      expect(detail.title, 'Run rm -rf /tmp/build');
+    });
+
+    test('maps a permission missing id or title with no detail', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'type': 'bash',
+          'sessionID': sessionId,
+          'messageID': 'msg_1',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
+
+      final blocked = event as SessionBlockedEvent;
+      expect(blocked.reason, SessionBlockReason.permission);
+      expect(blocked.detail, isNull);
+    });
+  });
+
+  group('question.asked', () {
+    test('maps a single-choice question with full detail', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_1',
+          'sessionID': sessionId,
+          'questions': [
+            {
+              'question': 'Which database should I use?',
+              'header': 'Database choice',
+              'options': [
+                {'label': 'Postgres', 'description': 'Relational, robust'},
+                {'label': 'SQLite', 'description': 'Embedded, simple'},
+              ],
+            },
+          ],
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isA<SessionBlockedEvent>());
+      final blocked = event as SessionBlockedEvent;
+      expect(blocked.sessionId, sessionId);
+      expect(blocked.reason, SessionBlockReason.question);
+      final detail = blocked.detail as PendingQuestionApproval;
+      expect(detail.requestId, 'que_1');
+      expect(detail.questions, hasLength(1));
+      final question = detail.questions.single;
+      expect(question.question, 'Which database should I use?');
+      expect(question.header, 'Database choice');
+      expect(question.multiple, isFalse);
+      expect(question.allowsCustomAnswer, isTrue);
+      expect(question.options, hasLength(2));
+      expect(question.options.first.label, 'Postgres');
+      expect(question.options.first.description, 'Relational, robust');
+    });
+
+    test('maps multiple/custom flags and multiple questions', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_2',
+          'sessionID': sessionId,
+          'questions': [
+            {
+              'question': 'Which languages should I support?',
+              'header': 'Languages',
+              'options': [
+                {'label': 'Dart', 'description': 'This project'},
+                {'label': 'Rust', 'description': 'Native voice engine'},
+              ],
+              'multiple': true,
+              'custom': false,
+            },
+            {
+              'question': 'Anything else?',
+              'header': 'Other',
+              'options': <Map<String, dynamic>>[],
+            },
+          ],
+        }),
+        sessionId: sessionId,
+      );
+
+      final detail =
+          (event as SessionBlockedEvent).detail as PendingQuestionApproval;
+      expect(detail.questions, hasLength(2));
+      expect(detail.questions[0].multiple, isTrue);
+      expect(detail.questions[0].allowsCustomAnswer, isFalse);
+      expect(detail.questions[1].options, isEmpty);
+      // Absent `custom` defaults to true, matching OpenCode's own default.
+      expect(detail.questions[1].allowsCustomAnswer, isTrue);
+    });
+
+    test('ignores a question request for another session', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_1',
+          'sessionID': 'ses_other',
+          'questions': [
+            {
+              'question': 'Which database should I use?',
+              'header': 'Database choice',
+              'options': <Map<String, dynamic>>[],
+            },
+          ],
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isNull);
+    });
+
+    test('ignores a request with no questions', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_1',
+          'sessionID': sessionId,
+          'questions': <Map<String, dynamic>>[],
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isNull);
+    });
+
+    test('ignores a malformed question payload without throwing', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_1',
+          'sessionID': sessionId,
+          'questions': [
+            {'question': 'Missing header and options'},
+          ],
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isNull);
+    });
+
+    test('ignores a malformed option within a question', () {
+      final event = mapConversationEvent(
+        _envelope('question.asked', {
+          'id': 'que_1',
+          'sessionID': sessionId,
+          'questions': [
+            {
+              'question': 'Which one?',
+              'header': 'Pick one',
+              'options': [
+                {'label': 'Only label, no description'},
+              ],
+            },
+          ],
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isNull);
+    });
   });
 
   group('unrelated and unknown events', () {
@@ -457,6 +640,8 @@ void main() {
         'session.compacted',
         'file.edited',
         'permission.replied',
+        'question.replied',
+        'question.rejected',
         'installation.updated',
         'todo.updated',
         'server.connected',

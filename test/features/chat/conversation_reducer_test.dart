@@ -3,6 +3,7 @@ import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/features/chat/domain/conversation_event.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
 import 'package:prompt/features/chat/domain/conversation_state.dart';
+import 'package:prompt/features/chat/domain/pending_approval.dart';
 import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 
@@ -462,6 +463,150 @@ void main() {
 
       expect(state.sessionBlocks.containsKey('ses_a'), isFalse);
       expect(state.sessionBlocks['ses_b'], SessionBlockReason.question);
+    });
+  });
+
+  group('pending approval detail', () {
+    const detail = PendingPermissionApproval(
+      sessionId: sessionId,
+      permissionId: 'perm_1',
+      toolType: 'bash',
+      title: 'Run a shell command',
+    );
+
+    test('records the detail alongside the coarse block reason', () {
+      final state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+          detail: detail,
+        ),
+      );
+
+      expect(state.pendingApprovals[sessionId], same(detail));
+      expect(state.sessionBlocks[sessionId], SessionBlockReason.permission);
+    });
+
+    test('a session.status event clears the detail with the block', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+          detail: detail,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionStatusEvent(sessionId: sessionId, state: SessionBusy()),
+      );
+
+      expect(state.pendingApprovals.containsKey(sessionId), isFalse);
+      expect(state.sessionBlocks.containsKey(sessionId), isFalse);
+    });
+
+    test('a session.idle event clears the detail with the block', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.question,
+          detail: detail,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionIdleEvent(sessionId: sessionId),
+      );
+
+      expect(state.pendingApprovals.containsKey(sessionId), isFalse);
+    });
+
+    test(
+      'a block constructed without detail leaves any prior detail alone',
+      () {
+        var state = reduceConversationEvent(
+          const ConversationState(),
+          const SessionBlockedEvent(
+            sessionId: sessionId,
+            reason: SessionBlockReason.permission,
+            detail: detail,
+          ),
+        );
+        state = reduceConversationEvent(
+          state,
+          const SessionBlockedEvent(
+            sessionId: sessionId,
+            reason: SessionBlockReason.permission,
+          ),
+        );
+
+        expect(state.pendingApprovals[sessionId], same(detail));
+      },
+    );
+
+    test('clearPendingApproval removes only the detail, keeping the block', () {
+      final blocked = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+          detail: detail,
+        ),
+      );
+
+      final cleared = clearPendingApproval(blocked, sessionId);
+
+      expect(cleared.pendingApprovals.containsKey(sessionId), isFalse);
+      expect(cleared.sessionBlocks[sessionId], SessionBlockReason.permission);
+    });
+
+    test('clearPendingApproval is a no-op, returning the same state, when '
+        'nothing is pending', () {
+      const state = ConversationState();
+
+      final cleared = clearPendingApproval(state, sessionId);
+
+      expect(identical(cleared, state), isTrue);
+    });
+
+    test('tracks independent sessions separately', () {
+      const detailA = PendingPermissionApproval(
+        sessionId: 'ses_a',
+        permissionId: 'perm_a',
+        toolType: 'bash',
+        title: 'Run a shell command',
+      );
+      const detailB = PendingPermissionApproval(
+        sessionId: 'ses_b',
+        permissionId: 'perm_b',
+        toolType: 'edit',
+        title: 'Edit a file',
+      );
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: 'ses_a',
+          reason: SessionBlockReason.permission,
+          detail: detailA,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionBlockedEvent(
+          sessionId: 'ses_b',
+          reason: SessionBlockReason.permission,
+          detail: detailB,
+        ),
+      );
+
+      expect(state.pendingApprovals['ses_a'], same(detailA));
+      expect(state.pendingApprovals['ses_b'], same(detailB));
+
+      final cleared = clearPendingApproval(state, 'ses_a');
+      expect(cleared.pendingApprovals.containsKey('ses_a'), isFalse);
+      expect(cleared.pendingApprovals['ses_b'], same(detailB));
     });
   });
 

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
+import '../domain/permission_response.dart';
 import '../domain/session_execution_state.dart';
 
 class OpenCodeChatService {
@@ -86,6 +87,90 @@ class OpenCodeChatService {
     final decoded = jsonDecode(response.body);
     if (decoded is! bool) {
       throw const FormatException('Abort response must be a boolean.');
+    }
+    return decoded;
+  }
+
+  /// Responds to a pending tool-call permission with [response], per `POST
+  /// /session/{id}/permissions/{permissionID}`. Never logs [permissionId]
+  /// or any detail about the permission.
+  Future<bool> respondToPermission(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String permissionId,
+    PermissionResponse response,
+  ) async {
+    final query = Uri(queryParameters: {'directory': session.directory}).query;
+    final httpResponse = await _transport.post(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/permissions/'
+      '${Uri.encodeComponent(permissionId)}?$query',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({'response': response.wireValue}),
+    );
+    if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
+      throw OpenCodeHttpFailure(httpResponse.statusCode);
+    }
+    final decoded = jsonDecode(httpResponse.body);
+    if (decoded is! bool) {
+      throw const FormatException('Permission response must be a boolean.');
+    }
+    return decoded;
+  }
+
+  /// Answers a pending question request with [answers], one entry per
+  /// question in the original request and in the same order, each a list
+  /// of selected option labels and/or typed free-text answers. Per `POST
+  /// /question/{requestID}/reply`. Never logs [requestId] or any answer.
+  Future<bool> replyToQuestion(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String requestId,
+    List<List<String>> answers,
+  ) async {
+    final query = Uri(queryParameters: {'directory': session.directory}).query;
+    final httpResponse = await _transport.post(
+      profile,
+      password,
+      '/question/${Uri.encodeComponent(requestId)}/reply?$query',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({'answers': answers}),
+    );
+    if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
+      throw OpenCodeHttpFailure(httpResponse.statusCode);
+    }
+    final decoded = jsonDecode(httpResponse.body);
+    if (decoded is! bool) {
+      throw const FormatException('Question reply response must be a boolean.');
+    }
+    return decoded;
+  }
+
+  /// Rejects a pending question request outright, per `POST /question/
+  /// {requestID}/reject`. Never logs [requestId].
+  Future<bool> rejectQuestion(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String requestId,
+  ) async {
+    final query = Uri(queryParameters: {'directory': session.directory}).query;
+    final httpResponse = await _transport.post(
+      profile,
+      password,
+      '/question/${Uri.encodeComponent(requestId)}/reject?$query',
+    );
+    if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
+      throw OpenCodeHttpFailure(httpResponse.statusCode);
+    }
+    final decoded = jsonDecode(httpResponse.body);
+    if (decoded is! bool) {
+      throw const FormatException(
+        'Question reject response must be a boolean.',
+      );
     }
     return decoded;
   }

@@ -6,6 +6,7 @@ library;
 
 import 'conversation_event.dart';
 import 'conversation_message.dart';
+import 'pending_approval.dart';
 import 'session_block_reason.dart';
 import 'session_execution_state.dart';
 
@@ -18,6 +19,7 @@ class ConversationState {
     this.messages = const <String, ConversationMessage>{},
     this.sessionStates = const <String, SessionExecutionState>{},
     this.sessionBlocks = const <String, SessionBlockReason>{},
+    this.pendingApprovals = const <String, PendingApproval>{},
   });
 
   /// Messages keyed by message id, preserving the order in which each
@@ -34,6 +36,15 @@ class ConversationState {
   /// confirms the session moved past it.
   final Map<String, SessionBlockReason> sessionBlocks;
 
+  /// The full pending-approval detail behind [sessionBlocks], keyed by
+  /// session id, for the sessions [SessionBlockedEvent] carried a
+  /// [PendingApproval] for. Cleared the same way [sessionBlocks] is, and
+  /// also clearable on its own — without disturbing [sessionBlocks] — by
+  /// [clearPendingApproval], once a reply/reject to OpenCode succeeds. See
+  /// `pending_approval.dart` for why this must never be logged or
+  /// persisted.
+  final Map<String, PendingApproval> pendingApprovals;
+
   /// Messages in first-seen order.
   List<ConversationMessage> get orderedMessages =>
       List.unmodifiable(messages.values);
@@ -42,11 +53,13 @@ class ConversationState {
     Map<String, ConversationMessage>? messages,
     Map<String, SessionExecutionState>? sessionStates,
     Map<String, SessionBlockReason>? sessionBlocks,
+    Map<String, PendingApproval>? pendingApprovals,
   }) {
     return ConversationState(
       messages: messages ?? this.messages,
       sessionStates: sessionStates ?? this.sessionStates,
       sessionBlocks: sessionBlocks ?? this.sessionBlocks,
+      pendingApprovals: pendingApprovals ?? this.pendingApprovals,
     );
   }
 }
@@ -162,6 +175,7 @@ ConversationState _reduceSessionStatus(
   return state.copyWith(
     sessionStates: sessionStates,
     sessionBlocks: _clearSessionBlock(state, event.sessionId),
+    pendingApprovals: _clearPendingApproval(state, event.sessionId),
   );
 }
 
@@ -176,6 +190,7 @@ ConversationState _reduceSessionIdle(
   return state.copyWith(
     sessionStates: sessionStates,
     sessionBlocks: _clearSessionBlock(state, event.sessionId),
+    pendingApprovals: _clearPendingApproval(state, event.sessionId),
   );
 }
 
@@ -185,7 +200,18 @@ ConversationState _reduceSessionBlocked(
 ) {
   final sessionBlocks = Map<String, SessionBlockReason>.of(state.sessionBlocks);
   sessionBlocks[event.sessionId] = event.reason;
-  return state.copyWith(sessionBlocks: sessionBlocks);
+  final detail = event.detail;
+  if (detail == null) {
+    return state.copyWith(sessionBlocks: sessionBlocks);
+  }
+  final pendingApprovals = Map<String, PendingApproval>.of(
+    state.pendingApprovals,
+  );
+  pendingApprovals[event.sessionId] = detail;
+  return state.copyWith(
+    sessionBlocks: sessionBlocks,
+    pendingApprovals: pendingApprovals,
+  );
 }
 
 /// A `session.status`/`session.idle` event is the only authoritative
@@ -200,4 +226,33 @@ Map<String, SessionBlockReason> _clearSessionBlock(
   }
   return Map<String, SessionBlockReason>.of(state.sessionBlocks)
     ..remove(sessionId);
+}
+
+Map<String, PendingApproval> _clearPendingApproval(
+  ConversationState state,
+  String sessionId,
+) {
+  if (!state.pendingApprovals.containsKey(sessionId)) {
+    return state.pendingApprovals;
+  }
+  return Map<String, PendingApproval>.of(state.pendingApprovals)
+    ..remove(sessionId);
+}
+
+/// Clears [sessionId]'s pending-approval detail without touching
+/// [ConversationState.sessionBlocks]. Used once a reply/reject request to
+/// OpenCode succeeds: the approval dock's content is stale immediately,
+/// but the queue itself must stay paused until an authoritative
+/// `session.status`/`session.idle` event confirms the session actually
+/// moved past it (see [SessionBlockedEvent] and `session_block_reason.
+/// dart`).
+ConversationState clearPendingApproval(
+  ConversationState state,
+  String sessionId,
+) {
+  final pendingApprovals = _clearPendingApproval(state, sessionId);
+  if (identical(pendingApprovals, state.pendingApprovals)) {
+    return state;
+  }
+  return state.copyWith(pendingApprovals: pendingApprovals);
 }

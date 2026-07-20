@@ -8,6 +8,7 @@ library;
 
 import '../../../data/remote/opencode_event_service.dart';
 import 'conversation_message.dart';
+import 'pending_approval.dart';
 import 'session_block_reason.dart';
 import 'session_execution_state.dart';
 
@@ -80,17 +81,33 @@ final class SessionIdleEvent extends ConversationEvent {
 }
 
 /// A permission or question is pending for the session, reduced from
-/// `permission.updated`. Carries only the session id and a coarse
-/// [SessionBlockReason] — never the permission's id, title, pattern, or
-/// metadata, which may describe a sensitive shell command, file path, or
-/// question text. `permission.replied` is intentionally not modeled here:
-/// resuming a blocked queue is only ever confirmed by an authoritative
-/// `session.status`/`session.idle` event, never by the reply alone.
+/// `permission.updated` or `question.asked`. [reason] is a coarse
+/// classification used only to gate the queue (see
+/// `session_block_reason.dart`); it never carries sensitive detail.
+///
+/// [detail] carries that detail — the permission's id/type/title, or the
+/// question request's id and questions — for the approval UI to render.
+/// It is `null` only when this event is constructed directly (for example
+/// by an older caller or a test) rather than produced by
+/// [mapConversationEvent]; every event this file maps from a real
+/// `permission.updated`/`question.asked` payload carries one. A listener
+/// must only ever show [detail] to the human being asked to approve it,
+/// never log or persist it.
+///
+/// `permission.replied`/`question.replied`/`question.rejected` are
+/// intentionally not modeled here: resuming a blocked queue is only ever
+/// confirmed by an authoritative `session.status`/`session.idle` event,
+/// never by a reply alone.
 final class SessionBlockedEvent extends ConversationEvent {
-  const SessionBlockedEvent({required this.sessionId, required this.reason});
+  const SessionBlockedEvent({
+    required this.sessionId,
+    required this.reason,
+    this.detail,
+  });
 
   final String sessionId;
   final SessionBlockReason reason;
+  final PendingApproval? detail;
 }
 
 /// Maps [envelope] to a [ConversationEvent] scoped to [sessionId].
@@ -129,6 +146,8 @@ ConversationEvent? mapConversationEvent(
       return _mapSessionIdle(properties, sessionId);
     case 'permission.updated':
       return _mapPermissionUpdated(properties, sessionId);
+    case 'question.asked':
+      return _mapQuestionAsked(properties, sessionId);
     default:
       return null;
   }
@@ -328,9 +347,11 @@ ConversationEvent? _mapSessionIdle(
 }
 
 /// `permission.updated`'s `properties` is the OpenCode `Permission` object
-/// itself (not a wrapper). Only `sessionID` and `type` are read; `title`,
-/// `pattern`, `metadata`, and every other field may carry a sensitive
-/// command, path, or question and must never enter this domain event.
+/// itself (not a wrapper): `id`, `type`, `sessionID`, `title`, and
+/// optionally `pattern`/`metadata`/`callID`. `pattern` and `metadata` are
+/// never read here — only `id`, `type`, and `title` reach [PendingApproval]
+/// detail, which is shown only to the human approving it (see
+/// `pending_approval.dart`).
 ConversationEvent? _mapPermissionUpdated(
   Map<String, dynamic> properties,
   String sessionId,
@@ -346,5 +367,101 @@ ConversationEvent? _mapPermissionUpdated(
   final reason = type == 'question'
       ? SessionBlockReason.question
       : SessionBlockReason.permission;
-  return SessionBlockedEvent(sessionId: eventSessionId, reason: reason);
+
+  final id = properties['id'];
+  final title = properties['title'];
+  final detail = (id is String && type is String && title is String)
+      ? PendingPermissionApproval(
+          sessionId: eventSessionId,
+          permissionId: id,
+          toolType: type,
+          title: title,
+        )
+      : null;
+
+  return SessionBlockedEvent(
+    sessionId: eventSessionId,
+    reason: reason,
+    detail: detail,
+  );
+}
+
+/// `question.asked`'s `properties` is the OpenCode `QuestionRequest`
+/// object: `id`, `sessionID`, `questions` (each `question`, `header`,
+/// `options`, and optionally `multiple`/`custom`), and an optional `tool`
+/// reference this app does not need. A malformed request — including any
+/// question in it — maps to `null` rather than a partial approval.
+ConversationEvent? _mapQuestionAsked(
+  Map<String, dynamic> properties,
+  String sessionId,
+) {
+  final eventSessionId = properties['sessionID'];
+  final requestId = properties['id'];
+  final rawQuestions = properties['questions'];
+  if (eventSessionId is! String ||
+      requestId is! String ||
+      rawQuestions is! List) {
+    return null;
+  }
+  if (eventSessionId != sessionId) {
+    return null;
+  }
+
+  final questions = <QuestionPrompt>[];
+  for (final rawQuestion in rawQuestions) {
+    if (rawQuestion is! Map<String, dynamic>) {
+      return null;
+    }
+    final prompt = _mapQuestionPrompt(rawQuestion);
+    if (prompt == null) {
+      return null;
+    }
+    questions.add(prompt);
+  }
+  if (questions.isEmpty) {
+    return null;
+  }
+
+  return SessionBlockedEvent(
+    sessionId: eventSessionId,
+    reason: SessionBlockReason.question,
+    detail: PendingQuestionApproval(
+      sessionId: eventSessionId,
+      requestId: requestId,
+      questions: questions,
+    ),
+  );
+}
+
+QuestionPrompt? _mapQuestionPrompt(Map<String, dynamic> json) {
+  final question = json['question'];
+  final header = json['header'];
+  final rawOptions = json['options'];
+  if (question is! String || header is! String || rawOptions is! List) {
+    return null;
+  }
+
+  final options = <QuestionOption>[];
+  for (final rawOption in rawOptions) {
+    if (rawOption is! Map<String, dynamic>) {
+      return null;
+    }
+    final label = rawOption['label'];
+    final description = rawOption['description'];
+    if (label is! String || description is! String) {
+      return null;
+    }
+    options.add(QuestionOption(label: label, description: description));
+  }
+
+  final multiple = json['multiple'];
+  final custom = json['custom'];
+  return QuestionPrompt(
+    question: question,
+    header: header,
+    options: options,
+    multiple: multiple is bool ? multiple : false,
+    // OpenCode's own default is `true` when the field is absent.
+    allowsCustomAnswer: custom is bool ? custom : true,
+  );
 }

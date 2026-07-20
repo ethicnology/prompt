@@ -11,6 +11,8 @@ import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/conversation_message.dart';
 import '../domain/conversation_state.dart';
+import '../domain/pending_approval.dart';
+import '../domain/permission_response.dart';
 
 sealed class ConversationUiState {
   const ConversationUiState();
@@ -72,6 +74,23 @@ class ConversationViewModel {
     const <QueuedPrompt>[],
   );
 
+  /// The active session's pending permission or question, for a
+  /// non-dismissible approval dock/sheet to render. `null` whenever
+  /// nothing needs a human decision. Mirrors
+  /// [QueueSendCoordinator.currentPendingApproval]; see `pending_approval.
+  /// dart` for why this must never be logged or persisted. Cleared in
+  /// [leave] and [dispose] for the same reason [_liveConversationState]
+  /// is.
+  final ValueNotifier<PendingApproval?> pendingApproval = ValueNotifier(null);
+
+  /// The active session's live SSE connection status, mirrored from
+  /// [QueueSendCoordinator.connectionState] so the conversation UI can
+  /// show a connection/reconnecting indicator without reaching past this
+  /// view model into the coordinator itself.
+  final ValueNotifier<SseConnectionState> connectionState = ValueNotifier(
+    const SseSuspended(),
+  );
+
   final StreamController<String> _queueErrors =
       StreamController<String>.broadcast();
 
@@ -90,6 +109,12 @@ class ConversationViewModel {
   /// left can never reach [_applyLiveConversationState].
   ValueListenable<ConversationState>? _liveConversationState;
   VoidCallback? _liveConversationStateListener;
+
+  /// The open session's live connection status, as exposed by
+  /// [QueueSendCoordinator.connectionState]. Cleared in [leave] and
+  /// [dispose] for the same reason as [_liveConversationState].
+  ValueListenable<SseConnectionState>? _remoteConnectionState;
+  VoidCallback? _remoteConnectionStateListener;
 
   bool _disposed = false;
 
@@ -140,11 +165,40 @@ class ConversationViewModel {
         return;
       }
       _applyLiveConversationState(liveConversationState.value);
+      pendingApproval.value =
+          liveConversationState.value.pendingApprovals[session.id];
     }
 
     _liveConversationState = liveConversationState;
     _liveConversationStateListener = onLiveConversationStateChanged;
     liveConversationState.addListener(onLiveConversationStateChanged);
+    // `activate` may have already reduced a block (and its detail) before
+    // this listener was attached; pick that up now rather than waiting
+    // for the next SSE event to change it.
+    pendingApproval.value = queueCoordinator.currentPendingApproval;
+
+    // Mirrors the coordinator's connection status so the conversation UI
+    // can render it, and — the moment a reconnect starts reconciling —
+    // re-fetches the transcript over REST rather than trusting whatever
+    // the live state accumulated across the drop. Queue dispatch is
+    // separately held by the coordinator itself for the same window; see
+    // `QueueSendCoordinator._maybeDispatch`.
+    final remoteConnectionState = queueCoordinator.connectionState;
+    void onRemoteConnectionStateChanged() {
+      if (_disposed || _session != session) {
+        return;
+      }
+      final next = remoteConnectionState.value;
+      connectionState.value = next;
+      if (next is SseReconciling) {
+        unawaited(_loadMessages());
+      }
+    }
+
+    _remoteConnectionState = remoteConnectionState;
+    _remoteConnectionStateListener = onRemoteConnectionStateChanged;
+    remoteConnectionState.addListener(onRemoteConnectionStateChanged);
+    connectionState.value = remoteConnectionState.value;
 
     await _loadMessages();
   }
@@ -252,6 +306,54 @@ class ConversationViewModel {
     }
   }
 
+  /// Responds to the open session's pending tool-call permission with
+  /// [response]. See [QueueSendCoordinator.respondToPermission].
+  Future<void> respondToPermission(
+    String permissionId,
+    PermissionResponse response,
+  ) async {
+    final queueCoordinator = _queueCoordinator;
+    if (queueCoordinator == null) {
+      return;
+    }
+    final result = await queueCoordinator.respondToPermission(
+      permissionId,
+      response,
+    );
+    if (result case Err<void, QueueApprovalFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+    }
+  }
+
+  /// Answers the open session's pending question request with [answers].
+  /// See [QueueSendCoordinator.replyToQuestion].
+  Future<void> replyToQuestion(
+    String requestId,
+    List<List<String>> answers,
+  ) async {
+    final queueCoordinator = _queueCoordinator;
+    if (queueCoordinator == null) {
+      return;
+    }
+    final result = await queueCoordinator.replyToQuestion(requestId, answers);
+    if (result case Err<void, QueueApprovalFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+    }
+  }
+
+  /// Rejects the open session's pending question request outright. See
+  /// [QueueSendCoordinator.rejectQuestion].
+  Future<void> rejectQuestion(String requestId) async {
+    final queueCoordinator = _queueCoordinator;
+    if (queueCoordinator == null) {
+      return;
+    }
+    final result = await queueCoordinator.rejectQuestion(requestId);
+    if (result case Err<void, QueueApprovalFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+    }
+  }
+
   /// Deactivates queue coordination and stops watching the queue for the
   /// currently open session, if any. Safe to call repeatedly, including
   /// before the queue has ever been opened. Called when the conversation
@@ -261,7 +363,10 @@ class ConversationViewModel {
     await _queueSubscription?.cancel();
     _queueSubscription = null;
     _detachLiveConversationState();
+    _detachRemoteConnectionState();
     await _queueCoordinator?.deactivate();
+    connectionState.value = const SseSuspended();
+    pendingApproval.value = null;
     _profile = null;
     _session = null;
   }
@@ -274,9 +379,12 @@ class ConversationViewModel {
     await _queueSubscription?.cancel();
     _queueSubscription = null;
     _detachLiveConversationState();
+    _detachRemoteConnectionState();
     await _queueCoordinator?.deactivate();
     messages.dispose();
     queue.dispose();
+    connectionState.dispose();
+    pendingApproval.dispose();
     unawaited(_queueErrors.close());
   }
 
@@ -288,6 +396,16 @@ class ConversationViewModel {
     }
     _liveConversationState = null;
     _liveConversationStateListener = null;
+  }
+
+  void _detachRemoteConnectionState() {
+    final remoteConnectionState = _remoteConnectionState;
+    final listener = _remoteConnectionStateListener;
+    if (remoteConnectionState != null && listener != null) {
+      remoteConnectionState.removeListener(listener);
+    }
+    _remoteConnectionState = null;
+    _remoteConnectionStateListener = null;
   }
 }
 

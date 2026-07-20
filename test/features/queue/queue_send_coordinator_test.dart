@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/core/async/reconnect_backoff.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/local/prompt_database.dart' show PromptDatabase;
@@ -13,14 +14,18 @@ import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
+import 'package:prompt/features/chat/domain/pending_approval.dart';
+import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
 import 'package:prompt/features/queue/data/queue_send_coordinator.dart';
+import 'package:prompt/features/queue/domain/queue_approval_failure.dart';
 import 'package:prompt/features/queue/domain/queue_failure.dart';
 import 'package:prompt/features/queue/domain/queue_send_now_failure.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
+import 'package:prompt/features/queue/domain/sse_connection_state.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
 /// Lets Drift's `watch()` timer-scheduled re-query, and any pending
@@ -60,10 +65,24 @@ class _ScriptedChatBackend {
   /// test observe the queue mid-send before it settles.
   Completer<void>? promptAsyncGate;
 
+  /// Delays every `GET /session/status` response until this completes,
+  /// letting a test observe the coordinator's reconciliation window (see
+  /// `SseReconciling`) before the authoritative status actually resolves.
+  Completer<void>? sessionStatusGate;
+
   int promptAsyncCallCount = 0;
   int abortCallCount = 0;
   int sessionStatusCallCount = 0;
   final List<String> promptAsyncOrder = <String>[];
+
+  int permissionResponseStatusCode = 200;
+  int questionReplyStatusCode = 200;
+  int questionRejectStatusCode = 200;
+  int permissionResponseCallCount = 0;
+  int questionReplyCallCount = 0;
+  int questionRejectCallCount = 0;
+  String? lastPermissionResponse;
+  List<List<String>>? lastQuestionAnswers;
 
   late final http.Client client = MockClient(_handle);
 
@@ -82,8 +101,30 @@ class _ScriptedChatBackend {
       abortCallCount++;
       return http.Response(jsonEncode(abortReturnValue), abortStatusCode);
     }
+    if (path.contains('/permissions/')) {
+      permissionResponseCallCount++;
+      final decoded = jsonDecode(request.body) as Map<String, dynamic>;
+      lastPermissionResponse = decoded['response'] as String;
+      return http.Response(jsonEncode(true), permissionResponseStatusCode);
+    }
+    if (path.endsWith('/reply')) {
+      questionReplyCallCount++;
+      final decoded = jsonDecode(request.body) as Map<String, dynamic>;
+      lastQuestionAnswers = (decoded['answers'] as List)
+          .map((entry) => (entry as List).cast<String>())
+          .toList();
+      return http.Response(jsonEncode(true), questionReplyStatusCode);
+    }
+    if (path.endsWith('/reject')) {
+      questionRejectCallCount++;
+      return http.Response(jsonEncode(true), questionRejectStatusCode);
+    }
     if (path == '/session/status') {
       sessionStatusCallCount++;
+      final gate = sessionStatusGate;
+      if (gate != null) {
+        await gate.future;
+      }
       return http.Response(
         jsonEncode({
           'session-1': {'type': sessionStatusType},
@@ -105,12 +146,33 @@ class _ScriptedChatBackend {
 /// A minimal SSE transport whose byte stream is entirely test-controlled,
 /// so a test can emit `session.status`/`session.idle` events at exact
 /// points in its own timeline instead of racing a real connection.
+///
+/// Every call to [send] (one per [OpenCodeEventService.connect] call, so
+/// one per initial connect and per reconnect) opens a fresh controller,
+/// tracked in [connectionCount]; [emit] and [dropConnection] always act on
+/// the most recently opened one, mirroring how only the latest connection
+/// is ever live.
 class _ScriptedEventClient extends http.BaseClient {
-  final StreamController<List<int>> _controller = StreamController<List<int>>();
+  final List<StreamController<List<int>>> _controllers =
+      <StreamController<List<int>>>[];
+
+  /// The HTTP status the *next* [send] call responds with. Set to a
+  /// non-2xx value to simulate a reconnect attempt being rejected before
+  /// any event ever streams.
+  int nextConnectStatusCode = 200;
+
+  /// How many times [send] has been called, i.e. how many connection
+  /// attempts (initial connect plus every reconnect) this client has
+  /// served.
+  int get connectionCount => _controllers.length;
+
+  StreamController<List<int>> get _latest => _controllers.last;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    return http.StreamedResponse(_controller.stream, 200);
+    final controller = StreamController<List<int>>();
+    _controllers.add(controller);
+    return http.StreamedResponse(controller.stream, nextConnectStatusCode);
   }
 
   void emit(String type, Map<String, dynamic> properties, {String? directory}) {
@@ -118,7 +180,21 @@ class _ScriptedEventClient extends http.BaseClient {
       'directory': ?directory,
       'payload': {'type': type, 'properties': properties},
     });
-    _controller.add(utf8.encode('data: $json\n\n'));
+    _latest.add(utf8.encode('data: $json\n\n'));
+  }
+
+  /// Simulates the current connection dropping: an [error] delivers it as
+  /// a stream error (a transport failure); no [error] simply ends the
+  /// stream (the server closing the connection).
+  void dropConnection({Object? error}) {
+    if (_controllers.isEmpty) {
+      return;
+    }
+    if (error != null) {
+      _latest.addError(error);
+      return;
+    }
+    unawaited(_latest.close());
   }
 
   /// Does not await [StreamController.close]: its `done` future only
@@ -126,8 +202,26 @@ class _ScriptedEventClient extends http.BaseClient {
   /// that never activated the coordinator never attaches one.
   @override
   Future<void> close() {
-    unawaited(_controller.close());
+    for (final controller in _controllers) {
+      unawaited(controller.close());
+    }
     return Future<void>.value();
+  }
+}
+
+/// A [Timer] factory that records every requested delay and fires the
+/// callback on a real, but zero-duration, timer instead of actually
+/// waiting — so a test can assert on the backoff policy's growth without
+/// slowing down for it. Zero-duration (rather than synchronous) still
+/// defers the callback to a later event-loop turn, matching real `Timer`
+/// semantics closely enough that reentrancy in
+/// `QueueSendCoordinator._beginReconnect` is never a concern.
+class _RecordingTimerFactory {
+  final List<Duration> requestedDelays = <Duration>[];
+
+  Timer call(Duration duration, void Function() callback) {
+    requestedDelays.add(duration);
+    return Timer(Duration.zero, callback);
   }
 }
 
@@ -480,6 +574,289 @@ void main() {
     });
   });
 
+  group('currentPendingApproval', () {
+    test('carries the full permission detail while blocked, and clears with '
+        'the block on an authoritative session.idle', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      expect(coordinator.currentPendingApproval, isNull);
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run rm -rf /tmp/build',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      final detail =
+          coordinator.currentPendingApproval as PendingPermissionApproval;
+      expect(detail.permissionId, 'perm_1');
+      expect(detail.toolType, 'bash');
+      expect(detail.title, 'Run rm -rf /tmp/build');
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(coordinator.currentPendingApproval, isNull);
+    });
+
+    test('carries the full question detail while blocked', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('question.asked', {
+        'id': 'que_1',
+        'sessionID': session.id,
+        'questions': [
+          {
+            'question': 'Which database should I use?',
+            'header': 'Database choice',
+            'options': [
+              {'label': 'Postgres', 'description': 'Relational, robust'},
+            ],
+          },
+        ],
+      });
+      await _settle();
+
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.question,
+      );
+      final detail =
+          coordinator.currentPendingApproval as PendingQuestionApproval;
+      expect(detail.requestId, 'que_1');
+      expect(detail.questions.single.question, 'Which database should I use?');
+    });
+
+    test('resets to null once the session is deactivated', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+      expect(coordinator.currentPendingApproval, isNotNull);
+
+      await coordinator.deactivate();
+
+      expect(coordinator.currentPendingApproval, isNull);
+    });
+  });
+
+  group('respondToPermission', () {
+    test('fails with noActiveSession when nothing is activated', () async {
+      final result = await coordinator.respondToPermission(
+        'perm_1',
+        PermissionResponse.once,
+      );
+
+      expect(
+        (result as Err<void, QueueApprovalFailure>).failure,
+        QueueApprovalFailure.noActiveSession,
+      );
+    });
+
+    test('posts the response, clears the pending detail, but leaves the '
+        'queue paused until an authoritative session.idle arrives', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      await enqueue('first');
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      final result = await coordinator.respondToPermission(
+        'perm_1',
+        PermissionResponse.always,
+      );
+      await _settle();
+
+      expect(result, isA<Ok<void, QueueApprovalFailure>>());
+      expect(backend.permissionResponseCallCount, 1);
+      expect(backend.lastPermissionResponse, 'always');
+
+      // The dock's content is gone immediately...
+      expect(coordinator.currentPendingApproval, isNull);
+      // ...but the queue itself is still paused: only an authoritative
+      // session.status/session.idle event may resume it.
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.permission,
+      );
+      expect((await currentQueue()).single.state, QueuedPromptState.paused);
+      expect(backend.promptAsyncCallCount, 0);
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(coordinator.currentSessionBlockReason, isNull);
+      expect(
+        (await currentQueue()).single.state,
+        QueuedPromptState.acknowledged,
+      );
+    });
+
+    test('surfaces a rejected request as requestFailed', () async {
+      backend.sessionStatusType = 'busy';
+      backend.permissionResponseStatusCode = 401;
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      final result = await coordinator.respondToPermission(
+        'perm_1',
+        PermissionResponse.once,
+      );
+
+      expect(
+        (result as Err<void, QueueApprovalFailure>).failure,
+        QueueApprovalFailure.requestFailed,
+      );
+      // A failed submission never clears the detail: there is nothing new
+      // to show, but also nothing resolved yet.
+      expect(coordinator.currentPendingApproval, isNotNull);
+    });
+  });
+
+  group('replyToQuestion and rejectQuestion', () {
+    test('replyToQuestion posts every answer and clears the pending detail '
+        'only, leaving the block until session.idle', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      await enqueue('first');
+      await _settle();
+
+      eventClient.emit('question.asked', {
+        'id': 'que_1',
+        'sessionID': session.id,
+        'questions': [
+          {
+            'question': 'Which database should I use?',
+            'header': 'Database choice',
+            'options': [
+              {'label': 'Postgres', 'description': 'Relational, robust'},
+            ],
+          },
+        ],
+      });
+      await _settle();
+
+      final result = await coordinator.replyToQuestion('que_1', [
+        ['Postgres'],
+      ]);
+      await _settle();
+
+      expect(result, isA<Ok<void, QueueApprovalFailure>>());
+      expect(backend.questionReplyCallCount, 1);
+      expect(backend.lastQuestionAnswers, [
+        ['Postgres'],
+      ]);
+      expect(coordinator.currentPendingApproval, isNull);
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.question,
+      );
+      expect((await currentQueue()).single.state, QueuedPromptState.paused);
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(
+        (await currentQueue()).single.state,
+        QueuedPromptState.acknowledged,
+      );
+    });
+
+    test('rejectQuestion posts the rejection and clears the pending detail '
+        'only', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('question.asked', {
+        'id': 'que_1',
+        'sessionID': session.id,
+        'questions': [
+          {
+            'question': 'Which database should I use?',
+            'header': 'Database choice',
+            'options': <Map<String, dynamic>>[],
+          },
+        ],
+      });
+      await _settle();
+
+      final result = await coordinator.rejectQuestion('que_1');
+      await _settle();
+
+      expect(result, isA<Ok<void, QueueApprovalFailure>>());
+      expect(backend.questionRejectCallCount, 1);
+      expect(coordinator.currentPendingApproval, isNull);
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.question,
+      );
+    });
+
+    test('replyToQuestion fails with noActiveSession when nothing is '
+        'activated', () async {
+      final result = await coordinator.replyToQuestion('que_1', [
+        ['Postgres'],
+      ]);
+
+      expect(
+        (result as Err<void, QueueApprovalFailure>).failure,
+        QueueApprovalFailure.noActiveSession,
+      );
+    });
+
+    test('rejectQuestion fails with noActiveSession when nothing is '
+        'activated', () async {
+      final result = await coordinator.rejectQuestion('que_1');
+
+      expect(
+        (result as Err<void, QueueApprovalFailure>).failure,
+        QueueApprovalFailure.noActiveSession,
+      );
+    });
+  });
+
   group('transport-uncertain failures', () {
     test('a prompt_async failure pauses the prompt as submissionUnknown '
         'without retrying', () async {
@@ -808,4 +1185,250 @@ void main() {
       );
     },
   );
+
+  group('connectionState', () {
+    test(
+      'starts suspended, then reports connected once activate settles',
+      () async {
+        expect(coordinator.connectionState.value, isA<SseSuspended>());
+
+        backend.sessionStatusType = 'idle';
+        await coordinator.activate(profile: profile, session: session);
+        await _settle();
+
+        expect(coordinator.connectionState.value, isA<SseConnected>());
+      },
+    );
+
+    test('reports suspended again once deactivated', () async {
+      backend.sessionStatusType = 'idle';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      await coordinator.deactivate();
+
+      expect(coordinator.connectionState.value, isA<SseSuspended>());
+    });
+  });
+
+  group('app lifecycle: inactive and foreground', () {
+    test(
+      'notifyAppInactive cancels the live SSE subscription, suspends the '
+      'connection, and stops reconnecting until foreground resumes',
+      () async {
+        backend.sessionStatusType = 'busy';
+        await coordinator.activate(profile: profile, session: session);
+        await _settle();
+        expect(coordinator.connectionState.value, isA<SseConnected>());
+        final connectionsBeforeInactive = eventClient.connectionCount;
+
+        coordinator.notifyAppInactive();
+        await _settle();
+
+        expect(coordinator.connectionState.value, isA<SseSuspended>());
+
+        // An event on the connection this coordinator just abandoned, and
+        // a fresh enqueue, must never dispatch anything while inactive —
+        // and never trigger a reconnect either.
+        eventClient.emit('session.idle', {'sessionID': session.id});
+        await enqueue('queued while inactive');
+        await _settle();
+
+        expect((await currentQueue()).single.state, QueuedPromptState.queued);
+        expect(backend.promptAsyncCallCount, 0);
+        expect(eventClient.connectionCount, connectionsBeforeInactive);
+      },
+    );
+
+    test('notifyAppForeground reconnects and reconciles the authoritative '
+        'session status before any dispatch resumes', () async {
+      backend.sessionStatusType = 'idle';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      coordinator.notifyAppInactive();
+      await _settle();
+
+      final prompt = await enqueue('queued while inactive');
+      await _settle();
+      expect((await currentQueue()).single.state, QueuedPromptState.queued);
+
+      // Gates the status refetch so the reconciliation window (and the
+      // fact that it blocks dispatch) is directly observable, instead
+      // of racing a REST call that resolves within the same event-loop
+      // turn.
+      final gate = Completer<void>();
+      backend.sessionStatusGate = gate;
+      final statusCallsBeforeResume = backend.sessionStatusCallCount;
+
+      coordinator.notifyAppForeground();
+      await _settle();
+
+      expect(coordinator.connectionState.value, isA<SseReconciling>());
+      expect(backend.sessionStatusCallCount, statusCallsBeforeResume + 1);
+      expect((await currentQueue()).single.state, QueuedPromptState.queued);
+      expect(backend.promptAsyncCallCount, 0);
+
+      gate.complete();
+      await _settle();
+
+      expect(coordinator.connectionState.value, isA<SseConnected>());
+      final row = (await currentQueue()).firstWhere((p) => p.id == prompt.id);
+      expect(row.state, QueuedPromptState.acknowledged);
+      expect(backend.promptAsyncCallCount, 1);
+    });
+
+    test('notifyAppForeground is a no-op without an active session', () async {
+      expect(() => coordinator.notifyAppForeground(), returnsNormally);
+      expect(coordinator.connectionState.value, isA<SseSuspended>());
+    });
+  });
+
+  group('dropped SSE stream', () {
+    test(
+      'an unexpected drop while foreground schedules a bounded reconnect, '
+      'surfaced as reconnecting, and reconciles before dispatch resumes',
+      () async {
+        const backoffPolicy = ReconnectBackoffPolicy(
+          initialDelay: Duration(milliseconds: 5),
+          maxDelay: Duration(milliseconds: 40),
+          maxAttempts: 3,
+        );
+        final timerFactory = _RecordingTimerFactory();
+        final reconnectCoordinator = QueueSendCoordinator(
+          queueRepository: queueRepository,
+          chatRepository: chatRepository,
+          eventService: eventService,
+          credentialsStore: const _StaticPasswordStore(),
+          backoffPolicy: backoffPolicy,
+          reconnectTimerFactory: timerFactory.call,
+        );
+
+        backend.sessionStatusType = 'idle';
+        await reconnectCoordinator.activate(profile: profile, session: session);
+        await _settle();
+        expect(reconnectCoordinator.connectionState.value, isA<SseConnected>());
+
+        final gate = Completer<void>();
+        backend.sessionStatusGate = gate;
+
+        // Never silently discarded: the drop is surfaced, not swallowed.
+        // A single `_settle()` reliably observes the reconnect having been
+        // *scheduled* (recorded synchronously, from the drop callback
+        // itself), but not necessarily still waiting: the fake timer
+        // factory below fires on a real (if zero-duration) `Timer`, whose
+        // exact interleaving against `_settle`'s own zero-duration delays
+        // is not guaranteed, so the state may already have moved on to
+        // `SseReconciling` by the time this assertion runs.
+        eventClient.dropConnection(error: const OpenCodeTransportFailure(500));
+        await _settle();
+
+        expect(timerFactory.requestedDelays, hasLength(1));
+        expect(
+          reconnectCoordinator.connectionState.value,
+          anyOf(isA<SseReconnecting>(), isA<SseReconciling>()),
+        );
+
+        // Lets the recorded (but not really waited-for) reconnect timer
+        // fire and open a fresh connection.
+        await _settle();
+
+        expect(eventClient.connectionCount, 2);
+        expect(
+          reconnectCoordinator.connectionState.value,
+          isA<SseReconciling>(),
+        );
+
+        await enqueue('missed during the drop');
+        await _settle();
+        expect((await currentQueue()).single.state, QueuedPromptState.queued);
+        expect(backend.promptAsyncCallCount, 0);
+
+        gate.complete();
+        await _settle();
+
+        expect(reconnectCoordinator.connectionState.value, isA<SseConnected>());
+        expect(
+          (await currentQueue()).single.state,
+          QueuedPromptState.acknowledged,
+        );
+
+        await reconnectCoordinator.dispose();
+      },
+    );
+
+    test('a stream simply ending (no error) is treated as a drop too, and '
+        'reconnects', () async {
+      final timerFactory = _RecordingTimerFactory();
+      final reconnectCoordinator = QueueSendCoordinator(
+        queueRepository: queueRepository,
+        chatRepository: chatRepository,
+        eventService: eventService,
+        credentialsStore: const _StaticPasswordStore(),
+        reconnectTimerFactory: timerFactory.call,
+      );
+
+      backend.sessionStatusType = 'idle';
+      await reconnectCoordinator.activate(profile: profile, session: session);
+      await _settle();
+      expect(eventClient.connectionCount, 1);
+
+      eventClient.dropConnection();
+      await _settle();
+
+      // Exactly one reconnect was scheduled (never silently ignored),
+      // and it opened exactly one fresh connection — not two, which a
+      // regression re-processing the same drop twice would produce.
+      expect(timerFactory.requestedDelays, hasLength(1));
+      expect(eventClient.connectionCount, 2);
+      expect(reconnectCoordinator.connectionState.value, isA<SseConnected>());
+
+      await reconnectCoordinator.dispose();
+    });
+
+    test('stops retrying once the backoff policy is exhausted, surfaced as '
+        'disconnected', () async {
+      const backoffPolicy = ReconnectBackoffPolicy(
+        initialDelay: Duration(milliseconds: 5),
+        maxDelay: Duration(milliseconds: 10),
+        maxAttempts: 2,
+      );
+      final timerFactory = _RecordingTimerFactory();
+      final reconnectCoordinator = QueueSendCoordinator(
+        queueRepository: queueRepository,
+        chatRepository: chatRepository,
+        eventService: eventService,
+        credentialsStore: const _StaticPasswordStore(),
+        backoffPolicy: backoffPolicy,
+        reconnectTimerFactory: timerFactory.call,
+      );
+
+      backend.sessionStatusType = 'idle';
+      await reconnectCoordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      // Every reconnect attempt is rejected outright at the transport
+      // level, so each one drops again on its own without another
+      // explicit `dropConnection` call.
+      eventClient.nextConnectStatusCode = 500;
+      eventClient.dropConnection(error: const OpenCodeTransportFailure(500));
+
+      for (var i = 0; i < 8; i++) {
+        await _settle();
+        if (reconnectCoordinator.connectionState.value is SseDisconnected) {
+          break;
+        }
+      }
+
+      expect(
+        reconnectCoordinator.connectionState.value,
+        isA<SseDisconnected>(),
+      );
+      expect(
+        timerFactory.requestedDelays,
+        hasLength(backoffPolicy.maxAttempts),
+      );
+
+      await reconnectCoordinator.dispose();
+    });
+  });
 }

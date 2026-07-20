@@ -33,12 +33,39 @@
 ///   gate the queue.
 /// - Nothing here logs prompt text, a permission's title/pattern/metadata,
 ///   or raw failure detail.
+///
+/// ## Lifecycle-aware reconnect
+///
+/// A dropped SSE connection is never silently discarded. [notifyAppInactive]
+/// and [notifyAppForeground] let the app's lifecycle owner (the composition
+/// root observing `AppLifecycleState`) drive this coordinator explicitly:
+///
+/// - Going inactive cancels the live SSE subscription and any pending
+///   reconnect timer immediately; no reconnect is attempted while the app
+///   is backgrounded, matching this app's battery/data budget.
+/// - Returning to the foreground reconnects immediately if a session is
+///   still active.
+/// - An unexpected drop while foreground (a transport error, or the
+///   stream simply ending) schedules a bounded exponential-backoff-with-
+///   jitter reconnect via [backoffPolicy], surfaced on [connectionState] as
+///   [SseReconnecting]. Retrying stops, surfaced as [SseDisconnected], once
+///   [backoffPolicy] no longer permits another attempt.
+/// - Every reconnect (as opposed to the very first connection of an
+///   [activate] call, which trusts the status [activate] already fetched
+///   moments before) re-fetches the session's authoritative status before
+///   trusting anything from the new connection; [connectionState] reports
+///   [SseReconciling] for that whole window. [_maybeDispatch] never
+///   dispatches unless [connectionState] is [SseConnected], so queued
+///   prompts never send against a connection whose missed events have not
+///   yet been reconciled.
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/async/reconnect_backoff.dart';
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_event_service.dart';
@@ -46,13 +73,17 @@ import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/chat_load_result.dart';
 import '../../chat/domain/conversation_event.dart';
 import '../../chat/domain/conversation_state.dart';
+import '../../chat/domain/pending_approval.dart';
+import '../../chat/domain/permission_response.dart';
 import '../../chat/domain/session_block_reason.dart';
 import '../../chat/domain/session_execution_state.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
+import '../domain/queue_approval_failure.dart';
 import '../domain/queue_failure.dart';
 import '../domain/queue_send_now_failure.dart';
 import '../domain/queued_prompt.dart';
+import '../domain/sse_connection_state.dart';
 import 'queue_prompts_repository.dart';
 
 class QueueSendCoordinator {
@@ -61,12 +92,30 @@ class QueueSendCoordinator {
     required this._chatRepository,
     required this._eventService,
     required this._credentialsStore,
-  });
+    this.backoffPolicy = const ReconnectBackoffPolicy(),
+    math.Random? random,
+    Timer Function(Duration duration, void Function() callback)?
+    reconnectTimerFactory,
+  }) : _random = random ?? math.Random(),
+       _reconnectTimerFactory = reconnectTimerFactory ?? Timer.new;
 
   final QueuePromptsRepository _queueRepository;
   final ChatRepository _chatRepository;
   final OpenCodeEventService _eventService;
   final CredentialsStore _credentialsStore;
+
+  /// Governs how long a reconnect attempt waits after an unexpected SSE
+  /// drop. Injectable so a test can use a tiny bound instead of the
+  /// production default.
+  final ReconnectBackoffPolicy backoffPolicy;
+
+  final math.Random _random;
+
+  /// Builds the timer that fires a scheduled reconnect attempt. Injectable
+  /// so a test can observe the requested delay without a real timer
+  /// slowing the test down.
+  final Timer Function(Duration duration, void Function() callback)
+  _reconnectTimerFactory;
 
   ServerProfile? _profile;
   OpenCodeSession? _session;
@@ -110,6 +159,39 @@ class QueueSendCoordinator {
 
   bool _disposed = false;
 
+  /// Whether the app is currently foreground, as last reported by
+  /// [notifyAppInactive]/[notifyAppForeground]. Assumed `true` until told
+  /// otherwise, so a caller that never wires a lifecycle owner (for
+  /// example most existing tests) keeps today's always-foreground
+  /// behavior.
+  bool _appForeground = true;
+
+  /// 1-based count of consecutive failed reconnect attempts for the
+  /// current activation. Reset on every successful connect, and on
+  /// [activate]/[deactivate].
+  int _reconnectAttempt = 0;
+
+  Timer? _reconnectTimer;
+
+  /// Bumped by every [_connect] call and by [_handleSseDrop]. Lets a
+  /// slow-resolving reconnect continuation (still awaiting the
+  /// authoritative status fetch) recognize that a *different* attempt —
+  /// its own subscription dropping again, or a newer [_connect] — has
+  /// already superseded it, so it never clobbers [connectionState] or
+  /// [_reconnectAttempt] with a stale success after that.
+  int _connectAttemptToken = 0;
+
+  /// Backs [connectionState]. Never read from outside this class; external
+  /// callers only ever get the read-only [ValueListenable] view.
+  final ValueNotifier<SseConnectionState> _connectionState = ValueNotifier(
+    const SseSuspended(),
+  );
+
+  /// The active session's live SSE connection status. See
+  /// `sse_connection_state.dart` for what each value means and how
+  /// [_maybeDispatch] uses it to gate dispatch.
+  ValueListenable<SseConnectionState> get connectionState => _connectionState;
+
   /// Whether a session is currently activated.
   bool get hasActiveSession => _profile != null && _session != null;
 
@@ -134,6 +216,24 @@ class QueueSendCoordinator {
       return null;
     }
     return _conversationState.sessionBlocks[session.id];
+  }
+
+  /// Full detail of the active session's pending permission or question,
+  /// for an approval UI to render — reduced only from a live
+  /// `permission.updated`/`question.asked` SSE event received since
+  /// [activate], never fetched or cached beyond that. `null` whenever the
+  /// session is not blocked, and also `null` once this coordinator's own
+  /// [respondToPermission]/[replyToQuestion]/[rejectQuestion] call
+  /// succeeds — even though [currentSessionBlockReason] stays set until an
+  /// authoritative `session.status`/`session.idle` event confirms the
+  /// session actually moved past it. See `pending_approval.dart`: never
+  /// log or persist this value.
+  PendingApproval? get currentPendingApproval {
+    final session = _session;
+    if (session == null) {
+      return null;
+    }
+    return _conversationState.pendingApprovals[session.id];
   }
 
   /// Activates queue coordination for [session] on [profile], tearing down
@@ -216,57 +316,19 @@ class QueueSendCoordinator {
           _maybeDispatch();
         });
 
-    final password = await _credentialsStore.readPassword(profile.id);
-    if (_isStale(token)) {
-      return;
-    }
-    _sseSubscription = _eventService
-        .connect(profile, password)
-        .listen(
-          (envelope) {
-            if (_isStale(token)) {
-              return;
-            }
-            final event = mapConversationEvent(
-              envelope,
-              sessionId: session.id,
-              directory: session.directory,
-            );
-            if (event == null) {
-              // Unrelated event (other session/directory, unmodeled type,
-              // or malformed payload): ignored, never gates the queue.
-              return;
-            }
-            final previousState = _conversationState;
-            final nextState = reduceConversationEvent(
-              _conversationState,
-              event,
-            );
-            _updateConversationState(nextState);
-            unawaited(
-              _handleBlockTransition(
-                session.id,
-                previousState,
-                nextState,
-                token,
-              ),
-            );
-            _maybeDispatch();
-          },
-          onError: (Object _) {
-            // A dropped SSE connection never crashes coordination and
-            // never triggers a retry by itself; the next activation
-            // reconciles authoritative state instead.
-          },
-        );
+    // The initial connect trusts the status just fetched above, so it
+    // skips the reconciliation window a reconnect goes through; see
+    // `_connectAsync`.
+    _connect(token: token, attempt: 0);
 
     _maybeDispatch();
   }
 
-  /// Tears down the active session scope: cancels the SSE subscription and
-  /// the queue watch, and drops in-memory state. Safe to call when nothing
-  /// is active. Does not change any persisted queue row; a prompt left
-  /// `sending` here is reconciled the next time its session is activated.
+  /// Tears down the active session scope: cancels the SSE subscription,
+  /// any pending reconnect timer, and the queue watch, and drops in-memory
+  /// state. Safe to call when nothing is active. Does not change any
+  /// persisted queue row; a prompt left `sending` here is reconciled the
+  /// next time its session is activated.
   Future<void> deactivate() async {
     _activationToken++;
     await _queueSubscription?.cancel();
@@ -279,12 +341,239 @@ class QueueSendCoordinator {
     // subscription a no-op, so dropping the future here is safe.
     unawaited(_sseSubscription?.cancel());
     _sseSubscription = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempt = 0;
     _profile = null;
     _session = null;
     _queue = const <QueuedPrompt>[];
     _updateConversationState(const ConversationState());
+    _setConnectionState(const SseSuspended());
     _dispatchInProgress = false;
     _pendingSendNowPromptId = null;
+  }
+
+  /// Called by the app's lifecycle owner when the app becomes inactive
+  /// (backgrounded, hidden, or about to be paused). Cancels the active SSE
+  /// subscription and any pending reconnect timer immediately; no
+  /// reconnect is attempted again until [notifyAppForeground] is called.
+  /// A no-op when the app is already marked inactive.
+  void notifyAppInactive() {
+    if (_disposed || !_appForeground) {
+      return;
+    }
+    _appForeground = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    // Not awaited for the same reason as `deactivate`'s SSE cancel: an
+    // idle `async*` decoder only notices the cancellation once it next
+    // resumes, which must not block this call.
+    unawaited(_sseSubscription?.cancel());
+    _sseSubscription = null;
+    if (hasActiveSession) {
+      _setConnectionState(const SseSuspended());
+    }
+  }
+
+  /// Called by the app's lifecycle owner when the app returns to the
+  /// foreground. Reconnects immediately if a session is active — any
+  /// *subsequent* failed attempt is governed by [backoffPolicy] as usual.
+  /// A no-op when the app is already marked foreground, or nothing is
+  /// active (a freshly opened session connects on its own via [activate]).
+  void notifyAppForeground() {
+    if (_disposed || _appForeground) {
+      return;
+    }
+    _appForeground = true;
+    if (!hasActiveSession) {
+      return;
+    }
+    _reconnectAttempt = 0;
+    // Not attempt 0: unlike the very first connect inside `activate`, the
+    // app may have missed events for as long as it was inactive, so this
+    // reconnect must go through the same authoritative reconciliation
+    // window as any other reconnect before dispatch may resume.
+    _connect(token: _activationToken, attempt: 1);
+  }
+
+  /// Starts an SSE (re)connection attempt for the currently active
+  /// session. [attempt] `0` is the very first connection of an [activate]
+  /// call; any other value is a reconnect and goes through
+  /// [SseReconciling] before [connectionState] reports [SseConnected]. See
+  /// `_connectAsync`, which does the actual work once the credentials
+  /// store resolves.
+  void _connect({required int token, required int attempt}) {
+    if (_isStale(token) || !_appForeground) {
+      return;
+    }
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return;
+    }
+    final connectToken = ++_connectAttemptToken;
+    if (attempt == 0) {
+      _setConnectionState(const SseConnecting());
+    }
+    unawaited(
+      _connectAsync(
+        profile,
+        session,
+        token: token,
+        attempt: attempt,
+        connectToken: connectToken,
+      ),
+    );
+  }
+
+  Future<void> _connectAsync(
+    ServerProfile profile,
+    OpenCodeSession session, {
+    required int token,
+    required int attempt,
+    required int connectToken,
+  }) async {
+    final password = await _credentialsStore.readPassword(profile.id);
+    if (_isStale(token) ||
+        !_appForeground ||
+        _isSupersededConnect(connectToken)) {
+      return;
+    }
+
+    unawaited(_sseSubscription?.cancel());
+    _sseSubscription = _eventService
+        .connect(profile, password)
+        .listen(
+          (envelope) => _handleEnvelope(envelope, session, token),
+          onError: (Object _) => _handleSseDrop(token, connectToken),
+          onDone: () => _handleSseDrop(token, connectToken),
+        );
+
+    if (attempt == 0) {
+      // `activate` already fetched an authoritative session status
+      // moments before calling this; the initial connection can be
+      // trusted immediately.
+      _reconnectAttempt = 0;
+      _setConnectionState(const SseConnected());
+      _maybeDispatch();
+      return;
+    }
+
+    // A reconnect: events may have been missed while the connection was
+    // down (or the app was inactive), so nothing from it is trusted, and
+    // dispatch stays blocked (`_maybeDispatch` checks `connectionState`),
+    // until a fresh authoritative status is fetched.
+    _setConnectionState(const SseReconciling());
+    final statusResult = await _chatRepository.sessionStatus(profile, session);
+    if (_isStale(token) ||
+        !_appForeground ||
+        _isSupersededConnect(connectToken)) {
+      return;
+    }
+    if (statusResult case Ok<SessionExecutionState, ChatFailure>(
+      value: final state,
+    )) {
+      await _applySessionState(session.id, state);
+      if (_isStale(token) ||
+          !_appForeground ||
+          _isSupersededConnect(connectToken)) {
+        return;
+      }
+    }
+    _reconnectAttempt = 0;
+    _setConnectionState(const SseConnected());
+    _maybeDispatch();
+  }
+
+  /// Whether [connectToken] no longer identifies the connect attempt this
+  /// coordinator currently considers current — either a newer [_connect]
+  /// call replaced it, or [_handleSseDrop] already invalidated it after
+  /// its own subscription dropped again while this continuation was still
+  /// awaiting the reconciliation fetch.
+  bool _isSupersededConnect(int connectToken) =>
+      connectToken != _connectAttemptToken;
+
+  void _handleEnvelope(
+    OpenCodeEventEnvelope envelope,
+    OpenCodeSession session,
+    int token,
+  ) {
+    if (_isStale(token)) {
+      return;
+    }
+    final event = mapConversationEvent(
+      envelope,
+      sessionId: session.id,
+      directory: session.directory,
+    );
+    if (event == null) {
+      // Unrelated event (other session/directory, unmodeled type, or
+      // malformed payload): ignored, never gates the queue.
+      return;
+    }
+    final previousState = _conversationState;
+    final nextState = reduceConversationEvent(_conversationState, event);
+    _updateConversationState(nextState);
+    unawaited(
+      _handleBlockTransition(session.id, previousState, nextState, token),
+    );
+    _maybeDispatch();
+  }
+
+  /// A dropped SSE connection — a transport error, or the stream simply
+  /// ending — is never silently discarded: it is surfaced on
+  /// [connectionState] and retried with bounded backoff while the app
+  /// stays foreground, via [_beginReconnect].
+  ///
+  /// [connectToken] identifies the connect attempt this drop belongs to.
+  /// If it no longer matches [_connectAttemptToken], this call is either a
+  /// stale subscription's belated event (already superseded by a newer
+  /// [_connect]), or — for an uncaught error inside [OpenCodeEventService
+  /// .connect]'s stream, which Dart follows with an immediate `onDone` for
+  /// the same subscription — simply the `onDone` half of a drop this
+  /// method already processed via its `onError` half moments earlier. Both
+  /// cases are a no-op; only the first callback for a given attempt is
+  /// ever acted on.
+  void _handleSseDrop(int token, int connectToken) {
+    if (connectToken != _connectAttemptToken) {
+      return;
+    }
+    _connectAttemptToken++;
+    _sseSubscription = null;
+    if (_isStale(token) || !_appForeground) {
+      // Already superseded by a newer activation, torn down, or the app
+      // is inactive — `notifyAppInactive` already cancelled the
+      // subscription itself in the last case, so this is just the
+      // subscription's own belated error/done callback catching up.
+      return;
+    }
+    _beginReconnect(token: token);
+  }
+
+  /// Schedules the next bounded reconnect attempt after an unexpected
+  /// drop, using [backoffPolicy] for the delay and [_reconnectTimerFactory]
+  /// to schedule it. Surfaces [SseReconnecting] while waiting, or
+  /// [SseDisconnected] once [backoffPolicy] no longer permits another
+  /// attempt.
+  void _beginReconnect({required int token}) {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    final attempt = ++_reconnectAttempt;
+    if (!backoffPolicy.shouldRetry(attempt)) {
+      _setConnectionState(const SseDisconnected());
+      return;
+    }
+    final delay = backoffPolicy.delayForAttempt(attempt, _random);
+    _setConnectionState(
+      SseReconnecting(attempt: attempt, retryAt: DateTime.now().add(delay)),
+    );
+    _reconnectTimer = _reconnectTimerFactory(delay, () {
+      _connect(token: token, attempt: attempt);
+    });
+  }
+
+  void _setConnectionState(SseConnectionState next) {
+    _connectionState.value = next;
   }
 
   /// Explicitly cancels the active session's current generation, then
@@ -349,6 +638,81 @@ class QueueSendCoordinator {
     return const Ok(null);
   }
 
+  /// Responds to the active session's pending tool-call permission with
+  /// [response]. Fails with [QueueApprovalFailure.noActiveSession] with no
+  /// active session; does not otherwise validate that [permissionId]
+  /// matches [currentPendingApproval] before calling OpenCode, since the
+  /// server is authoritative for whether it still exists.
+  ///
+  /// On success, clears [currentPendingApproval] — the dock this was
+  /// answering has nothing left to show — but never touches
+  /// [currentSessionBlockReason] or the queue's pause state directly; both
+  /// stay exactly as an authoritative `session.status`/`session.idle`
+  /// event leaves them.
+  Future<Result<void, QueueApprovalFailure>> respondToPermission(
+    String permissionId,
+    PermissionResponse response,
+  ) {
+    return _submitApprovalReply(
+      (profile, session) => _chatRepository.respondToPermission(
+        profile,
+        session,
+        permissionId,
+        response,
+      ),
+    );
+  }
+
+  /// Answers the active session's pending question request with [answers],
+  /// one entry per question in the original request, in the same order.
+  /// See [respondToPermission] for the failure and clearing rules; they
+  /// apply identically here.
+  Future<Result<void, QueueApprovalFailure>> replyToQuestion(
+    String requestId,
+    List<List<String>> answers,
+  ) {
+    return _submitApprovalReply(
+      (profile, session) =>
+          _chatRepository.replyToQuestion(profile, session, requestId, answers),
+    );
+  }
+
+  /// Rejects the active session's pending question request outright. See
+  /// [respondToPermission] for the failure and clearing rules; they apply
+  /// identically here.
+  Future<Result<void, QueueApprovalFailure>> rejectQuestion(String requestId) {
+    return _submitApprovalReply(
+      (profile, session) =>
+          _chatRepository.rejectQuestion(profile, session, requestId),
+    );
+  }
+
+  Future<Result<void, QueueApprovalFailure>> _submitApprovalReply(
+    Future<Result<void, ChatFailure>> Function(
+      ServerProfile profile,
+      OpenCodeSession session,
+    )
+    call,
+  ) async {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return const Err(QueueApprovalFailure.noActiveSession);
+    }
+    final token = _activationToken;
+    final result = await call(profile, session);
+    if (_isStale(token)) {
+      return const Err(QueueApprovalFailure.noActiveSession);
+    }
+    if (result is Err<void, ChatFailure>) {
+      return const Err(QueueApprovalFailure.requestFailed);
+    }
+    _updateConversationState(
+      clearPendingApproval(_conversationState, session.id),
+    );
+    return const Ok(null);
+  }
+
   /// Permanently disposes this coordinator. Cancels any subscription and
   /// releases every reference; [activate] must not be called afterwards.
   Future<void> dispose() async {
@@ -358,6 +722,7 @@ class QueueSendCoordinator {
     await deactivate();
     _disposed = true;
     _liveConversationState.dispose();
+    _connectionState.dispose();
   }
 
   /// Applies a fresh authoritative execution state for [sessionId] — from
@@ -457,6 +822,15 @@ class QueueSendCoordinator {
       return;
     }
     if (_profile == null || _session == null) {
+      return;
+    }
+    if (_connectionState.value is! SseConnected) {
+      // Held during the initial connection, any reconnect backoff wait,
+      // and the authoritative-reconciliation window right after a
+      // reconnect (`SseReconciling`); only a confirmed, reconciled
+      // connection may dispatch. This is what actually prevents a queued
+      // prompt from sending against a connection whose missed events
+      // have not yet been reconciled, whatever the app's lifecycle state.
       return;
     }
     if (currentSessionBlockReason != null) {

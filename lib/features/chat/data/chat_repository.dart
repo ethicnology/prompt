@@ -9,6 +9,7 @@ import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
+import '../domain/permission_response.dart';
 import '../domain/session_execution_state.dart';
 import 'opencode_chat_service.dart';
 
@@ -86,6 +87,60 @@ class ChatRepository {
     return _run(() async {
       final password = await _credentialsStore.readPassword(profile.id);
       return _chatService.abortSession(profile, password, session);
+    });
+  }
+
+  /// Responds to a pending tool-call permission with [response]. Never
+  /// logs [permissionId] or any permission detail; a caller must not log
+  /// the returned failure's raw server detail either, since none is
+  /// carried on [ChatFailure].
+  Future<Result<void, ChatFailure>> respondToPermission(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String permissionId,
+    PermissionResponse response,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      await _chatService.respondToPermission(
+        profile,
+        password,
+        session,
+        permissionId,
+        response,
+      );
+    });
+  }
+
+  /// Answers a pending question request with [answers]. Never logs
+  /// [requestId] or any answer text.
+  Future<Result<void, ChatFailure>> replyToQuestion(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String requestId,
+    List<List<String>> answers,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      await _chatService.replyToQuestion(
+        profile,
+        password,
+        session,
+        requestId,
+        answers,
+      );
+    });
+  }
+
+  /// Rejects a pending question request outright. Never logs [requestId].
+  Future<Result<void, ChatFailure>> rejectQuestion(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String requestId,
+  ) {
+    return _run(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      await _chatService.rejectQuestion(profile, password, session, requestId);
     });
   }
 

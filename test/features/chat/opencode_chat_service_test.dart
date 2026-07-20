@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
+import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
@@ -147,6 +148,205 @@ void main() {
 
       await expectLater(
         service.abortSession(profile, 'secret', session),
+        throwsA(
+          isA<OpenCodeHttpFailure>().having(
+            (failure) => failure.statusCode,
+            'statusCode',
+            401,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('respondToPermission', () {
+    test(
+      'posts the chosen response with authorization and directory',
+      () async {
+        http.Request? captured;
+        final client = MockClient((request) async {
+          captured = request;
+          return http.Response('true', 200);
+        });
+        final service = OpenCodeChatService(OpenCodeTransport(client));
+
+        final processed = await service.respondToPermission(
+          profile,
+          'secret',
+          session,
+          'perm 1',
+          PermissionResponse.always,
+        );
+
+        expect(processed, isTrue);
+        final request = captured!;
+        expect(request.method, 'POST');
+        expect(request.url.path, '/session/session%201/permissions/perm%201');
+        expect(request.url.queryParameters['directory'], session.directory);
+        expect(jsonDecode(request.body), {'response': 'always'});
+        expect(
+          request.headers['authorization'],
+          'Basic ${base64Encode(utf8.encode('opencode:secret'))}',
+        );
+      },
+    );
+
+    test('sends the wire value for every PermissionResponse', () async {
+      for (final entry in const {
+        PermissionResponse.once: 'once',
+        PermissionResponse.always: 'always',
+        PermissionResponse.reject: 'reject',
+      }.entries) {
+        http.Request? captured;
+        final client = MockClient((request) async {
+          captured = request;
+          return http.Response('true', 200);
+        });
+        final service = OpenCodeChatService(OpenCodeTransport(client));
+
+        await service.respondToPermission(
+          profile,
+          'secret',
+          session,
+          'perm-1',
+          entry.key,
+        );
+
+        expect(jsonDecode(captured!.body), {'response': entry.value});
+      }
+    });
+
+    test('rejects a non-boolean response body', () async {
+      final client = MockClient((_) async => http.Response('{}', 200));
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      await expectLater(
+        service.respondToPermission(
+          profile,
+          'secret',
+          session,
+          'perm-1',
+          PermissionResponse.once,
+        ),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('maps an unauthorized response to an OpenCodeHttpFailure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      await expectLater(
+        service.respondToPermission(
+          profile,
+          'secret',
+          session,
+          'perm-1',
+          PermissionResponse.once,
+        ),
+        throwsA(
+          isA<OpenCodeHttpFailure>().having(
+            (failure) => failure.statusCode,
+            'statusCode',
+            401,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('replyToQuestion', () {
+    test('posts the answers with authorization and directory', () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response('true', 200);
+      });
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      final processed = await service.replyToQuestion(
+        profile,
+        'secret',
+        session,
+        'que 1',
+        [
+          ['Postgres'],
+          ['A free-text answer'],
+        ],
+      );
+
+      expect(processed, isTrue);
+      final request = captured!;
+      expect(request.method, 'POST');
+      expect(request.url.path, '/question/que%201/reply');
+      expect(request.url.queryParameters['directory'], session.directory);
+      expect(jsonDecode(request.body), {
+        'answers': [
+          ['Postgres'],
+          ['A free-text answer'],
+        ],
+      });
+      expect(
+        request.headers['authorization'],
+        'Basic ${base64Encode(utf8.encode('opencode:secret'))}',
+      );
+    });
+
+    test('maps an unauthorized response to an OpenCodeHttpFailure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      await expectLater(
+        service.replyToQuestion(profile, 'secret', session, 'que-1', [
+          ['Postgres'],
+        ]),
+        throwsA(
+          isA<OpenCodeHttpFailure>().having(
+            (failure) => failure.statusCode,
+            'statusCode',
+            401,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('rejectQuestion', () {
+    test(
+      'posts to the reject endpoint with authorization and directory',
+      () async {
+        http.Request? captured;
+        final client = MockClient((request) async {
+          captured = request;
+          return http.Response('true', 200);
+        });
+        final service = OpenCodeChatService(OpenCodeTransport(client));
+
+        final processed = await service.rejectQuestion(
+          profile,
+          'secret',
+          session,
+          'que 1',
+        );
+
+        expect(processed, isTrue);
+        final request = captured!;
+        expect(request.method, 'POST');
+        expect(request.url.path, '/question/que%201/reject');
+        expect(request.url.queryParameters['directory'], session.directory);
+        expect(
+          request.headers['authorization'],
+          'Basic ${base64Encode(utf8.encode('opencode:secret'))}',
+        );
+      },
+    );
+
+    test('maps an unauthorized response to an OpenCodeHttpFailure', () async {
+      final client = MockClient((_) async => http.Response('', 401));
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      await expectLater(
+        service.rejectQuestion(profile, 'secret', session, 'que-1'),
         throwsA(
           isA<OpenCodeHttpFailure>().having(
             (failure) => failure.statusCode,
