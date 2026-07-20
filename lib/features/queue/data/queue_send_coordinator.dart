@@ -21,9 +21,18 @@
 /// - A `prompt_async` success (`204`) is definitive acceptance and marks the
 ///   prompt `acknowledged`; any other outcome is transport-uncertain and
 ///   moves the prompt to `paused`/`submissionUnknown` instead of retrying.
+/// - A `permission.updated` SSE event pauses every currently `queued`
+///   prompt in the active session with `permissionPending`/
+///   `questionPending` and blocks all dispatch. This is a foundation only:
+///   no approval UI exists yet, so `permission.replied` is never reduced or
+///   acted on here. The block is lifted only when a fresh, authoritative
+///   `session.status`/`session.idle` event arrives, at which point every
+///   prompt this coordinator paused for that reason (and only those) moves
+///   back to `queued`.
 /// - Unrelated SSE events are ignored; only session status/idle updates
 ///   gate the queue.
-/// - Nothing here logs prompt text or raw failure detail.
+/// - Nothing here logs prompt text, a permission's title/pattern/metadata,
+///   or raw failure detail.
 library;
 
 import 'dart:async';
@@ -37,6 +46,7 @@ import '../../chat/data/chat_repository.dart';
 import '../../chat/domain/chat_load_result.dart';
 import '../../chat/domain/conversation_event.dart';
 import '../../chat/domain/conversation_state.dart';
+import '../../chat/domain/session_block_reason.dart';
 import '../../chat/domain/session_execution_state.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
@@ -113,6 +123,19 @@ class QueueSendCoordinator {
     return _conversationState.sessionStates[session.id];
   }
 
+  /// Why the active session's queue is currently blocked awaiting a human
+  /// decision, or `null` if it is not blocked. Set only by a
+  /// `permission.updated` SSE event; cleared only by the next authoritative
+  /// `session.status`/`session.idle` event, never by `permission.replied`
+  /// alone.
+  SessionBlockReason? get currentSessionBlockReason {
+    final session = _session;
+    if (session == null) {
+      return null;
+    }
+    return _conversationState.sessionBlocks[session.id];
+  }
+
   /// Activates queue coordination for [session] on [profile], tearing down
   /// any previously active session first.
   ///
@@ -122,6 +145,17 @@ class QueueSendCoordinator {
   /// 2. Fetches the session's authoritative execution state over REST.
   /// 3. Subscribes to the durable queue and to the live SSE feed, gating
   ///    automatic dispatch on both from then on.
+  ///
+  /// This coordinator starts every activation believing the session is not
+  /// blocked; a prompt left `paused`/`permissionPending` or
+  /// `questionPending` from before this activation (a prior app run, or a
+  /// previous activation of this same session) is not re-derived from the
+  /// server here and stays `paused` until either a fresh `permission.
+  /// updated` event re-establishes the block (a no-op, since it is already
+  /// paused) or a human resumes it. Re-fetching whether a specific pending
+  /// permission or question still stands, so this can reconcile fully on
+  /// reconnect/restart, needs a dedicated OpenCode endpoint this foundation
+  /// does not yet call.
   Future<void> activate({
     required ServerProfile profile,
     required OpenCodeSession session,
@@ -158,7 +192,10 @@ class QueueSendCoordinator {
     if (statusResult case Ok<SessionExecutionState, ChatFailure>(
       value: final state,
     )) {
-      _applySessionState(session.id, state);
+      await _applySessionState(session.id, state);
+      if (_isStale(token)) {
+        return;
+      }
     }
 
     _queueSubscription = _queueRepository
@@ -168,6 +205,14 @@ class QueueSendCoordinator {
             return;
           }
           _queue = rows;
+          // A prompt enqueued (or otherwise turned `queued`) while the
+          // session is already blocked must not silently bypass the block
+          // that would have paused it had it existed at the time the
+          // block was first observed.
+          final blockReason = currentSessionBlockReason;
+          if (blockReason != null) {
+            unawaited(_pauseQueuedPromptsForBlock(blockReason, token));
+          }
           _maybeDispatch();
         });
 
@@ -192,8 +237,19 @@ class QueueSendCoordinator {
               // or malformed payload): ignored, never gates the queue.
               return;
             }
-            _updateConversationState(
-              reduceConversationEvent(_conversationState, event),
+            final previousState = _conversationState;
+            final nextState = reduceConversationEvent(
+              _conversationState,
+              event,
+            );
+            _updateConversationState(nextState);
+            unawaited(
+              _handleBlockTransition(
+                session.id,
+                previousState,
+                nextState,
+                token,
+              ),
             );
             _maybeDispatch();
           },
@@ -280,7 +336,10 @@ class QueueSendCoordinator {
     if (statusResult case Ok<SessionExecutionState, ChatFailure>(
       value: final state,
     )) {
-      _applySessionState(session.id, state);
+      await _applySessionState(session.id, state);
+      if (_isStale(token)) {
+        return const Err(QueueSendNowFailure.noActiveSession);
+      }
     } else {
       _pendingSendNowPromptId = null;
       return const Err(QueueSendNowFailure.statusUnavailable);
@@ -301,12 +360,27 @@ class QueueSendCoordinator {
     _liveConversationState.dispose();
   }
 
-  void _applySessionState(String sessionId, SessionExecutionState state) {
-    _updateConversationState(
-      reduceConversationEvent(
-        _conversationState,
-        SessionStatusEvent(sessionId: sessionId, state: state),
-      ),
+  /// Applies a fresh authoritative execution state for [sessionId] — from
+  /// the `GET /session/status` REST call or a synthesized local update —
+  /// exactly as a `session.status` SSE event would. Also handles any
+  /// resulting block transition, since [reduceConversationEvent] clears a
+  /// pending permission/question for [sessionId] whenever a status is
+  /// applied, the same way it would for the SSE event itself.
+  Future<void> _applySessionState(
+    String sessionId,
+    SessionExecutionState state,
+  ) async {
+    final previousState = _conversationState;
+    final nextState = reduceConversationEvent(
+      _conversationState,
+      SessionStatusEvent(sessionId: sessionId, state: state),
+    );
+    _updateConversationState(nextState);
+    await _handleBlockTransition(
+      sessionId,
+      previousState,
+      nextState,
+      _activationToken,
     );
   }
 
@@ -315,11 +389,80 @@ class QueueSendCoordinator {
     _liveConversationState.value = next;
   }
 
+  /// Reacts to [sessionId]'s block state changing between [previous] and
+  /// [next]:
+  /// - Newly blocked: pauses every currently `queued` prompt in this
+  ///   session with the matching [QueuePauseReason].
+  /// - Newly unblocked (a `session.status`/`session.idle` event just
+  ///   reduced past it): resumes only the prompts this coordinator paused
+  ///   for that reason, back to `queued`.
+  ///
+  /// A no-op, harmless call when neither transition applies (for example
+  /// every other `session.status` update while nothing is blocked).
+  Future<void> _handleBlockTransition(
+    String sessionId,
+    ConversationState previous,
+    ConversationState next,
+    int token,
+  ) async {
+    final wasBlocked = previous.sessionBlocks.containsKey(sessionId);
+    final blockReason = next.sessionBlocks[sessionId];
+    if (!wasBlocked && blockReason != null) {
+      await _pauseQueuedPromptsForBlock(blockReason, token);
+    } else if (wasBlocked && blockReason == null) {
+      await _resumeBlockedPrompts(token);
+    }
+    if (_isStale(token)) {
+      return;
+    }
+    _maybeDispatch();
+  }
+
+  Future<void> _pauseQueuedPromptsForBlock(
+    SessionBlockReason reason,
+    int token,
+  ) async {
+    final pauseReason = reason == SessionBlockReason.question
+        ? QueuePauseReason.questionPending
+        : QueuePauseReason.permissionPending;
+    for (final prompt in List<QueuedPrompt>.of(_queue)) {
+      if (_isStale(token)) {
+        return;
+      }
+      if (prompt.state == QueuedPromptState.queued) {
+        await _queueRepository.markPaused(prompt.id, reason: pauseReason);
+      }
+    }
+  }
+
+  Future<void> _resumeBlockedPrompts(int token) async {
+    for (final prompt in List<QueuedPrompt>.of(_queue)) {
+      if (_isStale(token)) {
+        return;
+      }
+      if (prompt.state == QueuedPromptState.paused &&
+          _isBlockPauseReason(prompt.pauseReason)) {
+        await _queueRepository.markQueued(prompt.id);
+      }
+    }
+  }
+
+  bool _isBlockPauseReason(QueuePauseReason? reason) {
+    return reason == QueuePauseReason.permissionPending ||
+        reason == QueuePauseReason.questionPending;
+  }
+
   void _maybeDispatch() {
     if (_disposed || _dispatchInProgress) {
       return;
     }
     if (_profile == null || _session == null) {
+      return;
+    }
+    if (currentSessionBlockReason != null) {
+      // A pending permission or question blocks every dispatch, including
+      // an explicit `sendNow`, until an authoritative session status/idle
+      // event confirms the block is gone.
       return;
     }
 
@@ -382,7 +525,7 @@ class QueueSendCoordinator {
       await _queueRepository.markAcknowledged(prompt.id);
       // Do not dispatch the next queue entry until the server reports an
       // explicit terminal state. The busy event may arrive after this 204.
-      _applySessionState(session.id, const SessionBusy());
+      await _applySessionState(session.id, const SessionBusy());
     } else {
       // Any other outcome leaves acceptance genuinely unknown; Prompt
       // never retries automatically.

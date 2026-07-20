@@ -3,6 +3,7 @@ import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/features/chat/domain/conversation_event.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
 import 'package:prompt/features/chat/domain/conversation_state.dart';
+import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 
 OpenCodeEventEnvelope _envelope(String type, Map<String, dynamic> properties) {
@@ -350,6 +351,117 @@ void main() {
 
       expect(state.sessionStates['ses_a'], isA<SessionBusy>());
       expect(state.sessionStates['ses_b'], isA<SessionIdle>());
+    });
+  });
+
+  group('permission.updated', () {
+    test('records a pending permission for the session', () {
+      final state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+        ),
+      );
+
+      expect(state.sessionBlocks[sessionId], SessionBlockReason.permission);
+    });
+
+    test('a later permission overwrites the recorded reason', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.question,
+        ),
+      );
+
+      expect(state.sessionBlocks[sessionId], SessionBlockReason.question);
+    });
+
+    test('tracks independent sessions separately', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: 'ses_a',
+          reason: SessionBlockReason.permission,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionBlockedEvent(
+          sessionId: 'ses_b',
+          reason: SessionBlockReason.question,
+        ),
+      );
+
+      expect(state.sessionBlocks['ses_a'], SessionBlockReason.permission);
+      expect(state.sessionBlocks['ses_b'], SessionBlockReason.question);
+    });
+
+    test('a session.status event clears the pending block', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.permission,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionStatusEvent(sessionId: sessionId, state: SessionBusy()),
+      );
+
+      expect(state.sessionBlocks.containsKey(sessionId), isFalse);
+      // Clearing the block never disturbs the execution state it carried.
+      expect(state.sessionStates[sessionId], isA<SessionBusy>());
+    });
+
+    test('a session.idle event clears the pending block', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: sessionId,
+          reason: SessionBlockReason.question,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionIdleEvent(sessionId: sessionId),
+      );
+
+      expect(state.sessionBlocks.containsKey(sessionId), isFalse);
+    });
+
+    test('clearing one session leaves another session blocked', () {
+      var state = reduceConversationEvent(
+        const ConversationState(),
+        const SessionBlockedEvent(
+          sessionId: 'ses_a',
+          reason: SessionBlockReason.permission,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionBlockedEvent(
+          sessionId: 'ses_b',
+          reason: SessionBlockReason.question,
+        ),
+      );
+      state = reduceConversationEvent(
+        state,
+        const SessionIdleEvent(sessionId: 'ses_a'),
+      );
+
+      expect(state.sessionBlocks.containsKey('ses_a'), isFalse);
+      expect(state.sessionBlocks['ses_b'], SessionBlockReason.question);
     });
   });
 

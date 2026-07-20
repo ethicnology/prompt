@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/features/chat/domain/conversation_event.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
+import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 
 OpenCodeEventEnvelope _envelope(
@@ -362,13 +363,99 @@ void main() {
     });
   });
 
+  group('permission.updated', () {
+    test('maps a tool-call permission as SessionBlockReason.permission', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'id': 'perm_1',
+          'type': 'bash',
+          'sessionID': sessionId,
+          'messageID': 'msg_1',
+          'title': 'Run rm -rf /tmp/build',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isA<SessionBlockedEvent>());
+      final blocked = event as SessionBlockedEvent;
+      expect(blocked.sessionId, sessionId);
+      expect(blocked.reason, SessionBlockReason.permission);
+    });
+
+    test('maps the built-in question permission as '
+        'SessionBlockReason.question', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'id': 'perm_2',
+          'type': 'question',
+          'sessionID': sessionId,
+          'messageID': 'msg_1',
+          'title': 'Which database should I use?',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(
+        (event as SessionBlockedEvent).reason,
+        SessionBlockReason.question,
+      );
+    });
+
+    test('ignores a permission for another session', () {
+      final event = mapConversationEvent(
+        _envelope('permission.updated', {
+          'id': 'perm_1',
+          'type': 'bash',
+          'sessionID': 'ses_other',
+          'messageID': 'msg_1',
+          'title': 'Run something',
+          'metadata': <String, dynamic>{},
+          'time': {'created': 1700000000000},
+        }),
+        sessionId: sessionId,
+      );
+
+      expect(event, isNull);
+    });
+
+    test(
+      'maps a sensitive edit permission down to sessionId and reason only',
+      () {
+        final event = mapConversationEvent(
+          _envelope('permission.updated', {
+            'id': 'perm_1',
+            'type': 'edit',
+            'pattern': '/home/user/.ssh/*',
+            'sessionID': sessionId,
+            'messageID': 'msg_1',
+            'title': 'Edit ~/.ssh/authorized_keys',
+            'metadata': {'secret': 'sensitive-detail'},
+            'time': {'created': 1700000000000},
+          }),
+          sessionId: sessionId,
+        );
+
+        // `SessionBlockedEvent` declares only `sessionId` and `reason`;
+        // the permission's title, pattern, and metadata (which may
+        // describe a sensitive path or command) have no field to reach
+        // through on the returned event at all.
+        final blocked = event as SessionBlockedEvent;
+        expect(blocked.sessionId, sessionId);
+        expect(blocked.reason, SessionBlockReason.permission);
+      },
+    );
+  });
+
   group('unrelated and unknown events', () {
     test('ignores unmodeled event types', () {
       for (final type in const [
         'session.error',
         'session.compacted',
         'file.edited',
-        'permission.updated',
         'permission.replied',
         'installation.updated',
         'todo.updated',

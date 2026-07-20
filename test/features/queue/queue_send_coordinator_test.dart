@@ -13,6 +13,7 @@ import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/conversation_message.dart';
+import 'package:prompt/features/chat/domain/session_block_reason.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
@@ -281,6 +282,201 @@ void main() {
 
       final queue = await currentQueue();
       expect(queue.single.state, QueuedPromptState.acknowledged);
+    });
+  });
+
+  group('permission/question blocking', () {
+    test('a pending permission pauses the queued prompt, blocks dispatch, and '
+        'only resumes on an authoritative session.idle event', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      final prompt = await enqueue('first');
+      await _settle();
+      expect((await currentQueue()).single.state, QueuedPromptState.queued);
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.permission,
+      );
+      var queue = await currentQueue();
+      expect(queue.single.id, prompt.id);
+      expect(queue.single.state, QueuedPromptState.paused);
+      expect(queue.single.pauseReason, QueuePauseReason.permissionPending);
+      expect(backend.promptAsyncCallCount, 0);
+
+      // permission.replied alone never lifts the block: no approval UI
+      // exists yet to act on it, and it is not an authoritative session
+      // status/idle event.
+      eventClient.emit('permission.replied', {
+        'sessionID': session.id,
+        'permissionID': 'perm_1',
+        'response': 'once',
+      });
+      await _settle();
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.permission,
+      );
+      expect((await currentQueue()).single.state, QueuedPromptState.paused);
+      expect(backend.promptAsyncCallCount, 0);
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(coordinator.currentSessionBlockReason, isNull);
+      queue = await currentQueue();
+      expect(queue.single.state, QueuedPromptState.acknowledged);
+      expect(backend.promptAsyncCallCount, 1);
+    });
+
+    test('a pending question pauses the queue with questionPending', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      await enqueue('first');
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'question',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Which option do you want?',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      expect(
+        coordinator.currentSessionBlockReason,
+        SessionBlockReason.question,
+      );
+      expect(
+        (await currentQueue()).single.pauseReason,
+        QueuePauseReason.questionPending,
+      );
+
+      eventClient.emit('session.status', {
+        'sessionID': session.id,
+        'status': {'type': 'idle'},
+      });
+      await _settle();
+
+      expect(coordinator.currentSessionBlockReason, isNull);
+      expect(
+        (await currentQueue()).single.state,
+        QueuedPromptState.acknowledged,
+      );
+    });
+
+    test('a prompt enqueued while already blocked is paused too, not '
+        'dispatched', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'edit',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Edit a file',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+
+      await enqueue('queued while blocked');
+      await _settle();
+
+      final queue = await currentQueue();
+      expect(queue.single.state, QueuedPromptState.paused);
+      expect(queue.single.pauseReason, QueuePauseReason.permissionPending);
+      expect(backend.promptAsyncCallCount, 0);
+    });
+
+    test('sendNow rejects a prompt a pending permission already paused, and '
+        'never aborts for it', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      final prompt = await enqueue('first');
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+      expect((await currentQueue()).single.state, QueuedPromptState.paused);
+
+      final result = await coordinator.sendNow(prompt.id);
+
+      expect(
+        (result as Err<void, QueueSendNowFailure>).failure,
+        QueueSendNowFailure.promptNotQueued,
+      );
+      expect(backend.abortCallCount, 0);
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(coordinator.currentSessionBlockReason, isNull);
+      expect(
+        (await currentQueue()).single.state,
+        QueuedPromptState.acknowledged,
+      );
+    });
+
+    test('does not disturb a prompt paused for an unrelated reason', () async {
+      backend.sessionStatusType = 'busy';
+      final stuck = await enqueue('stuck');
+      await queueRepository.markSending(stuck.id);
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      expect(
+        (await currentQueue()).single.pauseReason,
+        QueuePauseReason.submissionUnknown,
+      );
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      // The submissionUnknown pause is untouched by the permission block
+      // being set and cleared; only a human resumes that one.
+      expect(
+        (await currentQueue()).single.pauseReason,
+        QueuePauseReason.submissionUnknown,
+      );
     });
   });
 

@@ -6,14 +6,18 @@ library;
 
 import 'conversation_event.dart';
 import 'conversation_message.dart';
+import 'session_block_reason.dart';
 import 'session_execution_state.dart';
 
 /// Immutable snapshot of a live conversation: its messages, in first-seen
-/// order, and the execution state of every session referenced so far.
+/// order, the execution state of every session referenced so far, and
+/// which of those sessions currently have a pending permission or question
+/// blocking their queue.
 class ConversationState {
   const ConversationState({
     this.messages = const <String, ConversationMessage>{},
     this.sessionStates = const <String, SessionExecutionState>{},
+    this.sessionBlocks = const <String, SessionBlockReason>{},
   });
 
   /// Messages keyed by message id, preserving the order in which each
@@ -23,6 +27,13 @@ class ConversationState {
   /// Execution state keyed by session id.
   final Map<String, SessionExecutionState> sessionStates;
 
+  /// Sessions with a pending permission or question, keyed by session id.
+  /// A session present here is not present because it has been resolved
+  /// (`permission.replied` is not reduced); an entry is only ever removed
+  /// when a fresh `session.status`/`session.idle` event authoritatively
+  /// confirms the session moved past it.
+  final Map<String, SessionBlockReason> sessionBlocks;
+
   /// Messages in first-seen order.
   List<ConversationMessage> get orderedMessages =>
       List.unmodifiable(messages.values);
@@ -30,10 +41,12 @@ class ConversationState {
   ConversationState copyWith({
     Map<String, ConversationMessage>? messages,
     Map<String, SessionExecutionState>? sessionStates,
+    Map<String, SessionBlockReason>? sessionBlocks,
   }) {
     return ConversationState(
       messages: messages ?? this.messages,
       sessionStates: sessionStates ?? this.sessionStates,
+      sessionBlocks: sessionBlocks ?? this.sessionBlocks,
     );
   }
 }
@@ -57,6 +70,8 @@ ConversationState reduceConversationEvent(
       return _reduceSessionStatus(state, event);
     case SessionIdleEvent():
       return _reduceSessionIdle(state, event);
+    case SessionBlockedEvent():
+      return _reduceSessionBlocked(state, event);
   }
 }
 
@@ -144,7 +159,10 @@ ConversationState _reduceSessionStatus(
     state.sessionStates,
   );
   sessionStates[event.sessionId] = event.state;
-  return state.copyWith(sessionStates: sessionStates);
+  return state.copyWith(
+    sessionStates: sessionStates,
+    sessionBlocks: _clearSessionBlock(state, event.sessionId),
+  );
 }
 
 ConversationState _reduceSessionIdle(
@@ -155,5 +173,31 @@ ConversationState _reduceSessionIdle(
     state.sessionStates,
   );
   sessionStates[event.sessionId] = const SessionIdle();
-  return state.copyWith(sessionStates: sessionStates);
+  return state.copyWith(
+    sessionStates: sessionStates,
+    sessionBlocks: _clearSessionBlock(state, event.sessionId),
+  );
+}
+
+ConversationState _reduceSessionBlocked(
+  ConversationState state,
+  SessionBlockedEvent event,
+) {
+  final sessionBlocks = Map<String, SessionBlockReason>.of(state.sessionBlocks);
+  sessionBlocks[event.sessionId] = event.reason;
+  return state.copyWith(sessionBlocks: sessionBlocks);
+}
+
+/// A `session.status`/`session.idle` event is the only authoritative
+/// confirmation that a session moved past a pending permission or
+/// question; either clears any block recorded for [sessionId].
+Map<String, SessionBlockReason> _clearSessionBlock(
+  ConversationState state,
+  String sessionId,
+) {
+  if (!state.sessionBlocks.containsKey(sessionId)) {
+    return state.sessionBlocks;
+  }
+  return Map<String, SessionBlockReason>.of(state.sessionBlocks)
+    ..remove(sessionId);
 }

@@ -8,6 +8,7 @@ library;
 
 import '../../../data/remote/opencode_event_service.dart';
 import 'conversation_message.dart';
+import 'session_block_reason.dart';
 import 'session_execution_state.dart';
 
 /// A conversation-scoped event, already validated and reduced from raw
@@ -78,6 +79,20 @@ final class SessionIdleEvent extends ConversationEvent {
   final String sessionId;
 }
 
+/// A permission or question is pending for the session, reduced from
+/// `permission.updated`. Carries only the session id and a coarse
+/// [SessionBlockReason] — never the permission's id, title, pattern, or
+/// metadata, which may describe a sensitive shell command, file path, or
+/// question text. `permission.replied` is intentionally not modeled here:
+/// resuming a blocked queue is only ever confirmed by an authoritative
+/// `session.status`/`session.idle` event, never by the reply alone.
+final class SessionBlockedEvent extends ConversationEvent {
+  const SessionBlockedEvent({required this.sessionId, required this.reason});
+
+  final String sessionId;
+  final SessionBlockReason reason;
+}
+
 /// Maps [envelope] to a [ConversationEvent] scoped to [sessionId].
 ///
 /// Events for a different session, a different [directory] (when
@@ -112,6 +127,8 @@ ConversationEvent? mapConversationEvent(
       return _mapSessionStatus(properties, sessionId);
     case 'session.idle':
       return _mapSessionIdle(properties, sessionId);
+    case 'permission.updated':
+      return _mapPermissionUpdated(properties, sessionId);
     default:
       return null;
   }
@@ -308,4 +325,26 @@ ConversationEvent? _mapSessionIdle(
     return null;
   }
   return SessionIdleEvent(sessionId: eventSessionId);
+}
+
+/// `permission.updated`'s `properties` is the OpenCode `Permission` object
+/// itself (not a wrapper). Only `sessionID` and `type` are read; `title`,
+/// `pattern`, `metadata`, and every other field may carry a sensitive
+/// command, path, or question and must never enter this domain event.
+ConversationEvent? _mapPermissionUpdated(
+  Map<String, dynamic> properties,
+  String sessionId,
+) {
+  final eventSessionId = properties['sessionID'];
+  if (eventSessionId is! String) {
+    return null;
+  }
+  if (eventSessionId != sessionId) {
+    return null;
+  }
+  final type = properties['type'];
+  final reason = type == 'question'
+      ? SessionBlockReason.question
+      : SessionBlockReason.permission;
+  return SessionBlockedEvent(sessionId: eventSessionId, reason: reason);
 }
