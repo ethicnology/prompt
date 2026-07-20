@@ -7,6 +7,7 @@ import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/connection/data/connection_repository.dart';
 import 'package:prompt/features/connection/data/opencode_health_service.dart';
+import 'package:prompt/features/connection/data/server_profile_store.dart';
 import 'package:prompt/features/connection/domain/connection_result.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 
@@ -28,6 +29,7 @@ void main() {
       final repository = ConnectionRepository(
         OpenCodeHealthService(OpenCodeTransport(client)),
         credentials,
+        _FakeServerProfileStore(),
       );
 
       final result = await repository.test(profile, 'secret');
@@ -47,6 +49,7 @@ void main() {
     final repository = ConnectionRepository(
       OpenCodeHealthService(OpenCodeTransport(client)),
       _FakeCredentialsStore(),
+      _FakeServerProfileStore(),
     );
 
     final result = await repository.test(profile, 'wrong-secret');
@@ -65,6 +68,7 @@ void main() {
       final repository = ConnectionRepository(
         OpenCodeHealthService(OpenCodeTransport(client)),
         _FakeCredentialsStore(),
+        _FakeServerProfileStore(),
       );
       final unsupportedProfile = ServerProfile(
         origin: Uri(scheme: 'ftp', host: '10.80.0.1', port: 4096),
@@ -85,6 +89,7 @@ void main() {
     final repository = ConnectionRepository(
       OpenCodeHealthService(OpenCodeTransport(client)),
       _FakeCredentialsStore(),
+      _FakeServerProfileStore(),
     );
     final publicProfile = ServerProfile(
       origin: Uri.parse('http://198.51.100.1:4096'),
@@ -115,4 +120,12 @@ class _FakeCredentialsStore implements CredentialsStore {
   Future<void> savePassword(String profileId, String? value) async {
     password = value;
   }
+}
+
+class _FakeServerProfileStore implements ServerProfileStore {
+  @override
+  Future<ServerProfile?> loadLast() async => null;
+
+  @override
+  Future<void> save(ServerProfile profile) async {}
 }

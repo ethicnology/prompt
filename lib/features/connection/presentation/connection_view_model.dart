@@ -45,6 +45,17 @@ class ConnectionViewModel extends ValueNotifier<ConnectionUiState> {
     }
   }
 
+  Future<void> restore(ServerProfile profile) async {
+    value = const ConnectionChecking();
+    final result = await _repository.restore(profile);
+    switch (result) {
+      case ConnectionSucceeded():
+        value = ConnectionReady(profile);
+      case ConnectionFailed(:final failure):
+        value = ConnectionError(failure);
+    }
+  }
+
   void reset() {
     value = const ConnectionIdle();
   }

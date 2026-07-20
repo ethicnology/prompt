@@ -14,6 +14,7 @@ import '../features/chat/data/opencode_chat_service.dart';
 import '../features/chat/presentation/conversation_view_model.dart';
 import '../features/connection/data/connection_repository.dart';
 import '../features/connection/data/opencode_health_service.dart';
+import '../features/connection/data/server_profile_store.dart';
 import '../features/connection/domain/server_profile.dart';
 import '../features/connection/presentation/connection_screen.dart';
 import '../features/connection/presentation/connection_view_model.dart';
@@ -27,7 +28,9 @@ import '../features/sessions/presentation/sessions_view_model.dart';
 import 'prompt_theme.dart';
 
 class PromptApp extends StatefulWidget {
-  const PromptApp({super.key});
+  const PromptApp({this.lastProfileLoader, super.key});
+
+  final Future<ServerProfile?> Function()? lastProfileLoader;
 
   @override
   State<PromptApp> createState() => _PromptAppState();
@@ -58,7 +61,13 @@ class _PromptAppState extends State<PromptApp> {
       credentials,
     );
     _connectionViewModel = ConnectionViewModel(
-      ConnectionRepository(OpenCodeHealthService(transport), credentials),
+      ConnectionRepository(
+        OpenCodeHealthService(transport),
+        credentials,
+        LazyServerProfileStore(
+          () async => DriftServerProfileStore(_ensureDatabase()),
+        ),
+      ),
     );
     _sessionsViewModel = SessionsViewModel(
       SessionsRepository(OpenCodeSessionsService(transport), credentials),
@@ -74,8 +83,10 @@ class _PromptAppState extends State<PromptApp> {
     );
   }
 
+  PromptDatabase _ensureDatabase() => _database ??= PromptDatabase();
+
   Future<QueuePromptsRepository> _ensureQueueRepository() async {
-    final database = _database ??= PromptDatabase();
+    final database = _ensureDatabase();
     return QueuePromptsRepository(QueuePromptsDao(database));
   }
 
@@ -130,6 +141,7 @@ class _PromptAppState extends State<PromptApp> {
       home: _connectedProfile == null
           ? ConnectionScreen(
               viewModel: _connectionViewModel,
+              profileLoader: widget.lastProfileLoader ?? _loadLastProfile,
               onConnected: _openConnectedServer,
             )
           : HomeShell(
@@ -139,5 +151,9 @@ class _PromptAppState extends State<PromptApp> {
               onDisconnect: _disconnect,
             ),
     );
+  }
+
+  Future<ServerProfile?> _loadLastProfile() {
+    return DriftServerProfileStore(_ensureDatabase()).loadLast();
   }
 }

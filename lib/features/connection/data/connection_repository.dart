@@ -8,12 +8,18 @@ import '../domain/connection_result.dart';
 import '../domain/connection_origin_policy.dart';
 import '../domain/server_profile.dart';
 import 'opencode_health_service.dart';
+import 'server_profile_store.dart';
 
 class ConnectionRepository {
-  ConnectionRepository(this._healthService, this._credentialsStore);
+  ConnectionRepository(
+    this._healthService,
+    this._credentialsStore,
+    this._profileStore,
+  );
 
   final OpenCodeHealthService _healthService;
   final CredentialsStore _credentialsStore;
+  final ServerProfileStore _profileStore;
 
   Future<ConnectionResult> test(ServerProfile profile, String? password) async {
     if (!ConnectionOriginPolicy.supports(profile.origin)) {
@@ -24,6 +30,7 @@ class ConnectionRepository {
       final statusCode = await _healthService.checkHealth(profile, password);
       if (statusCode >= 200 && statusCode < 300) {
         await _credentialsStore.savePassword(profile.id, password);
+        await _profileStore.save(profile);
         return const ConnectionSucceeded();
       }
       if (statusCode == 401 || statusCode == 403) {
@@ -39,5 +46,10 @@ class ConnectionRepository {
     } on Exception {
       return const ConnectionFailed(ConnectionFailure.secureStorageUnavailable);
     }
+  }
+
+  Future<ConnectionResult> restore(ServerProfile profile) async {
+    final password = await _credentialsStore.readPassword(profile.id);
+    return test(profile, password);
   }
 }

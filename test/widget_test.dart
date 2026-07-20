@@ -5,7 +5,7 @@ void main() {
   testWidgets('shows the private server connection form', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(const PromptApp());
+    await tester.pumpWidget(PromptApp(lastProfileLoader: () async => null));
 
     expect(find.text('Connect Prompt'), findsOneWidget);
     expect(find.text('Private server address'), findsOneWidget);
