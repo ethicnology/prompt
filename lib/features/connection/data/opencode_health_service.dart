@@ -1,23 +1,13 @@
-import 'package:http/http.dart' as http;
-
-import '../../../core/network/opencode_authorization.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../domain/server_profile.dart';
 
 class OpenCodeHealthService {
-  OpenCodeHealthService(this._client);
+  OpenCodeHealthService(this._transport);
 
-  final http.Client _client;
+  final OpenCodeTransport _transport;
 
   Future<int> checkHealth(ServerProfile profile, String? password) async {
-    final response = await _client
-        .get(
-          profile.origin.resolve('/global/health'),
-          headers: openCodeAuthorizationHeaders(
-            username: profile.username,
-            password: password,
-          ),
-        )
-        .timeout(const Duration(seconds: 10));
+    final response = await _transport.get(profile, password, '/global/health');
     return response.statusCode;
   }
 }

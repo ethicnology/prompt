@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../../../core/security/credentials_store.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
@@ -16,7 +17,7 @@ class SessionsRepository {
 
   Future<SessionLoadResult> load(ServerProfile profile) async {
     try {
-      final password = await _credentialsStore.readPassword();
+      final password = await _credentialsStore.readPassword(profile.id);
       final projects = await _sessionsService.listProjects(profile, password);
       final sessionsByProject = await Future.wait(
         projects.map(
@@ -41,6 +42,8 @@ class SessionsRepository {
       return const SessionsLoadFailed(SessionsFailure.unexpectedResponse);
     } on TimeoutException {
       return const SessionsLoadFailed(SessionsFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const SessionsLoadFailed(SessionsFailure.unexpectedResponse);
     } on http.ClientException {
       return const SessionsLoadFailed(SessionsFailure.unavailable);
     } on FormatException {

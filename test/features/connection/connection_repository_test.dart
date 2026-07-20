@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/core/security/credentials_store.dart';
+import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/connection/data/connection_repository.dart';
 import 'package:prompt/features/connection/data/opencode_health_service.dart';
 import 'package:prompt/features/connection/domain/connection_result.dart';
@@ -25,7 +26,7 @@ void main() {
       });
       final credentials = _FakeCredentialsStore();
       final repository = ConnectionRepository(
-        OpenCodeHealthService(client),
+        OpenCodeHealthService(OpenCodeTransport(client)),
         credentials,
       );
 
@@ -44,7 +45,7 @@ void main() {
   test('maps rejected credentials to a recoverable failure', () async {
     final client = MockClient((_) async => http.Response('', 401));
     final repository = ConnectionRepository(
-      OpenCodeHealthService(client),
+      OpenCodeHealthService(OpenCodeTransport(client)),
       _FakeCredentialsStore(),
     );
 
@@ -62,7 +63,7 @@ void main() {
     () async {
       final client = MockClient((_) async => http.Response('', 200));
       final repository = ConnectionRepository(
-        OpenCodeHealthService(client),
+        OpenCodeHealthService(OpenCodeTransport(client)),
         _FakeCredentialsStore(),
       );
       final unsupportedProfile = ServerProfile(
@@ -82,7 +83,7 @@ void main() {
   test('rejects public HTTP origins before making a request', () async {
     final client = MockClient((_) async => http.Response('', 200));
     final repository = ConnectionRepository(
-      OpenCodeHealthService(client),
+      OpenCodeHealthService(OpenCodeTransport(client)),
       _FakeCredentialsStore(),
     );
     final publicProfile = ServerProfile(
@@ -103,15 +104,15 @@ class _FakeCredentialsStore implements CredentialsStore {
   String? password;
 
   @override
-  Future<void> clearPassword() async {
+  Future<void> clearPassword(String profileId) async {
     password = null;
   }
 
   @override
-  Future<String?> readPassword() async => password;
+  Future<String?> readPassword(String profileId) async => password;
 
   @override
-  Future<void> savePassword(String? value) async {
+  Future<void> savePassword(String profileId, String? value) async {
     password = value;
   }
 }

@@ -6,25 +6,25 @@ class SecureCredentialsService implements CredentialsStore {
   SecureCredentialsService([FlutterSecureStorage? storage])
     : _storage = storage ?? const FlutterSecureStorage();
 
-  static const _passwordKey = 'prompt.server.password';
-
   final FlutterSecureStorage _storage;
 
   @override
-  Future<void> savePassword(String? password) {
+  Future<void> savePassword(String profileId, String? password) {
     if (password == null || password.isEmpty) {
-      return clearPassword();
+      return clearPassword(profileId);
     }
-    return _storage.write(key: _passwordKey, value: password);
+    return _storage.write(key: _passwordKey(profileId), value: password);
   }
 
   @override
-  Future<String?> readPassword() {
-    return _storage.read(key: _passwordKey);
+  Future<String?> readPassword(String profileId) {
+    return _storage.read(key: _passwordKey(profileId));
   }
 
   @override
-  Future<void> clearPassword() {
-    return _storage.delete(key: _passwordKey);
+  Future<void> clearPassword(String profileId) {
+    return _storage.delete(key: _passwordKey(profileId));
   }
+
+  String _passwordKey(String profileId) => 'prompt.server.$profileId.password';
 }

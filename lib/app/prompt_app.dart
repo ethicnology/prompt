@@ -3,6 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/security/secure_credentials_service.dart';
+import '../data/remote/opencode_transport.dart';
 import '../features/chat/data/chat_repository.dart';
 import '../features/chat/data/opencode_chat_service.dart';
 import '../features/chat/presentation/conversation_view_model.dart';
@@ -36,14 +37,15 @@ class _PromptAppState extends State<PromptApp> {
     super.initState();
     _httpClient = http.Client();
     final credentials = SecureCredentialsService(const FlutterSecureStorage());
+    final transport = OpenCodeTransport(_httpClient);
     _connectionViewModel = ConnectionViewModel(
-      ConnectionRepository(OpenCodeHealthService(_httpClient), credentials),
+      ConnectionRepository(OpenCodeHealthService(transport), credentials),
     );
     _sessionsViewModel = SessionsViewModel(
-      SessionsRepository(OpenCodeSessionsService(_httpClient), credentials),
+      SessionsRepository(OpenCodeSessionsService(transport), credentials),
     );
     _conversationViewModel = ConversationViewModel(
-      ChatRepository(OpenCodeChatService(_httpClient), credentials),
+      ChatRepository(OpenCodeChatService(transport), credentials),
     );
   }
 

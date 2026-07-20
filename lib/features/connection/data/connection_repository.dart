@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../../../core/security/credentials_store.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../domain/connection_result.dart';
 import '../domain/connection_origin_policy.dart';
 import '../domain/server_profile.dart';
@@ -22,7 +23,7 @@ class ConnectionRepository {
     try {
       final statusCode = await _healthService.checkHealth(profile, password);
       if (statusCode >= 200 && statusCode < 300) {
-        await _credentialsStore.savePassword(password);
+        await _credentialsStore.savePassword(profile.id, password);
         return const ConnectionSucceeded();
       }
       if (statusCode == 401 || statusCode == 403) {
@@ -31,6 +32,8 @@ class ConnectionRepository {
       return const ConnectionFailed(ConnectionFailure.unexpectedResponse);
     } on TimeoutException {
       return const ConnectionFailed(ConnectionFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const ConnectionFailed(ConnectionFailure.invalidAddress);
     } on http.ClientException {
       return const ConnectionFailed(ConnectionFailure.unavailable);
     } on Exception {

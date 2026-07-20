@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../../../core/network/opencode_authorization.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 
 class OpenCodeHttpFailure implements Exception {
@@ -12,9 +12,9 @@ class OpenCodeHttpFailure implements Exception {
 }
 
 class OpenCodeSessionsService {
-  OpenCodeSessionsService(this._client);
+  OpenCodeSessionsService(this._transport);
 
-  final http.Client _client;
+  final OpenCodeTransport _transport;
 
   Future<List<OpenCodeProjectRecord>> listProjects(
     ServerProfile profile,
@@ -53,15 +53,7 @@ class OpenCodeSessionsService {
     String? password,
     String path,
   ) async {
-    final response = await _client
-        .get(
-          profile.origin.resolve(path),
-          headers: openCodeAuthorizationHeaders(
-            username: profile.username,
-            password: password,
-          ),
-        )
-        .timeout(const Duration(seconds: 15));
+    final response = await _transport.get(profile, password, path);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenCodeHttpFailure(response.statusCode);
     }

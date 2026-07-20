@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../../../core/security/credentials_store.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/data/opencode_sessions_service.dart';
 import '../../sessions/domain/open_code_session.dart';
@@ -21,7 +22,7 @@ class ChatRepository {
     OpenCodeSession session,
   ) async {
     try {
-      final password = await _credentialsStore.readPassword();
+      final password = await _credentialsStore.readPassword(profile.id);
       final records = await _chatService.listMessages(
         profile,
         password,
@@ -52,6 +53,8 @@ class ChatRepository {
       return const ChatLoadFailed(ChatFailure.unexpectedResponse);
     } on TimeoutException {
       return const ChatLoadFailed(ChatFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const ChatLoadFailed(ChatFailure.unexpectedResponse);
     } on http.ClientException {
       return const ChatLoadFailed(ChatFailure.unavailable);
     } on FormatException {

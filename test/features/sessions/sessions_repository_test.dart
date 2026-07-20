@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/core/security/credentials_store.dart';
+import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
 import 'package:prompt/features/sessions/data/sessions_repository.dart';
@@ -44,7 +45,7 @@ void main() {
       return http.Response('', 404);
     });
     final repository = SessionsRepository(
-      OpenCodeSessionsService(client),
+      OpenCodeSessionsService(OpenCodeTransport(client)),
       const _PasswordStore('secret'),
     );
 
@@ -59,7 +60,7 @@ void main() {
   test('maps a rejected session request to an authorization failure', () async {
     final client = MockClient((_) async => http.Response('', 401));
     final repository = SessionsRepository(
-      OpenCodeSessionsService(client),
+      OpenCodeSessionsService(OpenCodeTransport(client)),
       const _PasswordStore('wrong-secret'),
     );
 
@@ -79,11 +80,11 @@ class _PasswordStore implements CredentialsStore {
   final String? _password;
 
   @override
-  Future<void> clearPassword() async {}
+  Future<void> clearPassword(String profileId) async {}
 
   @override
-  Future<String?> readPassword() async => _password;
+  Future<String?> readPassword(String profileId) async => _password;
 
   @override
-  Future<void> savePassword(String? password) async {}
+  Future<void> savePassword(String profileId, String? password) async {}
 }

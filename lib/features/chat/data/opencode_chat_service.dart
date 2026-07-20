@@ -2,15 +2,15 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../../../core/network/opencode_authorization.dart';
+import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/data/opencode_sessions_service.dart';
 import '../../sessions/domain/open_code_session.dart';
 
 class OpenCodeChatService {
-  OpenCodeChatService(this._client);
+  OpenCodeChatService(this._transport);
 
-  final http.Client _client;
+  final OpenCodeTransport _transport;
 
   Future<List<OpenCodeMessageRecord>> listMessages(
     ServerProfile profile,
@@ -40,15 +40,7 @@ class OpenCodeChatService {
     String? password,
     String path,
   ) async {
-    final response = await _client
-        .get(
-          profile.origin.resolve(path),
-          headers: openCodeAuthorizationHeaders(
-            username: profile.username,
-            password: password,
-          ),
-        )
-        .timeout(const Duration(seconds: 15));
+    final response = await _transport.get(profile, password, path);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenCodeHttpFailure(response.statusCode);
     }
