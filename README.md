@@ -9,6 +9,10 @@ prompt queue, responsive streaming, and local-first voice transcription.
 The product scope is in [PLAN.md](PLAN.md); the binding implementation rules
 are in [ARCHITECTURE.md](ARCHITECTURE.md) and [AGENTS.md](AGENTS.md).
 
+Read [the private server setup guide](docs/private-server-setup.md) before
+running OpenCode remotely. The OpenCode port must remain WireGuard-only because
+it can access workspace files and provider/source-control credentials.
+
 ## Development
 
 This repository pins Flutter 3.44.6 through FVM.
