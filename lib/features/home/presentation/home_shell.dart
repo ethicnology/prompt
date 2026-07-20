@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../connection/connection.dart';
+import '../../chat/chat.dart';
 import '../../sessions/sessions.dart';
 import '../../sessions/presentation/sessions_screen.dart';
 
@@ -8,12 +9,14 @@ class HomeShell extends StatefulWidget {
   const HomeShell({
     required this.profile,
     required this.sessionsViewModel,
+    required this.conversationViewModel,
     required this.onDisconnect,
     super.key,
   });
 
   final ServerProfile profile;
   final SessionsViewModel sessionsViewModel;
+  final ConversationViewModel conversationViewModel;
   final VoidCallback onDisconnect;
 
   @override
@@ -53,6 +56,17 @@ class _HomeShellState extends State<HomeShell> {
             child: SessionsScreen(
               profile: widget.profile,
               viewModel: widget.sessionsViewModel,
+              onOpenSession: (session) {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => ConversationScreen(
+                      profile: widget.profile,
+                      session: session,
+                      viewModel: widget.conversationViewModel,
+                    ),
+                  ),
+                );
+              },
             ),
           )
         : _ConnectedEmptyState(

@@ -3,6 +3,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/security/secure_credentials_service.dart';
+import '../features/chat/data/chat_repository.dart';
+import '../features/chat/data/opencode_chat_service.dart';
+import '../features/chat/presentation/conversation_view_model.dart';
 import '../features/connection/data/connection_repository.dart';
 import '../features/connection/data/opencode_health_service.dart';
 import '../features/connection/domain/server_profile.dart';
@@ -25,6 +28,7 @@ class _PromptAppState extends State<PromptApp> {
   late final http.Client _httpClient;
   late final ConnectionViewModel _connectionViewModel;
   late final SessionsViewModel _sessionsViewModel;
+  late final ConversationViewModel _conversationViewModel;
   ServerProfile? _connectedProfile;
 
   @override
@@ -38,12 +42,16 @@ class _PromptAppState extends State<PromptApp> {
     _sessionsViewModel = SessionsViewModel(
       SessionsRepository(OpenCodeSessionsService(_httpClient), credentials),
     );
+    _conversationViewModel = ConversationViewModel(
+      ChatRepository(OpenCodeChatService(_httpClient), credentials),
+    );
   }
 
   @override
   void dispose() {
     _connectionViewModel.dispose();
     _sessionsViewModel.dispose();
+    _conversationViewModel.dispose();
     _httpClient.close();
     super.dispose();
   }
@@ -73,6 +81,7 @@ class _PromptAppState extends State<PromptApp> {
           : HomeShell(
               profile: _connectedProfile!,
               sessionsViewModel: _sessionsViewModel,
+              conversationViewModel: _conversationViewModel,
               onDisconnect: _disconnect,
             ),
     );

@@ -9,11 +9,13 @@ class SessionsScreen extends StatefulWidget {
   const SessionsScreen({
     required this.profile,
     required this.viewModel,
+    required this.onOpenSession,
     super.key,
   });
 
   final ServerProfile profile;
   final SessionsViewModel viewModel;
+  final ValueChanged<OpenCodeSession> onOpenSession;
 
   @override
   State<SessionsScreen> createState() => _SessionsScreenState();
@@ -54,7 +56,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
                   itemCount: sessions.length,
                   itemBuilder: (context, index) {
                     final session = sessions[index];
-                    return _SessionTile(session: session);
+                    return _SessionTile(
+                      session: session,
+                      onTap: () => widget.onOpenSession(session),
+                    );
                   },
                 ),
               ],
@@ -141,9 +146,10 @@ class _SessionsError extends StatelessWidget {
 }
 
 class _SessionTile extends StatelessWidget {
-  const _SessionTile({required this.session});
+  const _SessionTile({required this.session, required this.onTap});
 
   final OpenCodeSession session;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -152,6 +158,7 @@ class _SessionTile extends StatelessWidget {
     final changeSummary = _changeSummary(session);
 
     return ListTile(
+      onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       leading: Icon(
         session.parentId == null ? Icons.forum_outlined : Icons.call_split,
