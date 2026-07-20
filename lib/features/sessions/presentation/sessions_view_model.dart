@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../../core/async/result.dart';
 import '../../connection/domain/server_profile.dart';
 import '../data/sessions_repository.dart';
 import '../domain/open_code_session.dart';
@@ -49,5 +50,30 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
       case SessionsLoadFailed(:final failure):
         value = SessionsError(failure);
     }
+  }
+
+  Future<SessionsFailure?> rename(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String title,
+  ) async {
+    final result = await _repository.rename(profile, session, title);
+    if (result case Err<void, SessionsFailure>(:final failure)) {
+      return failure;
+    }
+    await load(profile);
+    return null;
+  }
+
+  Future<SessionsFailure?> delete(
+    ServerProfile profile,
+    OpenCodeSession session,
+  ) async {
+    final result = await _repository.delete(profile, session);
+    if (result case Err<void, SessionsFailure>(:final failure)) {
+      return failure;
+    }
+    await load(profile);
+    return null;
   }
 }

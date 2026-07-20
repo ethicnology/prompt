@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
+import '../domain/open_code_session.dart';
 
 class OpenCodeSessionsService {
   OpenCodeSessionsService(this._transport);
@@ -42,16 +43,49 @@ class OpenCodeSessionsService {
         .toList(growable: false);
   }
 
+  Future<void> renameSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String title,
+  ) async {
+    final response = await _transport.patch(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}?${Uri(queryParameters: {'directory': session.directory}).query}',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({'title': title}),
+    );
+    _requireSuccess(response);
+  }
+
+  Future<void> deleteSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) async {
+    final response = await _transport.delete(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}?${Uri(queryParameters: {'directory': session.directory}).query}',
+    );
+    _requireSuccess(response);
+  }
+
   Future<http.Response> _get(
     ServerProfile profile,
     String? password,
     String path,
   ) async {
     final response = await _transport.get(profile, password, path);
+    _requireSuccess(response);
+    return response;
+  }
+
+  void _requireSuccess(http.Response response) {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenCodeHttpFailure(response.statusCode);
     }
-    return response;
   }
 }
 

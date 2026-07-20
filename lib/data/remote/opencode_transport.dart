@@ -51,6 +51,32 @@ class OpenCodeTransport {
         .timeout(const Duration(seconds: 15));
   }
 
+  Future<http.Response> patch(
+    ServerProfile profile,
+    String? password,
+    String path, {
+    Object? body,
+    Map<String, String>? headers,
+  }) {
+    return _client
+        .patch(
+          _uri(profile, path),
+          headers: {..._headers(profile, password), ...?headers},
+          body: body,
+        )
+        .timeout(const Duration(seconds: 15));
+  }
+
+  Future<http.Response> delete(
+    ServerProfile profile,
+    String? password,
+    String path,
+  ) {
+    return _client
+        .delete(_uri(profile, path), headers: _headers(profile, password))
+        .timeout(const Duration(seconds: 15));
+  }
+
   Future<http.StreamedResponse> send(
     ServerProfile profile,
     String? password,

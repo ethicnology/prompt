@@ -1,3 +1,4 @@
+import '../../../core/async/result.dart';
 import 'open_code_session.dart';
 
 sealed class SessionLoadResult {
@@ -17,6 +18,8 @@ class SessionsLoadFailed extends SessionLoadResult {
 }
 
 enum SessionsFailure { unauthorized, unavailable, unexpectedResponse }
+
+typedef SessionMutationResult = Result<void, SessionsFailure>;
 
 extension SessionsFailureMessage on SessionsFailure {
   String get message {

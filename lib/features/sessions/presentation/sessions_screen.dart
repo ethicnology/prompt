@@ -51,10 +51,119 @@ class _SessionsScreenState extends State<SessionsScreen> {
             sessions: sessions,
             onRefresh: () => widget.viewModel.load(widget.profile),
             onOpenSession: widget.onOpenSession,
+            onSessionLongPress: _showSessionActions,
           ),
         };
       },
     );
+  }
+
+  Future<void> _showSessionActions(OpenCodeSession session) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Rename session'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _renameSession(session);
+              },
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.delete_outline,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                'Delete session',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                _deleteSession(session);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _renameSession(OpenCodeSession session) async {
+    final controller = TextEditingController(text: session.title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename session'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+          decoration: const InputDecoration(labelText: 'Title'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || title == null || title.isEmpty || title == session.title) {
+      return;
+    }
+    final failure = await widget.viewModel.rename(
+      widget.profile,
+      session,
+      title,
+    );
+    if (mounted && failure != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(failure.message)));
+    }
+  }
+
+  Future<void> _deleteSession(OpenCodeSession session) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete session?'),
+        content: Text(
+          'Delete "${session.title}" from OpenCode? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    final failure = await widget.viewModel.delete(widget.profile, session);
+    if (mounted && failure != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(failure.message)));
+    }
   }
 }
 
@@ -63,11 +172,13 @@ class _PrimarySessionsList extends StatelessWidget {
     required this.sessions,
     required this.onRefresh,
     required this.onOpenSession,
+    required this.onSessionLongPress,
   });
 
   final List<OpenCodeSession> sessions;
   final Future<void> Function() onRefresh;
   final ValueChanged<OpenCodeSession> onOpenSession;
+  final ValueChanged<OpenCodeSession> onSessionLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -108,6 +219,7 @@ class _PrimarySessionsList extends StatelessWidget {
               return _SessionTile(
                 session: session,
                 onTap: () => onOpenSession(session),
+                onLongPress: () => onSessionLongPress(session),
               );
             },
           ),
@@ -131,6 +243,7 @@ class _PrimarySessionsList extends StatelessWidget {
                 Navigator.of(context).pop();
                 onOpenSession(session);
               },
+              onLongPress: () => onSessionLongPress(session),
             );
           },
         ),
@@ -214,10 +327,15 @@ class _SessionsError extends StatelessWidget {
 }
 
 class _SessionTile extends StatelessWidget {
-  const _SessionTile({required this.session, required this.onTap});
+  const _SessionTile({
+    required this.session,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   final OpenCodeSession session;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -227,6 +345,7 @@ class _SessionTile extends StatelessWidget {
 
     return ListTile(
       onTap: onTap,
+      onLongPress: onLongPress,
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       leading: Icon(
         session.parentId == null ? Icons.forum_outlined : Icons.call_split,
