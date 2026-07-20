@@ -41,6 +41,11 @@ class QueuedPrompts extends Table {
 class PromptDatabase extends _$PromptDatabase {
   PromptDatabase() : super(driftDatabase(name: 'prompt'));
 
+  /// Opens a [PromptDatabase] over an explicit [QueryExecutor]. Tests use
+  /// this to run against an in-memory Drift executor instead of the
+  /// platform-backed file database `PromptDatabase()` opens.
+  PromptDatabase.forTesting(super.executor);
+
   @override
   int get schemaVersion => 1;
 

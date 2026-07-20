@@ -1,0 +1,311 @@
+import 'package:drift/drift.dart';
+
+import '../../../data/local/prompt_database.dart' as db;
+import '../domain/queued_prompt.dart' show QueuedPromptState;
+
+/// Thrown when a queue operation targets a prompt id that no longer exists.
+class QueuedPromptNotFound implements Exception {
+  const QueuedPromptNotFound(this.id);
+
+  final String id;
+}
+
+/// Thrown when a queue operation is not a valid transition from the
+/// prompt's current stored state.
+class InvalidQueuedPromptTransition implements Exception {
+  const InvalidQueuedPromptTransition(this.id, this.fromState);
+
+  final String id;
+  final String fromState;
+}
+
+/// Thrown when a reorder does not exactly match the session's currently
+/// reorderable prompts, or a prompt in that session is `sending`.
+class InvalidQueueReorder implements Exception {
+  const InvalidQueueReorder();
+}
+
+/// Prompt states that a queue mutation is allowed to reorder or remove
+/// without racing an in-flight send.
+const _reorderableStates = {'queued', 'paused', 'failed'};
+
+/// Drift-backed access to the `QueuedPrompts` table. Every mutation that
+/// checks or changes a prompt's state runs inside a single transaction so
+/// concurrent callers never observe or act on a half-applied change.
+///
+/// This DAO never logs [db.QueuedPrompt.promptText] and never sends
+/// network requests; it only reads and writes the local database.
+class QueuePromptsDao {
+  QueuePromptsDao(this._database);
+
+  final db.PromptDatabase _database;
+
+  Future<db.QueuedPrompt> enqueue({
+    required String id,
+    required String serverProfileId,
+    required String sessionId,
+    required String directory,
+    required String promptText,
+    required DateTime now,
+  }) {
+    return _database.transaction(() async {
+      final nextPosition = await _nextPosition(serverProfileId, sessionId);
+      final nowMillis = now.millisecondsSinceEpoch;
+      await _database
+          .into(_database.queuedPrompts)
+          .insert(
+            db.QueuedPromptsCompanion.insert(
+              id: id,
+              serverProfileId: serverProfileId,
+              sessionId: sessionId,
+              directory: directory,
+              position: nextPosition,
+              promptText: promptText,
+              state: QueuedPromptState.queued.name,
+              createdAtMillis: nowMillis,
+              updatedAtMillis: nowMillis,
+            ),
+          );
+      return _requireRow(id);
+    });
+  }
+
+  Future<db.QueuedPrompt> editText({
+    required String id,
+    required String promptText,
+    required DateTime now,
+  }) {
+    return _database.transaction(() async {
+      final row = await _requireRow(id);
+      _requireState(row, const {'queued', 'paused'});
+      await _updateRow(
+        id,
+        db.QueuedPromptsCompanion(
+          promptText: Value(promptText),
+          updatedAtMillis: Value(now.millisecondsSinceEpoch),
+        ),
+      );
+      return _requireRow(id);
+    });
+  }
+
+  /// Deletes the prompt and returns the row as it was immediately before
+  /// deletion. Rejects removing a prompt that is currently `sending`.
+  Future<db.QueuedPrompt> remove(String id) {
+    return _database.transaction(() async {
+      final row = await _requireRow(id);
+      if (row.state == 'sending') {
+        throw InvalidQueuedPromptTransition(id, row.state);
+      }
+      await (_database.delete(
+        _database.queuedPrompts,
+      )..where((t) => t.id.equals(id))).go();
+      return row;
+    });
+  }
+
+  Stream<List<db.QueuedPrompt>> watchQueue({
+    required String serverProfileId,
+    required String sessionId,
+  }) {
+    return (_database.select(_database.queuedPrompts)
+          ..where(
+            (t) =>
+                t.serverProfileId.equals(serverProfileId) &
+                t.sessionId.equals(sessionId),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.position)]))
+        .watch();
+  }
+
+  /// Reassigns positions for the session's `queued`, `paused`, and `failed`
+  /// prompts to match [orderedIds]. Rejects the reorder unless [orderedIds]
+  /// is exactly the set of that session's reorderable prompt ids, and
+  /// unless none of that session's prompts are currently `sending`.
+  Future<List<db.QueuedPrompt>> reorder({
+    required String serverProfileId,
+    required String sessionId,
+    required List<String> orderedIds,
+  }) {
+    return _database.transaction(() async {
+      final rows =
+          await (_database.select(_database.queuedPrompts)..where(
+                (t) =>
+                    t.serverProfileId.equals(serverProfileId) &
+                    t.sessionId.equals(sessionId),
+              ))
+              .get();
+
+      if (rows.any((row) => row.state == 'sending')) {
+        throw const InvalidQueueReorder();
+      }
+
+      final reorderable = rows
+          .where((row) => _reorderableStates.contains(row.state))
+          .toList();
+      final reorderableIds = reorderable.map((row) => row.id).toSet();
+      if (reorderableIds.length != orderedIds.length ||
+          reorderableIds.length != orderedIds.toSet().length ||
+          !reorderableIds.containsAll(orderedIds)) {
+        throw const InvalidQueueReorder();
+      }
+
+      // The reorderable prompts keep the same set of position "slots" they
+      // already occupy; only the assignment of ids to slots changes. This
+      // guarantees no collision with the position of a fixed (`sending` or
+      // `acknowledged`) row, without renumbering the whole session.
+      final slots = reorderable.map((row) => row.position).toList()..sort();
+
+      // First pass moves every reordered row to a temporary negative slot
+      // so the unique (serverProfileId, sessionId, position) index never
+      // sees two rows share a position mid-transaction.
+      for (var i = 0; i < orderedIds.length; i++) {
+        await _updateRow(
+          orderedIds[i],
+          db.QueuedPromptsCompanion(position: Value(-(i + 1))),
+        );
+      }
+      for (var i = 0; i < orderedIds.length; i++) {
+        await _updateRow(
+          orderedIds[i],
+          db.QueuedPromptsCompanion(position: Value(slots[i])),
+        );
+      }
+
+      return (_database.select(_database.queuedPrompts)
+            ..where(
+              (t) =>
+                  t.serverProfileId.equals(serverProfileId) &
+                  t.sessionId.equals(sessionId),
+            )
+            ..orderBy([(t) => OrderingTerm.asc(t.position)]))
+          .get();
+    });
+  }
+
+  Future<db.QueuedPrompt> markSending(String id, {required DateTime now}) {
+    return _transition(
+      id,
+      from: const {'queued'},
+      to: 'sending',
+      apply: (companion) => companion.copyWith(
+        sendingStartedAtMillis: Value(now.millisecondsSinceEpoch),
+      ),
+      now: now,
+      incrementAttempt: true,
+    );
+  }
+
+  Future<db.QueuedPrompt> markAcknowledged(String id, {required DateTime now}) {
+    return _transition(
+      id,
+      from: const {'sending'},
+      to: 'acknowledged',
+      apply: (companion) => companion.copyWith(
+        acknowledgedAtMillis: Value(now.millisecondsSinceEpoch),
+        pauseReason: const Value(null),
+      ),
+      now: now,
+    );
+  }
+
+  Future<db.QueuedPrompt> markFailed(
+    String id, {
+    String? reason,
+    required DateTime now,
+  }) {
+    return _transition(
+      id,
+      from: const {'sending'},
+      to: 'failed',
+      apply: (companion) => companion.copyWith(pauseReason: Value(reason)),
+      now: now,
+    );
+  }
+
+  Future<db.QueuedPrompt> markPaused(
+    String id, {
+    required String reason,
+    required DateTime now,
+  }) {
+    return _transition(
+      id,
+      from: const {'queued', 'failed'},
+      to: 'paused',
+      apply: (companion) => companion.copyWith(pauseReason: Value(reason)),
+      now: now,
+    );
+  }
+
+  Future<db.QueuedPrompt> markQueued(String id, {required DateTime now}) {
+    return _transition(
+      id,
+      from: const {'paused'},
+      to: 'queued',
+      apply: (companion) => companion.copyWith(pauseReason: const Value(null)),
+      now: now,
+    );
+  }
+
+  Future<db.QueuedPrompt> _transition(
+    String id, {
+    required Set<String> from,
+    required String to,
+    required DateTime now,
+    db.QueuedPromptsCompanion Function(db.QueuedPromptsCompanion companion)?
+    apply,
+    bool incrementAttempt = false,
+  }) {
+    return _database.transaction(() async {
+      final row = await _requireRow(id);
+      _requireState(row, from);
+      var companion = db.QueuedPromptsCompanion(
+        state: Value(to),
+        updatedAtMillis: Value(now.millisecondsSinceEpoch),
+        attemptCount: incrementAttempt
+            ? Value(row.attemptCount + 1)
+            : const Value.absent(),
+      );
+      if (apply != null) {
+        companion = apply(companion);
+      }
+      await _updateRow(id, companion);
+      return _requireRow(id);
+    });
+  }
+
+  Future<int> _nextPosition(String serverProfileId, String sessionId) async {
+    final maxPositionExpression = _database.queuedPrompts.position.max();
+    final query = _database.selectOnly(_database.queuedPrompts)
+      ..addColumns([maxPositionExpression])
+      ..where(
+        _database.queuedPrompts.serverProfileId.equals(serverProfileId) &
+            _database.queuedPrompts.sessionId.equals(sessionId),
+      );
+    final row = await query.getSingle();
+    final maxPosition = row.read(maxPositionExpression);
+    return (maxPosition ?? -1) + 1;
+  }
+
+  Future<db.QueuedPrompt> _requireRow(String id) async {
+    final row = await (_database.select(
+      _database.queuedPrompts,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    if (row == null) {
+      throw QueuedPromptNotFound(id);
+    }
+    return row;
+  }
+
+  void _requireState(db.QueuedPrompt row, Set<String> allowed) {
+    if (!allowed.contains(row.state)) {
+      throw InvalidQueuedPromptTransition(row.id, row.state);
+    }
+  }
+
+  Future<void> _updateRow(String id, db.QueuedPromptsCompanion companion) {
+    return (_database.update(
+      _database.queuedPrompts,
+    )..where((t) => t.id.equals(id))).write(companion);
+  }
+}
