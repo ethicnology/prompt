@@ -343,6 +343,28 @@ void main() {
     expect(find.text('Hi there'), findsOneWidget);
   });
 
+  testWidgets('hides messages without displayable text', (tester) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-only',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '   ',
+      ),
+      ChatMessage(
+        id: 'm1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1),
+        text: 'Visible response',
+      ),
+    ]);
+
+    await pumpScreen(tester);
+
+    expect(find.text('No text output.'), findsNothing);
+    expect(find.text('Visible response'), findsOneWidget);
+  });
+
   testWidgets('deactivates the view model when the screen is left', (
     tester,
   ) async {

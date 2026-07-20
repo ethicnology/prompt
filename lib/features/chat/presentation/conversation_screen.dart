@@ -164,28 +164,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       ),
                     ),
                   ),
-                  ConversationReady(:final messages) => RefreshIndicator(
+                  ConversationReady(:final messages) => _Transcript(
+                    messages: messages,
                     onRefresh: widget.viewModel.reload,
-                    child: CustomScrollView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      slivers: [
-                        SliverPadding(
-                          padding: const EdgeInsets.all(16),
-                          sliver: SliverList.separated(
-                            itemCount: messages.length,
-                            itemBuilder: (context, index) {
-                              final message = messages[index];
-                              return _MessageBubble(
-                                key: ValueKey(message.id),
-                                message: message,
-                              );
-                            },
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(height: 12),
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
                 };
               },
@@ -237,6 +218,43 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
           _Composer(controller: _composerController, onSubmit: _submitComposer),
+        ],
+      ),
+    );
+  }
+}
+
+class _Transcript extends StatelessWidget {
+  const _Transcript({required this.messages, required this.onRefresh});
+
+  final List<ChatMessage> messages;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleMessages = messages
+        .where((message) => message.text.trim().isNotEmpty)
+        .toList(growable: false);
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverList.separated(
+              itemCount: visibleMessages.length,
+              itemBuilder: (context, index) {
+                final message = visibleMessages[index];
+                return _MessageBubble(
+                  key: ValueKey(message.id),
+                  message: message,
+                );
+              },
+              separatorBuilder: (_, _) => const SizedBox(height: 12),
+            ),
+          ),
         ],
       ),
     );
@@ -798,7 +816,7 @@ class _MessageBubble extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: SelectableText(
-              message.text.isEmpty ? 'No text output.' : message.text,
+              message.text,
               style: theme.textTheme.bodyLarge,
             ),
           ),
