@@ -79,6 +79,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _transcriptController = ScrollController();
   StreamSubscription<String>? _queueErrorSubscription;
   bool _showJumpToLatest = false;
+  bool _followingLatest = true;
+  bool _scrollToLatestScheduled = false;
   PromptExecutionOptions _executionOptions = const PromptExecutionOptions();
   OpenCodeSlashCommand? _selectedCommand;
   late bool _isShared;
@@ -493,16 +495,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
     final position = _transcriptController.position;
     final shouldShow = position.maxScrollExtent - position.pixels > 48;
+    _followingLatest = !shouldShow;
     if (shouldShow != _showJumpToLatest && mounted) {
       setState(() => _showJumpToLatest = shouldShow);
     }
   }
 
   void _scheduleScrollToLatestIfFollowing() {
-    if (_showJumpToLatest) {
+    if (!_followingLatest || _scrollToLatestScheduled) {
       return;
     }
+    _scrollToLatestScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToLatestScheduled = false;
       if (!mounted || !_transcriptController.hasClients) {
         return;
       }
@@ -513,11 +518,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   void _jumpToLatest() {
-    _transcriptController.animateTo(
-      _transcriptController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-    );
+    setState(() {
+      _followingLatest = true;
+      _showJumpToLatest = false;
+    });
+    _scheduleScrollToLatestIfFollowing();
   }
 
   Widget _buildTranscript(List<ChatMessage> messages) {
@@ -526,7 +531,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       children: [
         Transcript(
           messages: messages,
-          onRefresh: widget.viewModel.reload,
+          onRefresh: widget.viewModel.refreshFromUserAction,
           onRevert: _confirmRevert,
           controller: _transcriptController,
         ),
@@ -632,11 +637,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 );
               },
             ),
-          IconButton(
-            onPressed: widget.viewModel.reload,
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh conversation',
-          ),
           PopupMenuButton<_SessionAction>(
             tooltip: 'Session actions',
             onSelected: (action) => switch (action) {

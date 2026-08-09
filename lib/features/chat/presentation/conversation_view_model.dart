@@ -16,6 +16,7 @@ import '../domain/pending_approval.dart';
 import '../domain/permission_response.dart';
 import '../domain/prompt_attachment.dart';
 import '../domain/session_artifacts.dart';
+import '../domain/session_execution_state.dart';
 
 sealed class ConversationUiState {
   const ConversationUiState();
@@ -136,6 +137,7 @@ class ConversationViewModel {
   /// [dispose] for the same reason as [_liveConversationState].
   ValueListenable<SseConnectionState>? _remoteConnectionState;
   VoidCallback? _remoteConnectionStateListener;
+  SessionExecutionState? _lastSessionExecutionState;
 
   bool _disposed = false;
 
@@ -168,7 +170,15 @@ class ConversationViewModel {
           queue.value = rows;
         });
 
-    await queueCoordinator.activate(profile: profile, session: session);
+    // Rendering the server transcript is the first useful result of opening a
+    // conversation. Start coordination concurrently, but never make it delay
+    // the initial transcript frame.
+    final activation = queueCoordinator.activate(
+      profile: profile,
+      session: session,
+    );
+    await _loadMessages();
+    await activation;
     if (_disposed || _session != session) {
       return;
     }
@@ -188,6 +198,12 @@ class ConversationViewModel {
       _scheduleLiveConversationRender(liveConversationState.value);
       pendingApproval.value =
           liveConversationState.value.pendingApprovals[session.id];
+      final nextState = liveConversationState.value.sessionStates[session.id];
+      if (nextState is SessionIdle &&
+          _lastSessionExecutionState is! SessionIdle) {
+        unawaited(_loadArtifacts());
+      }
+      _lastSessionExecutionState = nextState;
     }
 
     _liveConversationState = liveConversationState;
@@ -196,7 +212,9 @@ class ConversationViewModel {
     // `activate` may have already reduced a block (and its detail) before
     // this listener was attached; pick that up now rather than waiting
     // for the next SSE event to change it.
+    _scheduleLiveConversationRender(liveConversationState.value);
     pendingApproval.value = queueCoordinator.currentPendingApproval;
+    _lastSessionExecutionState = queueCoordinator.currentSessionState;
 
     // Mirrors the coordinator's connection status so the conversation UI
     // can render it, and — the moment a reconnect starts reconciling —
@@ -221,11 +239,17 @@ class ConversationViewModel {
     remoteConnectionState.addListener(onRemoteConnectionStateChanged);
     connectionState.value = remoteConnectionState.value;
 
-    await Future.wait([_loadMessages(), _loadArtifacts()]);
+    // Artifacts enrich the conversation but must never delay its first frame.
+    unawaited(_loadArtifacts());
   }
 
   /// Re-fetches the transcript for the currently open session.
   Future<void> reload() => _loadMessages();
+
+  /// Reconciles every server-owned conversation surface from a direct user
+  /// gesture without affecting the local send queue.
+  Future<void> refreshFromUserAction() =>
+      Future.wait([_loadMessages(), _loadArtifacts()]);
 
   /// Re-fetches todos and the session diff. [messageId] narrows the diff to
   /// the point OpenCode associates with that message when supplied.
@@ -296,7 +320,7 @@ class ConversationViewModel {
     }
     messages.value = const ConversationLoading();
     final result = await _chatRepository.load(profile, session);
-    if (_disposed) {
+    if (_disposed || _session != session) {
       return;
     }
     switch (result) {
@@ -636,6 +660,7 @@ class ConversationViewModel {
     }
     _remoteConnectionState = null;
     _remoteConnectionStateListener = null;
+    _lastSessionExecutionState = null;
   }
 }
 

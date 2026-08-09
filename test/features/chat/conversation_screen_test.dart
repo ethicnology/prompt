@@ -134,6 +134,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
   String? lastSendNowId;
   bool openCalled = false;
   bool leaveCalled = false;
+  int refreshCallCount = 0;
 
   int respondToPermissionCallCount = 0;
   String? lastPermissionId;
@@ -156,6 +157,11 @@ class _FakeConversationViewModel extends ConversationViewModel {
 
   @override
   Future<void> reload() async {}
+
+  @override
+  Future<void> refreshFromUserAction() async {
+    refreshCallCount++;
+  }
 
   @override
   Future<void> leave() async {
@@ -321,6 +327,32 @@ void main() {
     },
   );
 
+  testWidgets('pulling up from the transcript bottom refreshes the session', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady(
+      List.generate(
+        24,
+        (index) => ChatMessage(
+          id: 'message-$index',
+          role: ChatMessageRole.assistant,
+          text: 'Transcript item $index ' * 8,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+        ),
+      ),
+    );
+    await pumpScreen(tester);
+
+    // Ensure the test gesture starts from the physical bottom after the first
+    // layout, rather than relying on a scheduled initial anchor.
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2000));
+    await tester.pump();
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -180));
+    await tester.pump();
+
+    expect(viewModel.refreshCallCount, 1);
+  });
+
   testWidgets('streams voice transcription into the composer', (tester) async {
     final capture = _VoiceCapture('Bonjour le monde');
     final voiceViewModel = VoiceViewModel(
@@ -330,6 +362,14 @@ void main() {
     await pumpScreen(tester, voiceViewModel: voiceViewModel);
 
     expect(find.byTooltip('Start voice input'), findsOneWidget);
+    final inputRect = tester.getRect(find.byType(TextField));
+    final voiceRect = tester.getRect(find.byTooltip('Start voice input'));
+    final attachmentRect = tester.getRect(find.byTooltip('Add attachment'));
+    final sendRect = tester.getRect(find.byTooltip('Queue this prompt'));
+    expect(inputRect.right, lessThan(voiceRect.left));
+    expect(voiceRect.left, lessThan(attachmentRect.left));
+    expect(attachmentRect.left, lessThan(sendRect.left));
+
     await tester.enterText(find.byType(TextField), 'Existing draft');
     await tester.tap(find.byTooltip('Start voice input'));
     await tester.pump();

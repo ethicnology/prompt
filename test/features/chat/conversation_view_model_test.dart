@@ -270,6 +270,7 @@ void main() {
     ];
 
     await viewModel.open(profile, session);
+    await _settleLive();
 
     final artifacts = viewModel.artifacts.value as SessionArtifactsReady;
     expect(artifacts.todos.single.content, 'Review changes');

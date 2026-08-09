@@ -113,11 +113,6 @@ class Composer extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              IconButton(
-                onPressed: () => unawaited(onPickAttachments()),
-                icon: const Icon(Icons.attach_file_rounded),
-                tooltip: 'Add attachment',
-              ),
               if (commands.isNotEmpty)
                 IconButton(
                   onPressed: () => unawaited(onSelectCommand(commands)),
@@ -167,6 +162,8 @@ class Composer extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
+              // Keep the primary controls together so the text field receives
+              // all remaining width on compact screens.
               if (voiceState case final voiceState?)
                 ValueListenableBuilder<VoiceUiState>(
                   valueListenable: voiceState,
@@ -179,19 +176,27 @@ class Composer extends StatelessWidget {
                       final recording = state is VoiceRecording;
                       final busy =
                           state is VoiceStarting || state is VoiceTranscribing;
-                      return IconButton.filledTonal(
-                        onPressed: busy || onVoicePressed == null
-                            ? null
-                            : () => unawaited(onVoicePressed!()),
-                        icon: Icon(recording ? Icons.stop : Icons.mic),
-                        tooltip: recording
-                            ? 'Stop voice input'
-                            : 'Start voice input',
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: IconButton.filledTonal(
+                          onPressed: busy || onVoicePressed == null
+                              ? null
+                              : () => unawaited(onVoicePressed!()),
+                          icon: Icon(recording ? Icons.stop : Icons.mic),
+                          tooltip: recording
+                              ? 'Stop voice input'
+                              : 'Start voice input',
+                        ),
                       );
                     },
                   ),
                 ),
-              if (voiceState != null) const SizedBox(width: 8),
+              IconButton(
+                onPressed: () => unawaited(onPickAttachments()),
+                icon: const Icon(Icons.attach_file_rounded),
+                tooltip: 'Add attachment',
+              ),
+              const SizedBox(width: 8),
               // Disabled while there is nothing to queue, so tapping send can
               // never look like a silent failure.
               ValueListenableBuilder<TextEditingValue>(
