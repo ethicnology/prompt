@@ -1,17 +1,27 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 
 import '../../connection/domain/server_profile.dart';
+import '../../capabilities/capabilities.dart';
 import '../../queue/queue.dart';
 import '../../sessions/domain/open_code_session.dart';
+import '../../sessions/domain/session_load_result.dart';
+import '../../voice/voice.dart';
+import '../../../core/async/result.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/pending_approval.dart';
-import '../domain/permission_response.dart';
+import '../domain/prompt_attachment.dart';
+import '../domain/session_artifacts.dart';
 import 'conversation_view_model.dart';
+import 'widgets/approval_dock.dart';
+import 'widgets/composer.dart';
+import 'widgets/connection_status_banner.dart';
+import 'widgets/queue_panel.dart';
+import 'widgets/session_artifacts_panel.dart';
+import 'widgets/transcript.dart';
 
 /// The user-facing text for [state], or `null` when nothing needs
 /// announcing (a healthy connection, or the app simply being inactive,
@@ -29,7 +39,7 @@ String? _connectionBanner(SseConnectionState state) {
   };
 }
 
-/// A stable identity for [approval], used as `_ApprovalDock`'s key so a
+/// A stable identity for [approval], used as `ApprovalDock`'s key so a
 /// brand-new approval (a different permission, or a different question
 /// request) always rebuilds the dock's internal selection/text state from
 /// scratch, instead of carrying over stale selections from the previous
@@ -47,12 +57,18 @@ class ConversationScreen extends StatefulWidget {
     required this.profile,
     required this.session,
     required this.viewModel,
+    this.capabilitiesViewModel,
+    this.voiceViewModel,
+    this.onOpenFork,
     super.key,
   });
 
   final ServerProfile profile;
   final OpenCodeSession session;
   final ConversationViewModel viewModel;
+  final CapabilitiesViewModel? capabilitiesViewModel;
+  final VoiceViewModel? voiceViewModel;
+  final ValueChanged<OpenCodeSession>? onOpenFork;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -63,12 +79,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _transcriptController = ScrollController();
   StreamSubscription<String>? _queueErrorSubscription;
   bool _showJumpToLatest = false;
+  PromptExecutionOptions _executionOptions = const PromptExecutionOptions();
+  OpenCodeSlashCommand? _selectedCommand;
+  late bool _isShared;
+  bool _releasedForFork = false;
+  String? _voiceDraftPrefix;
 
   @override
   void initState() {
     super.initState();
+    _isShared = widget.session.shareUrl != null;
     _transcriptController.addListener(_updateJumpToLatestVisibility);
     widget.viewModel.open(widget.profile, widget.session);
+    widget.capabilitiesViewModel?.load(widget.profile);
+    widget.voiceViewModel?.state.addListener(_applyVoiceState);
     _queueErrorSubscription = widget.viewModel.queueErrors.listen((message) {
       if (!mounted) {
         return;
@@ -82,21 +106,221 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void dispose() {
     _queueErrorSubscription?.cancel();
+    widget.voiceViewModel?.state.removeListener(_applyVoiceState);
+    unawaited(widget.voiceViewModel?.cancel());
     _composerController.dispose();
     _transcriptController
       ..removeListener(_updateJumpToLatestVisibility)
       ..dispose();
-    widget.viewModel.leave();
+    if (!_releasedForFork) {
+      widget.viewModel.leave();
+    }
     super.dispose();
   }
 
   Future<void> _submitComposer() async {
     final text = _composerController.text.trim();
-    if (text.isEmpty) {
+    final command = _selectedCommand;
+    final hasAttachments = widget.viewModel.attachments.value.isNotEmpty;
+    if (text.isEmpty && command == null && !hasAttachments) {
       return;
     }
-    _composerController.clear();
-    await widget.viewModel.enqueuePrompt(text);
+    final queued = command == null
+        ? await widget.viewModel.enqueuePrompt(
+            text,
+            executionOptions: _executionOptions,
+          )
+        : await widget.viewModel.enqueueCommand(
+            command.name,
+            text,
+            executionOptions: _commandExecutionOptions(command),
+          );
+    if (queued) {
+      _composerController.clear();
+    }
+  }
+
+  Future<void> _pickAttachments() async {
+    final result = await widget.viewModel.pickAttachments();
+    if (!mounted || result is! AttachmentPickRejected) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(result.message)));
+  }
+
+  Future<void> _toggleVoiceInput() async {
+    final voiceViewModel = widget.voiceViewModel;
+    if (voiceViewModel == null) return;
+    if (voiceViewModel.state.value is VoiceRecording) {
+      await voiceViewModel.stopFromUserAction();
+      return;
+    }
+    _voiceDraftPrefix = _composerController.text;
+    await voiceViewModel.startFromUserAction();
+  }
+
+  void _applyVoiceState() {
+    final voiceViewModel = widget.voiceViewModel;
+    if (!mounted || voiceViewModel == null) return;
+    final state = voiceViewModel.state.value;
+    final transcript = switch (state) {
+      VoiceRecording(:final partialTranscript) => partialTranscript,
+      VoiceTranscriptReady(:final transcript) => transcript,
+      _ => null,
+    };
+    if (transcript != null) {
+      final prefix = _voiceDraftPrefix ?? _composerController.text;
+      final separator = prefix.trim().isEmpty || transcript.isEmpty ? '' : '\n';
+      final text = '$prefix$separator$transcript';
+      _composerController
+        ..text = text
+        ..selection = TextSelection.collapsed(offset: text.length);
+    }
+    if (state is VoiceTranscriptReady || state is VoiceUnavailable) {
+      _voiceDraftPrefix = null;
+    }
+    setState(() {});
+  }
+
+  PromptExecutionOptions _commandExecutionOptions(
+    OpenCodeSlashCommand command,
+  ) {
+    return PromptExecutionOptions(
+      modelProviderId:
+          command.model?.providerId ?? _executionOptions.modelProviderId,
+      modelId: command.model?.modelId ?? _executionOptions.modelId,
+      agentName: command.agentName ?? _executionOptions.agentName,
+    );
+  }
+
+  Future<void> _selectCommand(List<OpenCodeSlashCommand> commands) async {
+    final selectedName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Slash command'),
+        content: SizedBox(
+          width: 420,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              ListTile(
+                title: const Text('Message'),
+                subtitle: const Text('Send a regular queued prompt'),
+                onTap: () => Navigator.of(context).pop(''),
+              ),
+              for (final command in commands)
+                ListTile(
+                  title: Text('/${command.name}'),
+                  subtitle: Text(command.description ?? 'Run slash command'),
+                  selected: command.name == _selectedCommand?.name,
+                  onTap: () => Navigator.of(context).pop(command.name),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || selectedName == null) {
+      return;
+    }
+    setState(
+      () => _selectedCommand = selectedName.isEmpty
+          ? null
+          : commands.firstWhere((command) => command.name == selectedName),
+    );
+  }
+
+  Future<void> _selectExecutionOptions(
+    OpenCodeCapabilities capabilities,
+  ) async {
+    final selected = await showDialog<PromptExecutionOptions>(
+      context: context,
+      builder: (context) {
+        var model = _selectedModel(capabilities.models);
+        var agent = _selectedAgent(capabilities.agents);
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Prompt execution'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<OpenCodeModel?>(
+                  initialValue: model,
+                  decoration: const InputDecoration(labelText: 'Model'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Default')),
+                    ...capabilities.models
+                        .where((candidate) => candidate.isProviderConnected)
+                        .map(
+                          (candidate) => DropdownMenuItem(
+                            value: candidate,
+                            child: Text(candidate.name),
+                          ),
+                        ),
+                  ],
+                  onChanged: (value) => setDialogState(() => model = value),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<OpenCodeAgent?>(
+                  initialValue: agent,
+                  decoration: const InputDecoration(labelText: 'Agent'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Default')),
+                    ...capabilities.agents.map(
+                      (candidate) => DropdownMenuItem(
+                        value: candidate,
+                        child: Text(candidate.name),
+                      ),
+                    ),
+                  ],
+                  onChanged: (value) => setDialogState(() => agent = value),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(
+                  PromptExecutionOptions(
+                    modelProviderId: model?.providerId,
+                    modelId: model?.id,
+                    agentName: agent?.name,
+                  ),
+                ),
+                child: const Text('Apply'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected != null && mounted) {
+      setState(() => _executionOptions = selected);
+    }
+  }
+
+  OpenCodeModel? _selectedModel(List<OpenCodeModel> models) {
+    for (final model in models) {
+      if (model.providerId == _executionOptions.modelProviderId &&
+          model.id == _executionOptions.modelId) {
+        return model;
+      }
+    }
+    return null;
+  }
+
+  OpenCodeAgent? _selectedAgent(List<OpenCodeAgent> agents) {
+    for (final agent in agents) {
+      if (agent.name == _executionOptions.agentName) {
+        return agent;
+      }
+    }
+    return null;
   }
 
   Future<void> _confirmSendNow(QueuedPrompt prompt) async {
@@ -126,6 +350,141 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (confirmed ?? false) {
       await widget.viewModel.sendNow(prompt.id);
     }
+  }
+
+  Future<void> _fork() async {
+    final result = await widget.viewModel.fork();
+    if (!mounted || result == null) {
+      return;
+    }
+    switch (result) {
+      case Ok<OpenCodeSession, SessionsFailure>(:final value):
+        final onOpenFork = widget.onOpenFork;
+        if (onOpenFork == null) {
+          await widget.viewModel.leave();
+          if (mounted) Navigator.of(context).pop();
+          return;
+        }
+        await widget.viewModel.leave();
+        if (mounted) {
+          _releasedForFork = true;
+          onOpenFork(value);
+        }
+      case Err<OpenCodeSession, SessionsFailure>(:final failure):
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failure.message)));
+    }
+  }
+
+  Future<void> _share() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Share this session?'),
+        content: const Text(
+          'OpenCode may upload the complete session to its sharing service. '
+          'Anyone with the resulting link may be able to read it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Share session'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final result = await widget.viewModel.share();
+    if (!mounted || result == null) return;
+    switch (result) {
+      case Ok<String?, SessionsFailure>(:final value):
+        setState(() => _isShared = true);
+        if (value != null) {
+          await _showShareLink(value);
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Session shared')));
+        }
+      case Err<String?, SessionsFailure>(:final failure):
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(failure.message)));
+    }
+  }
+
+  Future<void> _showShareLink(String url) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Session share link'),
+      content: SelectableText(url),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: url));
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(
+              this.context,
+            ).showSnackBar(const SnackBar(content: Text('Share link copied')));
+          },
+          icon: const Icon(Icons.content_copy_outlined),
+          label: const Text('Copy link'),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _unshare() async {
+    final failure = await widget.viewModel.unshare();
+    if (!mounted) return;
+    if (failure != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(failure.message)));
+      return;
+    }
+    setState(() => _isShared = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Session is no longer shared')),
+    );
+  }
+
+  Future<void> _confirmRevert(ChatMessage message) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Revert this message?'),
+        content: const Text(
+          'OpenCode will revert the session to this message. Later messages '
+          'and session changes may be removed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Revert message'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final failure = await widget.viewModel.revert(message.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(failure?.message ?? 'Message reverted')),
+    );
   }
 
   void _updateJumpToLatestVisibility() {
@@ -165,9 +524,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _scheduleScrollToLatestIfFollowing();
     return Stack(
       children: [
-        _Transcript(
+        Transcript(
           messages: messages,
           onRefresh: widget.viewModel.reload,
+          onRevert: _confirmRevert,
           controller: _transcriptController,
         ),
         if (_showJumpToLatest)
@@ -189,10 +549,117 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
+  Widget _artifactsPanel() => ValueListenableBuilder<SessionArtifactsState>(
+    valueListenable: widget.viewModel.artifacts,
+    builder: (context, state, _) => SessionArtifactsPanel(
+      state: state,
+      onRefresh: widget.viewModel.reloadArtifacts,
+    ),
+  );
+
+  Widget _transcriptPanel() => ValueListenableBuilder<ConversationUiState>(
+    valueListenable: widget.viewModel.messages,
+    builder: (context, state, _) {
+      return switch (state) {
+        ConversationLoading() => Center(
+          child: Semantics(
+            label: 'Loading conversation',
+            child: const CircularProgressIndicator(),
+          ),
+        ),
+        ConversationError(:final failure) => Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(failure.message, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: widget.viewModel.reload,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try again'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        ConversationReady(:final messages) => _buildTranscript(messages),
+      };
+    },
+  );
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.session.title)),
+      appBar: AppBar(
+        toolbarHeight: 68,
+        titleSpacing: 4,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.session.title.isEmpty
+                  ? 'Untitled session'
+                  : widget.session.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              directoryName(widget.session.directory),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (widget.capabilitiesViewModel case final capabilitiesViewModel?)
+            ValueListenableBuilder<CapabilitiesUiState>(
+              valueListenable: capabilitiesViewModel,
+              builder: (context, state, _) {
+                if (state is! CapabilitiesReady) {
+                  return const SizedBox.shrink();
+                }
+                return IconButton(
+                  onPressed: () => _selectExecutionOptions(state.capabilities),
+                  icon: const Icon(Icons.tune_rounded),
+                  tooltip: 'Choose model and agent',
+                );
+              },
+            ),
+          IconButton(
+            onPressed: widget.viewModel.reload,
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh conversation',
+          ),
+          PopupMenuButton<_SessionAction>(
+            tooltip: 'Session actions',
+            onSelected: (action) => switch (action) {
+              _SessionAction.fork => _fork(),
+              _SessionAction.share => _share(),
+              _SessionAction.unshare => _unshare(),
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: _SessionAction.fork,
+                child: Text('Fork session'),
+              ),
+              PopupMenuItem(
+                value: _isShared
+                    ? _SessionAction.unshare
+                    : _SessionAction.share,
+                child: Text(_isShared ? 'Unshare session' : 'Share session'),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: Column(
         children: [
           ValueListenableBuilder<SseConnectionState>(
@@ -202,41 +669,42 @@ class _ConversationScreenState extends State<ConversationScreen> {
               if (banner == null) {
                 return const SizedBox.shrink();
               }
-              return _ConnectionStatusBanner(banner);
+              return ConnectionStatusBanner(
+                banner,
+                reconnecting:
+                    state is SseReconnecting || state is SseReconciling,
+                onRetry: state is SseDisconnected
+                    ? widget.viewModel.retryConnection
+                    : null,
+              );
             },
           ),
           Expanded(
-            child: ValueListenableBuilder<ConversationUiState>(
-              valueListenable: widget.viewModel.messages,
-              builder: (context, state, _) {
-                return switch (state) {
-                  ConversationLoading() => Center(
-                    child: Semantics(
-                      label: 'Loading conversation',
-                      child: const CircularProgressIndicator(),
-                    ),
-                  ),
-                  ConversationError(:final failure) => Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(failure.message, textAlign: TextAlign.center),
-                          const SizedBox(height: 16),
-                          FilledButton.icon(
-                            onPressed: widget.viewModel.reload,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('Try again'),
-                          ),
-                        ],
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // A context panel only becomes persistent once it can retain
+                // a readable transcript width. Phones keep a one-column flow.
+                if (constraints.maxWidth < 900) {
+                  return Column(
+                    children: [
+                      _artifactsPanel(),
+                      Expanded(child: _transcriptPanel()),
+                    ],
+                  );
+                }
+                return Row(
+                  children: [
+                    Expanded(child: _transcriptPanel()),
+                    const VerticalDivider(width: 1),
+                    SizedBox(
+                      width: 320,
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                        child: _artifactsPanel(),
                       ),
                     ),
-                  ),
-                  ConversationReady(:final messages) => _buildTranscript(
-                    messages,
-                  ),
-                };
+                  ],
+                );
               },
             ),
           ),
@@ -249,7 +717,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               return Column(
                 children: [
                   const Divider(height: 1),
-                  _ApprovalDock(
+                  ApprovalDock(
                     key: ValueKey(_approvalKey(approval)),
                     approval: approval,
                     onRespondToPermission: widget.viewModel.respondToPermission,
@@ -275,7 +743,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               return Column(
                 children: [
                   const Divider(height: 1),
-                  _QueuePanel(
+                  QueuePanel(
                     prompts: activePrompts,
                     onRemove: (prompt) =>
                         widget.viewModel.removeFromQueue(prompt.id),
@@ -285,536 +753,60 @@ class _ConversationScreenState extends State<ConversationScreen> {
               );
             },
           ),
-          _Composer(controller: _composerController, onSubmit: _submitComposer),
-        ],
-      ),
-    );
-  }
-}
-
-class _Transcript extends StatelessWidget {
-  const _Transcript({
-    required this.messages,
-    required this.onRefresh,
-    required this.controller,
-  });
-
-  final List<ChatMessage> messages;
-  final Future<void> Function() onRefresh;
-  final ScrollController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final visibleMessages = messages
-        .where((message) => message.text.trim().isNotEmpty)
-        .toList(growable: false);
-
-    return RefreshIndicator(
-      onRefresh: onRefresh,
-      child: CustomScrollView(
-        controller: controller,
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.all(16),
-            sliver: SliverList.separated(
-              itemCount: visibleMessages.length,
-              itemBuilder: (context, index) {
-                final message = visibleMessages[index];
-                return _MessageBubble(
-                  key: ValueKey(message.id),
-                  message: message,
-                );
-              },
-              separatorBuilder: (_, _) => const SizedBox(height: 12),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _QueuePanel extends StatelessWidget {
-  const _QueuePanel({
-    required this.prompts,
-    required this.onRemove,
-    required this.onSendNow,
-  });
-
-  final List<QueuedPrompt> prompts;
-  final ValueChanged<QueuedPrompt> onRemove;
-  final ValueChanged<QueuedPrompt> onSendNow;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Semantics(
-      container: true,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 220),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Semantics(
-                liveRegion: true,
-                child: Text(
-                  'Queue: ${prompts.length} '
-                  '${prompts.length == 1 ? 'prompt' : 'prompts'}',
-                  style: theme.textTheme.labelLarge,
-                ),
-              ),
-            ),
-            Flexible(
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: prompts.length,
-                separatorBuilder: (_, _) => const Divider(height: 1),
-                itemBuilder: (context, index) {
-                  final prompt = prompts[index];
-                  return _QueueRow(
-                    prompt: prompt,
-                    position: index + 1,
-                    onRemove: () => onRemove(prompt),
-                    onSendNow: () => onSendNow(prompt),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _QueueRow extends StatelessWidget {
-  const _QueueRow({
-    required this.prompt,
-    required this.position,
-    required this.onRemove,
-    required this.onSendNow,
-  });
-
-  final QueuedPrompt prompt;
-  final int position;
-  final VoidCallback onRemove;
-  final VoidCallback onSendNow;
-
-  @override
-  Widget build(BuildContext context) {
-    final canSendNow = prompt.state == QueuedPromptState.queued;
-    final canRemove = prompt.state != QueuedPromptState.sending;
-    final statusLabel = _statusLabel(prompt);
-
-    return Semantics(
-      label: 'Queued prompt $position, $statusLabel',
-      child: ListTile(
-        dense: true,
-        leading: Text('$position'),
-        title: Text(
-          prompt.promptText,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(statusLabel),
-        trailing: Wrap(
-          spacing: 4,
-          children: [
-            if (canSendNow)
-              IconButton(
-                onPressed: onSendNow,
-                icon: const Icon(Icons.bolt),
-                tooltip: 'Send now (aborts current generation)',
-              ),
-            IconButton(
-              onPressed: canRemove ? onRemove : null,
-              icon: const Icon(Icons.delete_outline),
-              tooltip: 'Remove from queue',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _statusLabel(QueuedPrompt prompt) {
-    return switch (prompt.state) {
-      QueuedPromptState.queued => 'Queued',
-      QueuedPromptState.sending => 'Sending…',
-      QueuedPromptState.acknowledged => 'Sent',
-      QueuedPromptState.failed => 'Failed to send',
-      QueuedPromptState.paused => switch (prompt.pauseReason) {
-        QueuePauseReason.submissionUnknown =>
-          'Paused: delivery unconfirmed. Review the conversation, then '
-              'resume or remove.',
-        QueuePauseReason.permissionPending => 'Paused: awaiting permission',
-        QueuePauseReason.questionPending => 'Paused: awaiting a question',
-        QueuePauseReason.sessionGenerating => 'Paused: session busy',
-        QueuePauseReason.networkUnavailable => 'Paused: network unavailable',
-        QueuePauseReason.sessionDeleted => 'Paused: session deleted',
-        QueuePauseReason.serverRejected => 'Paused: server rejected it',
-        null => 'Paused',
-      },
-    };
-  }
-}
-
-/// A non-dismissible dock shown above the composer whenever
-/// [ConversationViewModel.pendingApproval] is not `null`: a pending
-/// tool-call permission, or a pending question request. There is
-/// deliberately no close/dismiss affordance — the human must allow,
-/// always-allow, deny, or answer/reject before this goes away, and it
-/// disappears on its own the moment that submission succeeds (see
-/// [ConversationViewModel.respondToPermission]/[replyToQuestion]/
-/// [rejectQuestion]).
-///
-/// [approval] and every [QuestionPrompt] it may carry can describe a
-/// sensitive command, path, or question; this widget renders that detail
-/// only to the person being asked to decide it and never logs or persists
-/// it (see `pending_approval.dart`).
-class _ApprovalDock extends StatefulWidget {
-  const _ApprovalDock({
-    required this.approval,
-    required this.onRespondToPermission,
-    required this.onReplyToQuestion,
-    required this.onRejectQuestion,
-    super.key,
-  });
-
-  final PendingApproval approval;
-  final Future<void> Function(String permissionId, PermissionResponse response)
-  onRespondToPermission;
-  final Future<void> Function(String requestId, List<List<String>> answers)
-  onReplyToQuestion;
-  final Future<void> Function(String requestId) onRejectQuestion;
-
-  @override
-  State<_ApprovalDock> createState() => _ApprovalDockState();
-}
-
-class _ApprovalDockState extends State<_ApprovalDock> {
-  bool _submitting = false;
-  final Map<int, Set<String>> _selectedOptions = <int, Set<String>>{};
-  final Map<int, TextEditingController> _customControllers =
-      <int, TextEditingController>{};
-
-  @override
-  void initState() {
-    super.initState();
-    _initQuestionControllers();
-  }
-
-  @override
-  void dispose() {
-    for (final controller in _customControllers.values) {
-      controller.dispose();
-    }
-    super.dispose();
-  }
-
-  void _initQuestionControllers() {
-    final approval = widget.approval;
-    if (approval is! PendingQuestionApproval) {
-      return;
-    }
-    for (var i = 0; i < approval.questions.length; i++) {
-      _selectedOptions[i] = <String>{};
-      final controller = TextEditingController();
-      // Submit's enabled state depends on whether any question still has
-      // no answer; a custom-answer keystroke must rebuild this dock, not
-      // just the `TextField` itself.
-      controller.addListener(() {
-        if (mounted) {
-          setState(() {});
-        }
-      });
-      _customControllers[i] = controller;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final approval = widget.approval;
-    return Semantics(
-      liveRegion: true,
-      container: true,
-      child: ColoredBox(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: switch (approval) {
-            PendingPermissionApproval() => _buildPermission(context, approval),
-            PendingQuestionApproval() => _buildQuestions(context, approval),
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPermission(
-    BuildContext context,
-    PendingPermissionApproval approval,
-  ) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          'Approval needed: ${approval.toolType}',
-          style: theme.textTheme.titleSmall,
-        ),
-        const SizedBox(height: 4),
-        Text(approval.title),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            FilledButton(
-              onPressed: _submitting
-                  ? null
-                  : () => _respondToPermission(
-                      approval.permissionId,
-                      PermissionResponse.once,
-                    ),
-              child: const Text('Allow once'),
-            ),
-            OutlinedButton(
-              onPressed: _submitting
-                  ? null
-                  : () => _respondToPermission(
-                      approval.permissionId,
-                      PermissionResponse.always,
-                    ),
-              child: const Text('Always allow'),
-            ),
-            TextButton(
-              onPressed: _submitting
-                  ? null
-                  : () => _respondToPermission(
-                      approval.permissionId,
-                      PermissionResponse.reject,
-                    ),
-              child: const Text('Deny'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Future<void> _respondToPermission(
-    String permissionId,
-    PermissionResponse response,
-  ) async {
-    setState(() => _submitting = true);
-    await widget.onRespondToPermission(permissionId, response);
-  }
-
-  Widget _buildQuestions(
-    BuildContext context,
-    PendingQuestionApproval approval,
-  ) {
-    final theme = Theme.of(context);
-    final canSubmit = !_submitting && _everyQuestionAnswered(approval);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          'The agent is asking a question',
-          style: theme.textTheme.titleSmall,
-        ),
-        const SizedBox(height: 8),
-        for (var i = 0; i < approval.questions.length; i++)
-          Padding(
-            padding: EdgeInsets.only(
-              bottom: i == approval.questions.length - 1 ? 12 : 16,
-            ),
-            child: _QuestionCard(
-              prompt: approval.questions[i],
-              selected: _selectedOptions[i]!,
-              customController: _customControllers[i]!,
-              onToggleOption: (label) =>
-                  _toggleOption(i, label, approval.questions[i].multiple),
-            ),
-          ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            FilledButton(
-              onPressed: canSubmit ? () => _submitAnswers(approval) : null,
-              child: const Text('Submit answers'),
-            ),
-            TextButton(
-              onPressed: _submitting ? null : () => _reject(approval.requestId),
-              child: const Text('Reject'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  bool _everyQuestionAnswered(PendingQuestionApproval approval) {
-    for (var i = 0; i < approval.questions.length; i++) {
-      final hasSelection = (_selectedOptions[i] ?? const <String>{}).isNotEmpty;
-      final hasCustom =
-          (_customControllers[i]?.text.trim().isNotEmpty) ?? false;
-      if (!hasSelection && !hasCustom) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  void _toggleOption(int index, String label, bool multiple) {
-    setState(() {
-      final current = _selectedOptions[index]!;
-      if (multiple) {
-        if (!current.add(label)) {
-          current.remove(label);
-        }
-      } else {
-        current
-          ..clear()
-          ..add(label);
-      }
-    });
-  }
-
-  Future<void> _submitAnswers(PendingQuestionApproval approval) async {
-    final answers = <List<String>>[];
-    for (var i = 0; i < approval.questions.length; i++) {
-      final answer = <String>[...?_selectedOptions[i]];
-      final custom = _customControllers[i]?.text.trim() ?? '';
-      if (custom.isNotEmpty) {
-        answer.add(custom);
-      }
-      answers.add(answer);
-    }
-    setState(() => _submitting = true);
-    await widget.onReplyToQuestion(approval.requestId, answers);
-  }
-
-  Future<void> _reject(String requestId) async {
-    setState(() => _submitting = true);
-    await widget.onRejectQuestion(requestId);
-  }
-}
-
-/// One question within an [_ApprovalDock] showing [PendingQuestionApproval.
-/// questions]. Options render as accessible, keyboard/touch-operable
-/// [FilterChip]s; a free-text answer is offered alongside them whenever
-/// [QuestionPrompt.allowsCustomAnswer] is true.
-class _QuestionCard extends StatelessWidget {
-  const _QuestionCard({
-    required this.prompt,
-    required this.selected,
-    required this.customController,
-    required this.onToggleOption,
-  });
-
-  final QuestionPrompt prompt;
-  final Set<String> selected;
-  final TextEditingController customController;
-  final ValueChanged<String> onToggleOption;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Semantics(
-      container: true,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(prompt.header, style: theme.textTheme.labelLarge),
-          const SizedBox(height: 4),
-          Text(prompt.question),
-          if (prompt.options.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final option in prompt.options)
-                  Semantics(
-                    label: '${option.label}: ${option.description}',
-                    selected: selected.contains(option.label),
-                    button: true,
-                    child: FilterChip(
-                      label: Text(option.label),
-                      selected: selected.contains(option.label),
-                      onSelected: (_) => onToggleOption(option.label),
-                    ),
+          SafeArea(
+            top: false,
+            child: widget.capabilitiesViewModel == null
+                ? Composer(
+                    controller: _composerController,
+                    command: _selectedCommand,
+                    commands: const [],
+                    attachments: widget.viewModel.attachments,
+                    onPickAttachments: _pickAttachments,
+                    onRemoveAttachment: widget.viewModel.removeAttachment,
+                    onSelectCommand: _selectCommand,
+                    onSubmit: _submitComposer,
+                    voiceState: widget.voiceViewModel?.state,
+                    hasSelectedVoiceModel:
+                        widget.voiceViewModel?.hasSelectedModel,
+                    onVoicePressed: _toggleVoiceInput,
+                  )
+                : ValueListenableBuilder<CapabilitiesUiState>(
+                    valueListenable: widget.capabilitiesViewModel!,
+                    builder: (context, capabilitiesState, _) {
+                      final capabilities =
+                          capabilitiesState is CapabilitiesReady
+                          ? capabilitiesState.capabilities
+                          : null;
+                      final model = capabilities == null
+                          ? null
+                          : _selectedModel(capabilities.models);
+                      final agent = capabilities == null
+                          ? null
+                          : _selectedAgent(capabilities.agents);
+                      final executionLabel = capabilities == null
+                          ? null
+                          : '${model?.name ?? 'Default model'} · '
+                                '${agent?.name ?? 'Default agent'}';
+                      return Composer(
+                        controller: _composerController,
+                        command: _selectedCommand,
+                        commands: capabilities?.commands ?? const [],
+                        attachments: widget.viewModel.attachments,
+                        onPickAttachments: _pickAttachments,
+                        onRemoveAttachment: widget.viewModel.removeAttachment,
+                        onSelectCommand: _selectCommand,
+                        onSubmit: _submitComposer,
+                        voiceState: widget.voiceViewModel?.state,
+                        hasSelectedVoiceModel:
+                            widget.voiceViewModel?.hasSelectedModel,
+                        onVoicePressed: _toggleVoiceInput,
+                        executionLabel: executionLabel,
+                        onSelectExecution: capabilities == null
+                            ? null
+                            : () => _selectExecutionOptions(capabilities),
+                      );
+                    },
                   ),
-              ],
-            ),
-          ],
-          if (prompt.allowsCustomAnswer) ...[
-            const SizedBox(height: 8),
-            Semantics(
-              label: 'Custom answer for ${prompt.header}',
-              child: TextField(
-                controller: customController,
-                decoration: const InputDecoration(
-                  hintText: 'Or type your own answer',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _Composer extends StatelessWidget {
-  const _Composer({required this.controller, required this.onSubmit});
-
-  final TextEditingController controller;
-  final Future<void> Function() onSubmit;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Expanded(
-            child: Semantics(
-              label: 'Prompt composer',
-              hint: 'Enter a prompt; it joins the send queue',
-              child: TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 6,
-                textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
-                  hintText: 'Message this session…',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          IconButton.filled(
-            onPressed: () {
-              unawaited(onSubmit());
-            },
-            icon: const Icon(Icons.send),
-            tooltip: 'Queue this prompt',
           ),
         ],
       ),
@@ -822,136 +814,4 @@ class _Composer extends StatelessWidget {
   }
 }
 
-/// A slim, non-dismissible banner announcing [text] above the transcript.
-/// `liveRegion: true` makes a screen reader announce a status change (for
-/// example connected -> reconnecting) without the user having to find and
-/// re-read the banner themselves, matching this app's rule that
-/// connection state must not rely on color or animation alone.
-class _ConnectionStatusBanner extends StatelessWidget {
-  const _ConnectionStatusBanner(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Material(
-      color: theme.colorScheme.secondaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Semantics(
-          liveRegion: true,
-          child: Row(
-            children: [
-              Icon(
-                Icons.sync_problem_outlined,
-                size: 18,
-                color: theme.colorScheme.onSecondaryContainer,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  text,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSecondaryContainer,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, super.key});
-
-  final ChatMessage message;
-
-  @override
-  Widget build(BuildContext context) {
-    final userMessage = message.role == ChatMessageRole.user;
-    final theme = Theme.of(context);
-    final background = userMessage
-        ? theme.colorScheme.primaryContainer
-        : theme.colorScheme.surfaceContainerHighest;
-
-    return Align(
-      alignment: userMessage ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 640),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: background,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: _LinkifiedMessageText(
-              text: message.text,
-              style: theme.textTheme.bodyLarge,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LinkifiedMessageText extends StatefulWidget {
-  const _LinkifiedMessageText({required this.text, this.style});
-
-  final String text;
-  final TextStyle? style;
-
-  @override
-  State<_LinkifiedMessageText> createState() => _LinkifiedMessageTextState();
-}
-
-class _LinkifiedMessageTextState extends State<_LinkifiedMessageText> {
-  final _recognizers = <TapGestureRecognizer>[];
-
-  @override
-  void dispose() {
-    for (final recognizer in _recognizers) {
-      recognizer.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    for (final recognizer in _recognizers) {
-      recognizer.dispose();
-    }
-    _recognizers.clear();
-    final theme = Theme.of(context);
-    final linkStyle = widget.style?.copyWith(
-      color: theme.colorScheme.primary,
-      decoration: TextDecoration.underline,
-    );
-    final spans = <TextSpan>[];
-    final expression = RegExp(r'https?://[^\s)\]>]+');
-    var start = 0;
-    for (final match in expression.allMatches(widget.text)) {
-      if (match.start > start) {
-        spans.add(TextSpan(text: widget.text.substring(start, match.start)));
-      }
-      final urlText = match.group(0)!;
-      final recognizer = TapGestureRecognizer()
-        ..onTap = () =>
-            launchUrl(Uri.parse(urlText), mode: LaunchMode.externalApplication);
-      _recognizers.add(recognizer);
-      spans.add(
-        TextSpan(text: urlText, style: linkStyle, recognizer: recognizer),
-      );
-      start = match.end;
-    }
-    if (start < widget.text.length) {
-      spans.add(TextSpan(text: widget.text.substring(start)));
-    }
-    return SelectableText.rich(TextSpan(style: widget.style, children: spans));
-  }
-}
+enum _SessionAction { fork, share, unshare }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,10 +11,13 @@ import 'package:prompt/data/local/prompt_database.dart' show PromptDatabase;
 import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
+import 'package:prompt/features/chat/data/attachment_picker.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
 import 'package:prompt/features/chat/domain/pending_approval.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
+import 'package:prompt/features/chat/domain/prompt_attachment.dart';
+import 'package:prompt/features/chat/domain/session_artifacts.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
@@ -21,6 +25,8 @@ import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
 import 'package:prompt/features/queue/data/queue_send_coordinator.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
+import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
+import 'package:prompt/features/sessions/data/sessions_repository.dart';
 
 /// Lets Drift's `watch()` timer-scheduled re-query, and any pending
 /// microtask chain inside the view model or coordinator, reach a fixed
@@ -29,6 +35,11 @@ Future<void> _settle({int ticks = 25}) async {
   for (var i = 0; i < ticks; i++) {
     await Future<void>.delayed(Duration.zero);
   }
+}
+
+Future<void> _settleLive() async {
+  await Future<void>.delayed(const Duration(milliseconds: 70));
+  await _settle();
 }
 
 class _StaticPasswordStore implements CredentialsStore {
@@ -44,6 +55,11 @@ class _StaticPasswordStore implements CredentialsStore {
   Future<void> savePassword(String profileId, String? password) async {}
 }
 
+class _CancelledAttachmentPicker implements AttachmentPicker {
+  @override
+  Future<AttachmentPickResult> pick() async => const AttachmentPickCancelled();
+}
+
 /// A scripted OpenCode REST backend covering the transcript load, and the
 /// `prompt_async`/`abort`/`session/status` endpoints the queue coordinator
 /// depends on.
@@ -56,6 +72,8 @@ class _ScriptedChatBackend {
   /// Seeds the REST transcript returned by `GET .../message`, in the raw
   /// OpenCode message-record shape (`{info: {...}, parts: [...]}`).
   List<Map<String, dynamic>> restMessages = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> todos = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> diffs = <Map<String, dynamic>>[];
 
   int promptAsyncCallCount = 0;
   int abortCallCount = 0;
@@ -71,6 +89,12 @@ class _ScriptedChatBackend {
     final path = request.url.path;
     if (path.endsWith('/message')) {
       return http.Response(jsonEncode(restMessages), 200);
+    }
+    if (path.endsWith('/todo')) {
+      return http.Response(jsonEncode(todos), 200);
+    }
+    if (path.endsWith('/diff')) {
+      return http.Response(jsonEncode(diffs), 200);
     }
     if (path.endsWith('/prompt_async')) {
       promptAsyncCallCount++;
@@ -179,6 +203,10 @@ void main() {
 
     viewModel = ConversationViewModel(
       chatRepository: chatRepository,
+      sessionsRepository: SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(backend.client)),
+        const _StaticPasswordStore(),
+      ),
       queueRepositoryProvider: () async {
         repositoryProviderCallCount++;
         return sharedRepository ??= buildQueueRepository();
@@ -193,6 +221,7 @@ void main() {
           credentialsStore: const _StaticPasswordStore(),
         );
       },
+      attachmentPicker: _CancelledAttachmentPicker(),
     );
   });
 
@@ -212,7 +241,7 @@ void main() {
     backend.sessionStatusType = 'idle';
 
     await viewModel.open(profile, session);
-    await _settle();
+    await _settleLive();
 
     expect(viewModel.messages.value, isA<ConversationReady>());
     expect(viewModel.queue.value, isEmpty);
@@ -220,11 +249,38 @@ void main() {
     expect(coordinatorProviderCallCount, 1);
   });
 
+  test('open loads typed session artifacts alongside the transcript', () async {
+    backend.sessionStatusType = 'idle';
+    backend.todos = [
+      {
+        'id': 'todo-1',
+        'content': 'Review changes',
+        'status': 'pending',
+        'priority': 'medium',
+      },
+    ];
+    backend.diffs = [
+      {
+        'file': 'lib/app.dart',
+        'before': 'before',
+        'after': 'after',
+        'additions': 1,
+        'deletions': 1,
+      },
+    ];
+
+    await viewModel.open(profile, session);
+
+    final artifacts = viewModel.artifacts.value as SessionArtifactsReady;
+    expect(artifacts.todos.single.content, 'Review changes');
+    expect(artifacts.diffs.single.file, 'lib/app.dart');
+  });
+
   test('a live message.updated + message.part.updated event updates the '
       'visible transcript without a manual reload', () async {
     backend.sessionStatusType = 'idle';
     await viewModel.open(profile, session);
-    await _settle();
+    await _settleLive();
 
     final before = viewModel.messages.value;
     expect(before, isA<ConversationReady>());
@@ -242,7 +298,7 @@ void main() {
         'text': 'Streamed reply',
       },
     });
-    await _settle();
+    await _settleLive();
 
     final after = viewModel.messages.value;
     expect(after, isA<ConversationReady>());
@@ -270,7 +326,7 @@ void main() {
     ];
 
     await viewModel.open(profile, session);
-    await _settle();
+    await _settleLive();
 
     final loaded = viewModel.messages.value as ConversationReady;
     expect(loaded.messages.single.text, 'Original REST message');
@@ -287,7 +343,7 @@ void main() {
         'text': 'Streamed reply',
       },
     });
-    await _settle();
+    await _settleLive();
 
     final updated = viewModel.messages.value as ConversationReady;
     expect(updated.messages, hasLength(2));
@@ -392,6 +448,23 @@ void main() {
     expect(backend.promptAsyncCallCount, 0);
     expect(backend.abortCallCount, 0);
   });
+
+  test(
+    'releases selected attachment bytes when the conversation leaves',
+    () async {
+      await viewModel.open(profile, session);
+      final attachment = PromptAttachment(
+        name: 'notes.txt',
+        bytes: Uint8List.fromList([1, 2, 3]),
+      );
+      viewModel.attachments.value = [attachment];
+
+      await viewModel.leave();
+
+      expect(viewModel.attachments.value, isEmpty);
+      expect(attachment.isReleased, isTrue);
+    },
+  );
 
   test('removeFromQueue removes a queued prompt', () async {
     backend.sessionStatusType = 'busy';

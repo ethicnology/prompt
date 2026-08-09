@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/async/result.dart';
 import '../../connection/domain/server_profile.dart';
 import '../data/sessions_repository.dart';
+import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
 
@@ -19,9 +20,10 @@ class SessionsLoading extends SessionsUiState {
 }
 
 class SessionsReady extends SessionsUiState {
-  const SessionsReady(this.sessions);
+  const SessionsReady(this.sessions, this.projects);
 
   final List<OpenCodeSession> sessions;
+  final List<OpenCodeProject> projects;
 }
 
 class SessionsEmpty extends SessionsUiState {
@@ -43,13 +45,25 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
     value = const SessionsLoading();
     final result = await _repository.load(profile);
     switch (result) {
-      case SessionsLoaded(:final sessions):
+      case SessionsLoaded(:final sessions, :final projects):
         value = sessions.isEmpty
-            ? const SessionsEmpty()
-            : SessionsReady(sessions);
+            ? SessionsReady(const [], projects)
+            : SessionsReady(sessions, projects);
       case SessionsLoadFailed(:final failure):
         value = SessionsError(failure);
     }
+  }
+
+  Future<Result<OpenCodeSession, SessionsFailure>> create(
+    ServerProfile profile,
+    OpenCodeProject project, {
+    String? title,
+  }) async {
+    final result = await _repository.create(profile, project, title: title);
+    if (result case Ok<OpenCodeSession, SessionsFailure>()) {
+      await load(profile);
+    }
+    return result;
   }
 
   Future<SessionsFailure?> rename(

@@ -153,6 +153,28 @@ ConversationEvent? mapConversationEvent(
   }
 }
 
+/// Maps one record returned by `GET /permission` for [sessionId].
+/// The returned value is suitable for presentation only and must never be
+/// logged or persisted.
+PendingApproval? mapPendingPermission(
+  Map<String, dynamic> json, {
+  required String sessionId,
+}) {
+  final event = _mapPermissionUpdated(json, sessionId);
+  return event is SessionBlockedEvent ? event.detail : null;
+}
+
+/// Maps one record returned by `GET /question` for [sessionId].
+/// The returned value is suitable for presentation only and must never be
+/// logged or persisted.
+PendingApproval? mapPendingQuestion(
+  Map<String, dynamic> json, {
+  required String sessionId,
+}) {
+  final event = _mapQuestionAsked(json, sessionId);
+  return event is SessionBlockedEvent ? event.detail : null;
+}
+
 ConversationEvent? _mapMessageUpdated(
   Map<String, dynamic> properties,
   String sessionId,
@@ -254,10 +276,25 @@ MessagePart? _mapMessagePart(Map<String, dynamic> json) {
         messageId: messageId,
         tool: tool,
         status: status,
+        summary: _toolSummary(tool, state['input']),
+        error: state['error'] is String ? state['error'] as String : null,
       );
     default:
       return OtherMessagePart(id: id, messageId: messageId, partType: type);
   }
+}
+
+String? _toolSummary(String tool, Object? input) {
+  if (input is! Map<String, dynamic>) return null;
+  final description = input['description'];
+  if (tool == 'task' && description is String && description.isNotEmpty) {
+    return description;
+  }
+  for (final key in const ['command', 'filePath', 'path', 'pattern', 'query']) {
+    final value = input[key];
+    if (value is String && value.isNotEmpty) return value;
+  }
+  return null;
 }
 
 ToolPartStatus? _mapToolStatus(Object? status) {

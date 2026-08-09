@@ -1,13 +1,16 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
+import 'package:prompt/features/queue/domain/queued_prompt.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
+import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
 void main() {
@@ -51,28 +54,88 @@ void main() {
       });
     });
 
-    test('succeeds only on an empty 204 response', () async {
-      final client = MockClient((_) async => http.Response('', 204));
-      final service = OpenCodeChatService(OpenCodeTransport(client));
+    test('accepts every successful OpenCode response status', () async {
+      final statuses = [200, 202, 204];
+      for (final status in statuses) {
+        final client = MockClient((_) async => http.Response('{}', status));
+        final service = OpenCodeChatService(OpenCodeTransport(client));
 
-      await expectLater(
-        service.sendPromptAsync(profile, 'secret', session, 'Hello'),
-        completes,
-      );
+        await expectLater(
+          service.sendPromptAsync(profile, 'secret', session, 'Hello'),
+          completes,
+        );
+      }
     });
 
-    test('rejects a 204 response with a non-empty body', () async {
-      final client = MockClient((_) async => http.Response('{}', 204));
+    test(
+      'includes selected model and agent with OpenCode API field names',
+      () async {
+        http.Request? captured;
+        final client = MockClient((request) async {
+          captured = request;
+          return http.Response('', 204);
+        });
+        final service = OpenCodeChatService(OpenCodeTransport(client));
+
+        await service.sendPromptAsync(
+          profile,
+          'secret',
+          session,
+          'Hello',
+          executionOptions: const PromptExecutionOptions(
+            modelProviderId: 'anthropic',
+            modelId: 'claude-sonnet-4',
+            agentName: 'build',
+          ),
+        );
+
+        expect(jsonDecode(captured!.body), {
+          'parts': [
+            {'type': 'text', 'text': 'Hello'},
+          ],
+          'model': {'providerID': 'anthropic', 'modelID': 'claude-sonnet-4'},
+          'agent': 'build',
+        });
+      },
+    );
+
+    test('sends attachments as OpenCode file parts with data URLs', () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response('', 204);
+      });
       final service = OpenCodeChatService(OpenCodeTransport(client));
 
-      await expectLater(
-        service.sendPromptAsync(profile, 'secret', session, 'Hello'),
-        throwsA(isA<FormatException>()),
+      await service.sendPromptAsync(
+        profile,
+        'secret',
+        session,
+        'Read this',
+        attachments: [
+          QueuedAttachment(
+            name: 'notes.txt',
+            mediaType: 'text/plain',
+            bytes: Uint8List.fromList([104, 105]),
+          ),
+        ],
       );
+
+      expect(jsonDecode(captured!.body), {
+        'parts': [
+          {'type': 'text', 'text': 'Read this'},
+          {
+            'type': 'file',
+            'mime': 'text/plain',
+            'filename': 'notes.txt',
+            'url': 'data:text/plain;base64,aGk=',
+          },
+        ],
+      });
     });
 
-    test('rejects a non-204 success status', () async {
-      final client = MockClient((_) async => http.Response('', 200));
+    test('rejects a non-success status', () async {
+      final client = MockClient((_) async => http.Response('', 400));
       final service = OpenCodeChatService(OpenCodeTransport(client));
 
       await expectLater(
@@ -94,6 +157,52 @@ void main() {
             401,
           ),
         ),
+      );
+    });
+  });
+
+  group('session artifacts', () {
+    test('gets todos and an optionally message-scoped diff', () async {
+      final requests = <http.Request>[];
+      final client = MockClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/todo')) {
+          return http.Response(
+            '[{"id":"todo-1","content":"Review","status":"in_progress","priority":"high"}]',
+            200,
+          );
+        }
+        return http.Response(
+          '[{"file":"lib/a.dart","before":"old","after":"new","additions":1,"deletions":1}]',
+          200,
+        );
+      });
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      final todos = await service.listTodos(profile, 'secret', session);
+      final diffs = await service.listDiffs(
+        profile,
+        'secret',
+        session,
+        messageId: 'message 1',
+      );
+
+      expect(todos.single.content, 'Review');
+      expect(diffs.single.file, 'lib/a.dart');
+      expect(requests[0].url.path, '/session/session%201/todo');
+      expect(requests[1].url.path, '/session/session%201/diff');
+      expect(requests[1].url.queryParameters['messageID'], 'message 1');
+      expect(requests[0].url.queryParameters, isEmpty);
+    });
+
+    test('rejects malformed artifact responses', () async {
+      final service = OpenCodeChatService(
+        OpenCodeTransport(MockClient((_) async => http.Response('{}', 200))),
+      );
+
+      await expectLater(
+        service.listTodos(profile, 'secret', session),
+        throwsA(isA<FormatException>()),
       );
     });
   });
@@ -155,6 +264,52 @@ void main() {
             401,
           ),
         ),
+      );
+    });
+  });
+
+  group('executeCommand', () {
+    test('posts the official command body with execution defaults', () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response('{}', 200);
+      });
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      await service.executeCommand(
+        profile,
+        'secret',
+        session,
+        'review',
+        'lib/',
+        executionOptions: const PromptExecutionOptions(
+          modelProviderId: 'anthropic',
+          modelId: 'claude-sonnet-4',
+          agentName: 'build',
+        ),
+      );
+
+      final request = captured!;
+      expect(request.method, 'POST');
+      expect(request.url.path, '/session/session%201/command');
+      expect(request.url.queryParameters['directory'], session.directory);
+      expect(jsonDecode(request.body), {
+        'command': 'review',
+        'arguments': 'lib/',
+        'agent': 'build',
+        'model': {'providerID': 'anthropic', 'modelID': 'claude-sonnet-4'},
+      });
+    });
+
+    test('rejects a non-success command response', () async {
+      final service = OpenCodeChatService(
+        OpenCodeTransport(MockClient((_) async => http.Response('', 409))),
+      );
+
+      await expectLater(
+        service.executeCommand(profile, 'secret', session, 'review', ''),
+        throwsA(isA<OpenCodeHttpFailure>()),
       );
     });
   });

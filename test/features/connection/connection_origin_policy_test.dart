@@ -25,6 +25,21 @@ void main() {
       );
     });
 
+    test('accepts Tailscale CGNAT IPv4 origins over HTTP', () {
+      expect(
+        ConnectionOriginPolicy.supports(Uri.parse('http://100.64.0.1:4096')),
+        isTrue,
+      );
+      expect(
+        ConnectionOriginPolicy.supports(Uri.parse('http://100.127.255.255')),
+        isTrue,
+      );
+      expect(
+        ConnectionOriginPolicy.supports(Uri.parse('http://100.128.0.1')),
+        isFalse,
+      );
+    });
+
     test('rejects public origins even when they use HTTPS', () {
       expect(
         ConnectionOriginPolicy.supports(Uri.parse('http://198.51.100.1:4096')),

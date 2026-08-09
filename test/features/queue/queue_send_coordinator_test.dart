@@ -25,6 +25,7 @@ import 'package:prompt/features/queue/domain/queue_approval_failure.dart';
 import 'package:prompt/features/queue/domain/queue_failure.dart';
 import 'package:prompt/features/queue/domain/queue_send_now_failure.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
+import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
 import 'package:prompt/features/queue/domain/sse_connection_state.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
@@ -71,9 +72,12 @@ class _ScriptedChatBackend {
   Completer<void>? sessionStatusGate;
 
   int promptAsyncCallCount = 0;
+  int commandCallCount = 0;
   int abortCallCount = 0;
   int sessionStatusCallCount = 0;
   final List<String> promptAsyncOrder = <String>[];
+  Map<String, dynamic>? lastPromptAsyncBody;
+  Map<String, dynamic>? lastCommandBody;
 
   int permissionResponseStatusCode = 200;
   int questionReplyStatusCode = 200;
@@ -90,12 +94,18 @@ class _ScriptedChatBackend {
     final path = request.url.path;
     if (path.endsWith('/prompt_async')) {
       promptAsyncCallCount++;
+      lastPromptAsyncBody = jsonDecode(request.body) as Map<String, dynamic>;
       promptAsyncOrder.add(_promptText(request.body));
       final gate = promptAsyncGate;
       if (gate != null) {
         await gate.future;
       }
       return http.Response('', promptAsyncStatusCode);
+    }
+    if (path.endsWith('/command')) {
+      commandCallCount++;
+      lastCommandBody = jsonDecode(request.body) as Map<String, dynamic>;
+      return http.Response('{}', 200);
     }
     if (path.endsWith('/abort')) {
       abortCallCount++;
@@ -276,11 +286,25 @@ void main() {
     await database.close();
   });
 
-  Future<QueuedPrompt> enqueue(String text) async {
+  Future<QueuedPrompt> enqueue(
+    String text, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
     final result = await queueRepository.enqueue(
       profile: profile,
       session: session,
       promptText: text,
+      executionOptions: executionOptions,
+    );
+    return (result as Ok<QueuedPrompt, QueueFailure>).value;
+  }
+
+  Future<QueuedPrompt> enqueueCommand(String name, String arguments) async {
+    final result = await queueRepository.enqueueCommand(
+      profile: profile,
+      session: session,
+      commandName: name,
+      arguments: arguments,
     );
     return (result as Ok<QueuedPrompt, QueueFailure>).value;
   }
@@ -290,6 +314,32 @@ void main() {
   }
 
   group('activate', () {
+    test('queues a command while busy and dispatches its official operation '
+        'once the session becomes idle', () async {
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      final command = await enqueueCommand('review', 'lib/');
+      await _settle();
+      expect(command.operationType, QueuedOperationType.command);
+      expect(backend.commandCallCount, 0);
+      expect(backend.abortCallCount, 0);
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+
+      expect(backend.commandCallCount, 1);
+      expect(backend.lastCommandBody, {
+        'command': 'review',
+        'arguments': 'lib/',
+      });
+      expect(
+        (await currentQueue()).single.state,
+        QueuedPromptState.acknowledged,
+      );
+    });
+
     test('reconciles a persisted sending prompt to paused/submissionUnknown '
         'before any dispatch', () async {
       final prompt = await enqueue('first');
@@ -303,6 +353,30 @@ void main() {
       expect(queue.single.state, QueuedPromptState.paused);
       expect(queue.single.pauseReason, QueuePauseReason.submissionUnknown);
       expect(backend.promptAsyncCallCount, 0);
+    });
+
+    test('dispatches the queued execution options unchanged', () async {
+      backend.sessionStatusType = 'idle';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+
+      await enqueue(
+        'first',
+        executionOptions: const PromptExecutionOptions(
+          modelProviderId: 'anthropic',
+          modelId: 'claude-sonnet-4',
+          agentName: 'build',
+        ),
+      );
+      await _settle();
+
+      expect(backend.lastPromptAsyncBody, {
+        'parts': [
+          {'type': 'text', 'text': 'first'},
+        ],
+        'model': {'providerID': 'anthropic', 'modelID': 'claude-sonnet-4'},
+        'agent': 'build',
+      });
     });
 
     test('dispatches the queue head immediately when the authoritative '

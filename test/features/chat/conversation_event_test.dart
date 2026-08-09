@@ -148,7 +148,7 @@ void main() {
       expect((part as ReasoningMessagePart).text, 'thinking...');
     });
 
-    test('maps a tool part as a placeholder with status only', () {
+    test('maps a tool part with a safe live summary', () {
       final event = mapConversationEvent(
         _envelope('message.part.updated', {
           'part': {
@@ -172,6 +172,29 @@ void main() {
       final tool = part as ToolMessagePart;
       expect(tool.tool, 'bash');
       expect(tool.status, ToolPartStatus.running);
+      expect(tool.summary, 'ls');
+    });
+
+    test('keeps a subagent task description while it is running', () {
+      final event = mapConversationEvent(
+        _envelope('message.part.updated', {
+          'part': {
+            'id': 'part_task',
+            'sessionID': sessionId,
+            'messageID': 'msg_1',
+            'type': 'tool',
+            'tool': 'task',
+            'state': {
+              'status': 'running',
+              'input': {'description': 'Review the authentication flow'},
+            },
+          },
+        }),
+        sessionId: sessionId,
+      );
+
+      final tool = (event as MessagePartUpdatedEvent).part as ToolMessagePart;
+      expect(tool.summary, 'Review the authentication flow');
     });
 
     test('maps every documented tool status', () {

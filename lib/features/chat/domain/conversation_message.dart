@@ -60,10 +60,17 @@ final class ToolMessagePart extends MessagePart {
     required super.messageId,
     required this.tool,
     required this.status,
+    this.summary,
+    this.error,
   });
 
   final String tool;
   final ToolPartStatus status;
+
+  /// A short user-visible description, such as a subagent task description.
+  /// It is kept in memory only and is never logged or persisted.
+  final String? summary;
+  final String? error;
 }
 
 /// Any other OpenCode part type (file, agent, step markers, snapshots,

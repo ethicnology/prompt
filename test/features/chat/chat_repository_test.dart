@@ -12,7 +12,9 @@ import 'package:prompt/features/chat/domain/chat_load_result.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
+import 'package:prompt/features/chat/domain/session_artifacts.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
+import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
 void main() {
@@ -74,8 +76,82 @@ void main() {
     expect((result as ChatLoadFailed).failure, ChatFailure.unauthorized);
   });
 
+  group('loadArtifacts', () {
+    test('maps the official todo and snapshot diff schemas', () async {
+      final client = MockClient((request) async {
+        if (request.url.path.endsWith('/todo')) {
+          // OpenCode's `Todo` carries no id.
+          return http.Response(
+            '[{"content":"Ship it","status":"completed","priority":"low"}]',
+            200,
+          );
+        }
+        return http.Response(
+          '[{"file":"lib/app.dart","patch":"@@ -1 +1 @@","status":"modified",'
+          '"additions":2,"deletions":1}]',
+          200,
+        );
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.loadArtifacts(profile, session);
+
+      expect(result, isA<Ok<SessionArtifactsReady, SessionArtifactsFailure>>());
+      final artifacts =
+          (result as Ok<SessionArtifactsReady, SessionArtifactsFailure>).value;
+      expect(artifacts.todos.single.status, SessionTodoStatus.completed);
+      expect(artifacts.todos.single.id, isNull);
+      expect(artifacts.diffs.single.additions, 2);
+      expect(artifacts.diffs.single.patch, '@@ -1 +1 @@');
+      expect(artifacts.diffs.single.status, 'modified');
+    });
+
+    test('keeps a diff that reports only its change counters', () async {
+      final client = MockClient((request) async {
+        if (request.url.path.endsWith('/todo')) {
+          return http.Response('[]', 200);
+        }
+        return http.Response('[{"additions":3,"deletions":0}]', 200);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.loadArtifacts(profile, session);
+
+      final artifacts =
+          (result as Ok<SessionArtifactsReady, SessionArtifactsFailure>).value;
+      expect(artifacts.diffs.single.file, isEmpty);
+      expect(artifacts.diffs.single.patch, isEmpty);
+    });
+
+    test('maps malformed artifacts to a typed failure', () async {
+      final repository = ChatRepository(
+        OpenCodeChatService(
+          OpenCodeTransport(MockClient((_) async => http.Response('{}', 200))),
+        ),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.loadArtifacts(profile, session);
+
+      expect(
+        result,
+        isA<Err<SessionArtifactsReady, SessionArtifactsFailure>>(),
+      );
+      expect(
+        (result as Err<SessionArtifactsReady, SessionArtifactsFailure>).failure,
+        SessionArtifactsFailure.unexpectedResponse,
+      );
+    });
+  });
+
   group('sendPrompt', () {
-    test('accepts a prompt on an empty 204 response', () async {
+    test('accepts a prompt on a successful response', () async {
       final client = MockClient((request) async {
         expect(request.method, 'POST');
         expect(request.url.path, '/session/session-1/prompt_async');
@@ -116,28 +192,35 @@ void main() {
       );
     });
 
-    test(
-      'maps a malformed 204 body to an unexpected-response failure',
-      () async {
-        final client = MockClient((_) async => http.Response('{}', 204));
-        final repository = ChatRepository(
-          OpenCodeChatService(OpenCodeTransport(client)),
-          const _PasswordStore('secret'),
-        );
+    test('forwards selected execution options to the service', () async {
+      final client = MockClient((request) async {
+        expect(jsonDecode(request.body), {
+          'parts': [
+            {'type': 'text', 'text': 'Explain this'},
+          ],
+          'model': {'providerID': 'openai', 'modelID': 'gpt-5'},
+          'agent': 'plan',
+        });
+        return http.Response('', 204);
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
 
-        final result = await repository.sendPrompt(
-          profile,
-          session,
-          'Explain this',
-        );
+      final result = await repository.sendPrompt(
+        profile,
+        session,
+        'Explain this',
+        executionOptions: const PromptExecutionOptions(
+          modelProviderId: 'openai',
+          modelId: 'gpt-5',
+          agentName: 'plan',
+        ),
+      );
 
-        expect(result, isA<Err<void, ChatFailure>>());
-        expect(
-          (result as Err<void, ChatFailure>).failure,
-          ChatFailure.unexpectedResponse,
-        );
-      },
-    );
+      expect(result, isA<Ok<void, ChatFailure>>());
+    });
   });
 
   group('abortSession', () {
@@ -171,6 +254,30 @@ void main() {
       expect(result, isA<Err<bool, ChatFailure>>());
       expect(
         (result as Err<bool, ChatFailure>).failure,
+        ChatFailure.unauthorized,
+      );
+    });
+  });
+
+  group('executeCommand', () {
+    test('uses typed failure mapping for rejected commands', () async {
+      final repository = ChatRepository(
+        OpenCodeChatService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 401))),
+        ),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.executeCommand(
+        profile,
+        session,
+        'review',
+        'lib/',
+      );
+
+      expect(result, isA<Err<void, ChatFailure>>());
+      expect(
+        (result as Err<void, ChatFailure>).failure,
         ChatFailure.unauthorized,
       );
     });

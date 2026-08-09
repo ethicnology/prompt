@@ -19,6 +19,17 @@ class QueuedPrompts extends Table {
   TextColumn get directory => text()();
   IntColumn get position => integer()();
   TextColumn get promptText => text()();
+  TextColumn get operationType =>
+      text().withDefault(const Constant('prompt'))();
+  TextColumn get commandName => text().nullable()();
+
+  /// JSON array of `{name, mediaType, base64}` objects, or null when the
+  /// prompt carries no file. Stored in the encrypted database exactly like
+  /// [promptText], and never logged or exported.
+  TextColumn get attachmentsJson => text().nullable()();
+  TextColumn get modelProviderId => text().nullable()();
+  TextColumn get modelId => text().nullable()();
+  TextColumn get agentName => text().nullable()();
   TextColumn get state => text()();
   TextColumn get pauseReason => text().nullable()();
   IntColumn get attemptCount => integer().withDefault(const Constant(0))();
@@ -51,13 +62,33 @@ class PromptDatabase extends _$PromptDatabase {
   PromptDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
     return MigrationStrategy(
       onCreate: (migrator) async {
         await migrator.createAll();
+      },
+      onUpgrade: (migrator, from, to) async {
+        if (from < 2) {
+          await migrator.addColumn(
+            queuedPrompts,
+            queuedPrompts.modelProviderId,
+          );
+          await migrator.addColumn(queuedPrompts, queuedPrompts.modelId);
+          await migrator.addColumn(queuedPrompts, queuedPrompts.agentName);
+        }
+        if (from < 3) {
+          await migrator.addColumn(queuedPrompts, queuedPrompts.operationType);
+          await migrator.addColumn(queuedPrompts, queuedPrompts.commandName);
+        }
+        if (from < 4) {
+          await migrator.addColumn(
+            queuedPrompts,
+            queuedPrompts.attachmentsJson,
+          );
+        }
       },
     );
   }

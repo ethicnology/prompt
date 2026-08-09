@@ -35,6 +35,9 @@ dependencies:
   flutter_secure_storage: ^10.3.1
   crypto: ^3.0.7
   http: ^1.6.0
+  # Dart team's BSD-3-Clause WebSocket transport. It supports Android, Linux,
+  # and web through one API, so PTY tickets never require platform imports.
+  web_socket_channel: ^3.0.3
   drift: ^2.34.2
   drift_flutter: ^0.3.1
   # Direct dependency (not just transitive through drift) because Android/Linux
@@ -47,6 +50,18 @@ dependencies:
   # opens.
   path_provider: ^2.1.5
   url_launcher: ^6.3.2
+  # Native file selection for prompt attachments on Android, iOS, Linux, and
+  # Web. Selected bytes remain memory-only until the prompt is submitted.
+  file_picker: ^10.3.3
+  # BSD-3-Clause, actively maintained local-notification adapter. It uses the
+  # native Android/iOS/Linux APIs and the browser Notifications API on Web.
+  flutter_local_notifications: ^22.3.0
+  # BSD-3-Clause, maintained recorder with Android/iOS PCM stream support.
+  # It is used only by the Android/iOS voice implementation.
+  record: ^7.1.1
+  # MIT-licensed on-device Whisper.cpp adapter. Imported only by the native
+  # Android/iOS implementation; web and Linux retain unavailable stubs.
+  whisper_ggml: ^2.6.0
 
 dev_dependencies:
   flutter_test:

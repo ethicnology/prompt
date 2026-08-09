@@ -80,7 +80,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       return 'Web browsers require HTTPS, even through WireGuard.';
     }
     if (!ConnectionOriginPolicy.supports(origin)) {
-      return 'HTTP is only permitted for a private WireGuard address.';
+      return 'HTTP is only permitted for a private WireGuard or Tailscale address.';
     }
     return null;
   }
@@ -178,7 +178,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            'HTTP is permitted only on a private WireGuard address. Credentials stay on this device.',
+                            'HTTP is permitted only on a private WireGuard or Tailscale address. Credentials stay on this device.',
                             style: theme.textTheme.bodySmall,
                             textAlign: TextAlign.center,
                           ),

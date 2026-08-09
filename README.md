@@ -6,6 +6,16 @@ Prompt targets Android, Linux, and Web. It connects only to a user-controlled
 server reachable through WireGuard and is designed around a non-interrupting
 prompt queue, responsive streaming, and local-first voice transcription.
 
+## Voice status
+
+Voice input is configured once from **Voice settings**. After selecting a local
+multilingual Whisper model, the conversation composer shows a Voice input
+button beside Send. It streams local transcription into the draft and requests
+microphone permission only from that direct action. Audio and transcripts are
+never sent remotely or retained on disk. Android currently provides the native
+engine; Linux and Web truthfully remain unavailable until their native/WASM
+adapters are bundled.
+
 The product scope is in [PLAN.md](PLAN.md); the binding implementation rules
 are in [ARCHITECTURE.md](ARCHITECTURE.md) and [AGENTS.md](AGENTS.md).
 

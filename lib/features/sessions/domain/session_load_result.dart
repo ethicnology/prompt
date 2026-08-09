@@ -1,4 +1,5 @@
 import '../../../core/async/result.dart';
+import 'open_code_project.dart';
 import 'open_code_session.dart';
 
 sealed class SessionLoadResult {
@@ -6,9 +7,10 @@ sealed class SessionLoadResult {
 }
 
 class SessionsLoaded extends SessionLoadResult {
-  const SessionsLoaded(this.sessions);
+  const SessionsLoaded(this.sessions, {this.projects = const []});
 
   final List<OpenCodeSession> sessions;
+  final List<OpenCodeProject> projects;
 }
 
 class SessionsLoadFailed extends SessionLoadResult {
@@ -20,6 +22,9 @@ class SessionsLoadFailed extends SessionLoadResult {
 enum SessionsFailure { unauthorized, unavailable, unexpectedResponse }
 
 typedef SessionMutationResult = Result<void, SessionsFailure>;
+typedef SessionCreateResult = Result<OpenCodeSession, SessionsFailure>;
+typedef SessionShareResult = Result<String?, SessionsFailure>;
+typedef SessionRevertResult = Result<bool, SessionsFailure>;
 
 extension SessionsFailureMessage on SessionsFailure {
   String get message {

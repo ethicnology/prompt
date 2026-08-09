@@ -1,19 +1,39 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
+import 'package:prompt/features/chat/data/attachment_picker.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
 import 'package:prompt/features/chat/domain/pending_approval.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
+import 'package:prompt/features/chat/domain/prompt_attachment.dart';
+import 'package:prompt/features/chat/domain/session_artifacts.dart';
 import 'package:prompt/features/chat/presentation/conversation_screen.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
+import 'package:prompt/features/capabilities/data/capabilities_repository.dart';
+import 'package:prompt/features/capabilities/data/opencode_capabilities_service.dart';
+import 'package:prompt/features/capabilities/domain/open_code_capabilities.dart';
+import 'package:prompt/features/capabilities/domain/open_code_slash_command.dart';
+import 'package:prompt/features/capabilities/presentation/capabilities_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
+import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
+import 'package:prompt/features/sessions/domain/session_load_result.dart';
+import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
+import 'package:prompt/features/sessions/data/sessions_repository.dart';
+import 'package:prompt/features/voice/data/voice_engine.dart';
+import 'package:prompt/features/voice/data/voice_model_picker.dart';
+import 'package:prompt/features/voice/data/voice_repository.dart';
+import 'package:prompt/features/voice/presentation/voice_view_model.dart';
 
 class _StaticPasswordStore implements CredentialsStore {
   const _StaticPasswordStore();
@@ -26,6 +46,49 @@ class _StaticPasswordStore implements CredentialsStore {
 
   @override
   Future<void> savePassword(String profileId, String? password) async {}
+}
+
+class _CancelledAttachmentPicker implements AttachmentPicker {
+  @override
+  Future<AttachmentPickResult> pick() async => const AttachmentPickCancelled();
+}
+
+class _VoiceModelPicker implements VoiceModelPicker {
+  @override
+  Future<String?> pickModelFromUserAction() async => '/model.bin';
+}
+
+class _VoiceEngine implements VoiceEngine {
+  _VoiceEngine(this.capture);
+
+  final _VoiceCapture capture;
+
+  @override
+  Future<Result<void, VoiceEngineFailure>>
+  requestMicrophonePermission() async => const Ok(null);
+
+  @override
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
+    String modelPath,
+  ) async => Ok(capture);
+}
+
+class _VoiceCapture implements VoiceCapture {
+  _VoiceCapture(this.transcript);
+
+  final String transcript;
+  final partials = StreamController<String>();
+
+  @override
+  Stream<String> get partialTranscripts => partials.stream;
+
+  @override
+  Future<void> release() async {
+    unawaited(partials.close());
+  }
+
+  @override
+  Future<Result<String, VoiceEngineFailure>> stop() async => Ok(transcript);
 }
 
 /// A [ConversationViewModel] test double that never touches the real
@@ -44,16 +107,27 @@ class _FakeConversationViewModel extends ConversationViewModel {
           ),
           const _StaticPasswordStore(),
         ),
+        sessionsRepository: SessionsRepository(
+          OpenCodeSessionsService(
+            OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+          ),
+          const _StaticPasswordStore(),
+        ),
         queueRepositoryProvider: () =>
             throw UnsupportedError('not used by the fake'),
         queueCoordinatorProvider: () =>
             throw UnsupportedError('not used by the fake'),
+        attachmentPicker: _CancelledAttachmentPicker(),
       );
 
   int enqueueCallCount = 0;
   int removeCallCount = 0;
   int sendNowCallCount = 0;
   final List<String> enqueuedTexts = <String>[];
+  int enqueueCommandCallCount = 0;
+  String? lastCommandName;
+  String? lastCommandArguments;
+  PromptExecutionOptions? lastCommandOptions;
   String? lastRemovedId;
   String? lastSendNowId;
   bool openCalled = false;
@@ -69,6 +143,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
 
   int rejectQuestionCallCount = 0;
   String? lastRejectedRequestId;
+  String? lastRevertedMessageId;
 
   int _nextId = 0;
 
@@ -86,13 +161,30 @@ class _FakeConversationViewModel extends ConversationViewModel {
   }
 
   @override
-  Future<void> enqueuePrompt(String text) async {
+  Future<bool> enqueuePrompt(
+    String text, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
     enqueueCallCount++;
     enqueuedTexts.add(text);
     queue.value = [
       ...queue.value,
       _prompt('prompt-${_nextId++}', text, QueuedPromptState.queued),
     ];
+    return true;
+  }
+
+  @override
+  Future<bool> enqueueCommand(
+    String commandName,
+    String arguments, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
+    enqueueCommandCallCount++;
+    lastCommandName = commandName;
+    lastCommandArguments = arguments;
+    lastCommandOptions = executionOptions;
+    return true;
   }
 
   @override
@@ -139,6 +231,12 @@ class _FakeConversationViewModel extends ConversationViewModel {
     pendingApproval.value = null;
   }
 
+  @override
+  Future<SessionsFailure?> revert(String messageId) async {
+    lastRevertedMessageId = messageId;
+    return null;
+  }
+
   QueuedPrompt _prompt(String id, String text, QueuedPromptState state) {
     final now = DateTime.now();
     return QueuedPrompt(
@@ -176,7 +274,11 @@ void main() {
     viewModel = _FakeConversationViewModel();
   });
 
-  Future<void> pumpScreen(WidgetTester tester) async {
+  Future<void> pumpScreen(
+    WidgetTester tester, {
+    CapabilitiesViewModel? capabilitiesViewModel,
+    VoiceViewModel? voiceViewModel,
+  }) async {
     // Default to a settled, empty transcript unless a test seeds its own:
     // the loading state renders an indeterminate `CircularProgressIndicator`,
     // whose animation never lets `pumpAndSettle` return.
@@ -189,6 +291,8 @@ void main() {
           profile: profile,
           session: session,
           viewModel: viewModel,
+          capabilitiesViewModel: capabilitiesViewModel,
+          voiceViewModel: voiceViewModel,
         ),
       ),
     );
@@ -215,6 +319,39 @@ void main() {
     },
   );
 
+  testWidgets('streams voice transcription into the composer', (tester) async {
+    final capture = _VoiceCapture('Bonjour le monde');
+    final voiceViewModel = VoiceViewModel(
+      VoiceRepository(_VoiceEngine(capture), _VoiceModelPicker()),
+    );
+    await voiceViewModel.selectModelFromUserAction();
+    await pumpScreen(tester, voiceViewModel: voiceViewModel);
+
+    expect(find.byTooltip('Start voice input'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'Existing draft');
+    await tester.tap(find.byTooltip('Start voice input'));
+    await tester.pump();
+    capture.partials.add('Bonjour');
+    await tester.pump();
+
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Existing draft\nBonjour',
+    );
+
+    await tester.tap(find.byTooltip('Stop voice input'));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump();
+
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Existing draft\nBonjour le monde',
+    );
+    await voiceViewModel.dispose();
+  });
+
   testWidgets(
     'submitting the composer enqueues the prompt instead of sending it '
     'directly, and clears the field',
@@ -222,6 +359,7 @@ void main() {
       await pumpScreen(tester);
 
       await tester.enterText(find.byType(TextField), 'Hello session');
+      await tester.pump();
       await tester.tap(find.byTooltip('Queue this prompt'));
       await tester.pump();
 
@@ -238,6 +376,7 @@ void main() {
     await pumpScreen(tester);
 
     await tester.enterText(find.byType(TextField), '   ');
+    await tester.pump();
     await tester.tap(find.byTooltip('Queue this prompt'));
     await tester.pump();
 
@@ -245,11 +384,96 @@ void main() {
     expect(find.text('Queue: empty'), findsNothing);
   });
 
+  testWidgets('shows removable attachment chips and queues their prompt', (
+    tester,
+  ) async {
+    viewModel.attachments.value = [
+      PromptAttachment(name: 'notes.txt', bytes: Uint8List.fromList([1])),
+    ];
+    await pumpScreen(tester);
+
+    expect(find.textContaining('notes.txt'), findsOneWidget);
+    expect(find.byTooltip('Remove attachment'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'Read this');
+    await tester.pump();
+    await tester.tap(find.byTooltip('Queue this prompt'));
+    await tester.pump();
+
+    expect(viewModel.enqueueCallCount, 1);
+  });
+
+  testWidgets('removing an attachment chip releases it from the composer', (
+    tester,
+  ) async {
+    final attachment = PromptAttachment(
+      name: 'notes.txt',
+      bytes: Uint8List.fromList([1]),
+    );
+    viewModel.attachments.value = [attachment];
+    await pumpScreen(tester);
+
+    await tester.tap(find.byTooltip('Remove attachment'));
+    await tester.pump();
+
+    expect(viewModel.attachments.value, isEmpty);
+    expect(attachment.isReleased, isTrue);
+  });
+
+  testWidgets('selects a discovered slash command and queues its arguments '
+      'with advertised agent and model defaults', (tester) async {
+    final capabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    await pumpScreen(tester, capabilitiesViewModel: capabilities);
+    capabilities.value = CapabilitiesReady(
+      OpenCodeCapabilities(
+        models: const [],
+        agents: const [],
+        commands: const [
+          OpenCodeSlashCommand(
+            name: 'review',
+            description: 'Review the selected files',
+            agentName: 'build',
+            model: OpenCodeModelReference(
+              providerId: 'anthropic',
+              modelId: 'claude-sonnet',
+            ),
+            isSubtask: false,
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Choose slash command'));
+    await tester.pumpAndSettle();
+    expect(find.text('/review'), findsOneWidget);
+    await tester.tap(find.text('/review'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'lib/');
+    await tester.tap(find.byTooltip('Queue command'));
+    await tester.pump();
+
+    expect(viewModel.enqueueCommandCallCount, 1);
+    expect(viewModel.lastCommandName, 'review');
+    expect(viewModel.lastCommandArguments, 'lib/');
+    expect(viewModel.lastCommandOptions!.agentName, 'build');
+    expect(viewModel.lastCommandOptions!.modelProviderId, 'anthropic');
+    capabilities.dispose();
+  });
+
   testWidgets(
     'shows a send-now control only for a prompt that is still queued',
     (tester) async {
       await pumpScreen(tester);
       await tester.enterText(find.byType(TextField), 'Queued prompt');
+      await tester.pump();
       await tester.tap(find.byTooltip('Queue this prompt'));
       await tester.pump();
 
@@ -279,6 +503,7 @@ void main() {
     (tester) async {
       await pumpScreen(tester);
       await tester.enterText(find.byType(TextField), 'First');
+      await tester.pump();
       await tester.tap(find.byTooltip('Queue this prompt'));
       await tester.pump();
       final promptId = viewModel.queue.value.single.id;
@@ -316,6 +541,7 @@ void main() {
   testWidgets('remove takes a prompt out of the queue', (tester) async {
     await pumpScreen(tester);
     await tester.enterText(find.byType(TextField), 'Removable');
+    await tester.pump();
     await tester.tap(find.byTooltip('Queue this prompt'));
     await tester.pump();
     final promptId = viewModel.queue.value.single.id;
@@ -341,6 +567,151 @@ void main() {
     await pumpScreen(tester);
 
     expect(find.text('Hi there'), findsOneWidget);
+  });
+
+  testWidgets('renders a live subagent tool before assistant prose', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'task-1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(id: 'tool-1', tool: 'task', status: 'running'),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Subagent task'), findsOneWidget);
+    expect(find.text('Running'), findsOneWidget);
+  });
+
+  testWidgets('revert requires confirmation for its specific message ID', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'message-1',
+        role: ChatMessageRole.user,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: 'Hi there',
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    await tester.tap(find.byTooltip('Revert to this message'));
+    await tester.pumpAndSettle();
+    expect(find.text('Revert this message?'), findsOneWidget);
+    expect(viewModel.lastRevertedMessageId, isNull);
+
+    await tester.tap(find.text('Revert message'));
+    await tester.pumpAndSettle();
+    expect(viewModel.lastRevertedMessageId, 'message-1');
+  });
+
+  testWidgets('never offers revert on an assistant message', (tester) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'assistant-1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: 'Here is the answer',
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.byTooltip('Revert to this message'), findsNothing);
+  });
+
+  testWidgets('renders basic Markdown without interpreting HTML', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'm1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text:
+            '# Heading\n\nUse **bold** and `code`.\n\n```dart\nmain();\n```\n\n[Prompt](https://example.com) <b>not HTML</b>',
+      ),
+    ]);
+
+    await pumpScreen(tester);
+
+    expect(find.text('Heading'), findsOneWidget);
+    expect(find.text('main();'), findsOneWidget);
+    expect(find.textContaining('Prompt', findRichText: true), findsOneWidget);
+    expect(
+      find.textContaining('<b>not HTML</b>', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('Code block'), findsOneWidget);
+  });
+
+  testWidgets(
+    'keeps malformed Markdown and unsafe link schemes as plain text',
+    (tester) async {
+      viewModel.messages.value = ConversationReady([
+        ChatMessage(
+          id: 'm1',
+          role: ChatMessageRole.assistant,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+          text: '[unsafe](javascript:alert(1)) and **unfinished',
+        ),
+      ]);
+
+      await pumpScreen(tester);
+
+      expect(
+        find.text('[unsafe](javascript:alert(1)) and **unfinished'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('renders selectable session todos and file diffs', (
+    tester,
+  ) async {
+    viewModel.artifacts.value = const SessionArtifactsReady(
+      todos: [
+        SessionTodo(
+          id: 'todo-1',
+          content: 'Review diff',
+          status: SessionTodoStatus.inProgress,
+          priority: SessionTodoPriority.high,
+        ),
+      ],
+      diffs: [
+        SessionFileDiff(
+          file: 'lib/example.dart',
+          patch: '@@ -1 +1 @@\n-old line\n+new line',
+          additions: 1,
+          deletions: 1,
+        ),
+      ],
+    );
+    await pumpScreen(tester);
+
+    await tester.tap(find.text('Session artifacts'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Review diff'), findsOneWidget);
+    expect(find.text('lib/example.dart'), findsOneWidget);
+    expect(find.byType(SelectableText), findsWidgets);
+  });
+
+  testWidgets('moves artifacts into a side panel on wide layouts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpScreen(tester);
+
+    expect(find.byType(VerticalDivider), findsOneWidget);
   });
 
   testWidgets('hides messages without displayable text', (tester) async {

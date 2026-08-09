@@ -1,7 +1,10 @@
 import 'package:drift/drift.dart';
 
 import '../../../data/local/prompt_database.dart' as db;
-import '../domain/queued_prompt.dart' show QueuedPromptState;
+import '../domain/queued_prompt.dart'
+    show QueuedAttachment, QueuedOperationType, QueuedPromptState;
+import 'queued_attachment_codec.dart';
+import '../domain/prompt_execution_options.dart';
 
 /// Thrown when a queue operation targets a prompt id that no longer exists.
 class QueuedPromptNotFound implements Exception {
@@ -47,6 +50,10 @@ abstract interface class QueuePromptsDao {
     required String sessionId,
     required String directory,
     required String promptText,
+    QueuedOperationType operationType = QueuedOperationType.prompt,
+    String? commandName,
+    List<QueuedAttachment> attachments = const <QueuedAttachment>[],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
     required DateTime now,
   });
 
@@ -127,6 +134,10 @@ class DriftQueuePromptsDao implements QueuePromptsDao {
     required String sessionId,
     required String directory,
     required String promptText,
+    QueuedOperationType operationType = QueuedOperationType.prompt,
+    String? commandName,
+    List<QueuedAttachment> attachments = const <QueuedAttachment>[],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
     required DateTime now,
   }) {
     return _database.transaction(() async {
@@ -142,6 +153,12 @@ class DriftQueuePromptsDao implements QueuePromptsDao {
               directory: directory,
               position: nextPosition,
               promptText: promptText,
+              operationType: Value(operationType.name),
+              commandName: Value(commandName),
+              attachmentsJson: Value(encodeQueuedAttachments(attachments)),
+              modelProviderId: Value(executionOptions.modelProviderId),
+              modelId: Value(executionOptions.modelId),
+              agentName: Value(executionOptions.agentName),
               state: QueuedPromptState.queued.name,
               createdAtMillis: nowMillis,
               updatedAtMillis: nowMillis,
@@ -285,6 +302,10 @@ class DriftQueuePromptsDao implements QueuePromptsDao {
       apply: (companion) => companion.copyWith(
         acknowledgedAtMillis: Value(now.millisecondsSinceEpoch),
         pauseReason: const Value(null),
+        // The server has accepted the prompt, so queued attachment bytes are
+        // no longer required for recovery. Retaining them would unnecessarily
+        // keep user file content in the durable queue.
+        attachmentsJson: const Value(null),
       ),
       now: now,
     );

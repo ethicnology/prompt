@@ -5,26 +5,41 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/async/result.dart';
+import '../core/platform/local_notification_service.dart';
 import '../core/security/credentials_store.dart';
 import '../core/security/secure_credentials_service.dart';
 import '../data/local/prompt_local_storage.dart';
 import '../data/remote/opencode_event_service.dart';
 import '../data/remote/opencode_transport.dart';
 import '../features/chat/data/chat_repository.dart';
+import '../features/chat/data/attachment_picker.dart';
 import '../features/chat/data/opencode_chat_service.dart';
 import '../features/chat/presentation/conversation_view_model.dart';
+import '../features/capabilities/data/capabilities_repository.dart';
+import '../features/capabilities/data/opencode_capabilities_service.dart';
+import '../features/capabilities/presentation/capabilities_view_model.dart';
 import '../features/connection/data/connection_repository.dart';
 import '../features/connection/data/opencode_health_service.dart';
 import '../features/connection/data/server_profile_store.dart';
 import '../features/connection/domain/server_profile.dart';
 import '../features/connection/presentation/connection_screen.dart';
 import '../features/connection/presentation/connection_view_model.dart';
+import '../features/diagnostics/data/diagnostics_repository.dart';
+import '../features/diagnostics/data/opencode_diagnostics_service.dart';
+import '../features/diagnostics/presentation/diagnostics_view_model.dart';
 import '../features/home/presentation/home_shell.dart';
 import '../features/queue/data/queue_prompts_repository.dart';
 import '../features/queue/data/queue_send_coordinator.dart';
 import '../features/sessions/data/opencode_sessions_service.dart';
 import '../features/sessions/data/sessions_repository.dart';
 import '../features/sessions/presentation/sessions_view_model.dart';
+import '../features/terminal/data/opencode_terminal_service.dart';
+import '../features/terminal/data/terminal_repository.dart';
+import '../features/terminal/presentation/terminal_view_model.dart';
+import '../features/workspace/data/opencode_workspace_service.dart';
+import '../features/workspace/data/workspace_repository.dart';
+import '../features/workspace/presentation/workspace_view_model.dart';
+import '../features/voice/voice.dart';
 import 'prompt_theme.dart';
 
 class PromptApp extends StatefulWidget {
@@ -41,6 +56,12 @@ class _PromptAppState extends State<PromptApp> {
   late final ConnectionViewModel _connectionViewModel;
   late final SessionsViewModel _sessionsViewModel;
   late final ConversationViewModel _conversationViewModel;
+  late final CapabilitiesViewModel _capabilitiesViewModel;
+  late final WorkspaceViewModel _workspaceViewModel;
+  late final TerminalViewModel _terminalViewModel;
+  late final DiagnosticsViewModel _diagnosticsViewModel;
+  late final VoiceViewModel _voiceViewModel;
+  late final LocalNotificationService _localNotificationService;
   ServerProfile? _connectedProfile;
 
   // Opened lazily on the first conversation, not at app startup: opening
@@ -82,18 +103,47 @@ class _PromptAppState extends State<PromptApp> {
         ),
       ),
     );
-    _sessionsViewModel = SessionsViewModel(
-      SessionsRepository(OpenCodeSessionsService(transport), credentials),
+    final sessionsRepository = SessionsRepository(
+      OpenCodeSessionsService(transport),
+      credentials,
     );
+    _sessionsViewModel = SessionsViewModel(sessionsRepository);
     _conversationViewModel = ConversationViewModel(
       chatRepository: chatRepository,
+      sessionsRepository: sessionsRepository,
       queueRepositoryProvider: _ensureQueueRepository,
       queueCoordinatorProvider: () => _ensureQueueCoordinator(
         chatRepository: chatRepository,
         eventService: OpenCodeEventService(transport),
         credentialsStore: credentials,
       ),
+      attachmentPicker: FilePickerAttachmentPicker(),
     );
+    _capabilitiesViewModel = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(transport),
+        credentials,
+      ),
+    );
+    _workspaceViewModel = WorkspaceViewModel(
+      OpenCodeWorkspaceRepository(
+        OpenCodeWorkspaceService(transport),
+        credentials,
+      ),
+    );
+    _terminalViewModel = TerminalViewModel(
+      OpenCodeTerminalRepository(
+        OpenCodeTerminalService(transport),
+        credentials,
+      ),
+    );
+    _diagnosticsViewModel = DiagnosticsViewModel(
+      DiagnosticsRepository(OpenCodeDiagnosticsService(transport), credentials),
+    );
+    _voiceViewModel = VoiceViewModel(
+      VoiceRepository(createVoiceEngine(), const FilePickerVoiceModelPicker()),
+    );
+    _localNotificationService = LocalNotificationService.platform();
   }
 
   Future<PromptLocalStorageHandle> _ensureLocalStorage() {
@@ -128,6 +178,15 @@ class _PromptAppState extends State<PromptApp> {
       chatRepository: chatRepository,
       eventService: eventService,
       credentialsStore: credentialsStore,
+      // Only raised while the app is not foreground, and only after the user
+      // enabled notifications. Carries no session content.
+      onGenerationFinished: ({required bool failed}) {
+        unawaited(
+          failed
+              ? _localNotificationService.showSessionFailed()
+              : _localNotificationService.showSessionCompleted(),
+        );
+      },
     );
     _queueCoordinator = coordinator;
     return coordinator;
@@ -139,6 +198,11 @@ class _PromptAppState extends State<PromptApp> {
     _connectionViewModel.dispose();
     _sessionsViewModel.dispose();
     unawaited(_conversationViewModel.dispose());
+    _capabilitiesViewModel.dispose();
+    _workspaceViewModel.dispose();
+    _terminalViewModel.dispose();
+    _diagnosticsViewModel.dispose();
+    unawaited(_voiceViewModel.dispose());
     unawaited(_queueCoordinator?.dispose());
     final localStorage = _localStorage;
     if (localStorage != null) {
@@ -154,6 +218,10 @@ class _PromptAppState extends State<PromptApp> {
   /// reconnect loop (see `ARCHITECTURE.md`'s battery/data rules), so
   /// anything short of fully resumed is treated the same way.
   void _handleAppLifecycleStateChange(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _conversationViewModel.releaseAttachments();
+      unawaited(_voiceViewModel.notifyAppInactive());
+    }
     final coordinator = _queueCoordinator;
     if (coordinator == null) {
       return;
@@ -174,6 +242,15 @@ class _PromptAppState extends State<PromptApp> {
     setState(() => _connectedProfile = null);
   }
 
+  Future<bool> _reconnect() async {
+    final profile = _connectedProfile;
+    if (profile == null) {
+      return false;
+    }
+    await _connectionViewModel.restore(profile);
+    return _connectionViewModel.value is ConnectionReady;
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -181,7 +258,7 @@ class _PromptAppState extends State<PromptApp> {
       debugShowCheckedModeBanner: false,
       theme: promptTheme(),
       darkTheme: promptDarkTheme(),
-      themeMode: ThemeMode.dark,
+      themeMode: ThemeMode.system,
       home: _connectedProfile == null
           ? ConnectionScreen(
               viewModel: _connectionViewModel,
@@ -192,6 +269,13 @@ class _PromptAppState extends State<PromptApp> {
               profile: _connectedProfile!,
               sessionsViewModel: _sessionsViewModel,
               conversationViewModel: _conversationViewModel,
+              capabilitiesViewModel: _capabilitiesViewModel,
+              workspaceViewModel: _workspaceViewModel,
+              terminalViewModel: _terminalViewModel,
+              diagnosticsViewModel: _diagnosticsViewModel,
+              voiceViewModel: _voiceViewModel,
+              localNotificationService: _localNotificationService,
+              onReconnect: _reconnect,
               onDisconnect: _disconnect,
             ),
     );

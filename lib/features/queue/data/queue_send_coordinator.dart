@@ -93,6 +93,7 @@ class QueueSendCoordinator {
     required this._eventService,
     required this._credentialsStore,
     this.backoffPolicy = const ReconnectBackoffPolicy(),
+    this.onGenerationFinished,
     math.Random? random,
     Timer Function(Duration duration, void Function() callback)?
     reconnectTimerFactory,
@@ -108,6 +109,11 @@ class QueueSendCoordinator {
   /// drop. Injectable so a test can use a tiny bound instead of the
   /// production default.
   final ReconnectBackoffPolicy backoffPolicy;
+
+  /// Invoked when the active session stops generating. Carries no session
+  /// text, id, or failure detail: it exists so the app can raise a generic
+  /// local notification while the user is looking elsewhere.
+  final void Function({required bool failed})? onGenerationFinished;
 
   final math.Random _random;
 
@@ -246,16 +252,10 @@ class QueueSendCoordinator {
   /// 3. Subscribes to the durable queue and to the live SSE feed, gating
   ///    automatic dispatch on both from then on.
   ///
-  /// This coordinator starts every activation believing the session is not
-  /// blocked; a prompt left `paused`/`permissionPending` or
-  /// `questionPending` from before this activation (a prior app run, or a
-  /// previous activation of this same session) is not re-derived from the
-  /// server here and stays `paused` until either a fresh `permission.
-  /// updated` event re-establishes the block (a no-op, since it is already
-  /// paused) or a human resumes it. Re-fetching whether a specific pending
-  /// permission or question still stands, so this can reconcile fully on
-  /// reconnect/restart, needs a dedicated OpenCode endpoint this foundation
-  /// does not yet call.
+  /// Pending permissions and questions are re-fetched before dispatch is
+  /// enabled, so a decision emitted while the app was asleep is restored and
+  /// a stale locally-paused queue can resume when the server no longer has a
+  /// matching request.
   Future<void> activate({
     required ServerProfile profile,
     required OpenCodeSession session,
@@ -296,6 +296,10 @@ class QueueSendCoordinator {
       if (_isStale(token)) {
         return;
       }
+    }
+    await _reconcilePendingApprovals(profile, session, token);
+    if (_isStale(token)) {
+      return;
     }
 
     _queueSubscription = _queueRepository
@@ -480,6 +484,12 @@ class QueueSendCoordinator {
         return;
       }
     }
+    await _reconcilePendingApprovals(profile, session, token);
+    if (_isStale(token) ||
+        !_appForeground ||
+        _isSupersededConnect(connectToken)) {
+      return;
+    }
     _reconnectAttempt = 0;
     _setConnectionState(const SseConnected());
     _maybeDispatch();
@@ -574,6 +584,21 @@ class QueueSendCoordinator {
 
   void _setConnectionState(SseConnectionState next) {
     _connectionState.value = next;
+  }
+
+  /// Immediately retries a connection after bounded automatic retries stop.
+  /// The retry always goes through authoritative REST reconciliation before
+  /// queue dispatch can resume.
+  void retryConnection() {
+    if (_disposed || !_appForeground || !hasActiveSession) {
+      return;
+    }
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempt = 0;
+    unawaited(_sseSubscription?.cancel());
+    _sseSubscription = null;
+    _connect(token: _activationToken, attempt: 1);
   }
 
   /// Explicitly cancels the active session's current generation, then
@@ -741,6 +766,7 @@ class QueueSendCoordinator {
       SessionStatusEvent(sessionId: sessionId, state: state),
     );
     _updateConversationState(nextState);
+    _notifyGenerationFinished(sessionId, previousState, nextState);
     await _handleBlockTransition(
       sessionId,
       previousState,
@@ -749,9 +775,66 @@ class QueueSendCoordinator {
     );
   }
 
+  /// Reports a busy-to-idle transition once, so a caller can raise a generic
+  /// completion notification. Nothing is reported while the app is
+  /// foreground: the user can already see the transcript.
+  void _notifyGenerationFinished(
+    String sessionId,
+    ConversationState previous,
+    ConversationState next,
+  ) {
+    final callback = onGenerationFinished;
+    if (callback == null || _appForeground) {
+      return;
+    }
+    final wasBusy = previous.sessionStates[sessionId] is SessionBusy;
+    final isIdle = next.sessionStates[sessionId] is SessionIdle;
+    if (wasBusy && isIdle) {
+      callback(failed: false);
+    }
+  }
+
   void _updateConversationState(ConversationState next) {
     _conversationState = next;
     _liveConversationState.value = next;
+  }
+
+  Future<void> _reconcilePendingApprovals(
+    ServerProfile profile,
+    OpenCodeSession session,
+    int token,
+  ) async {
+    final result = await _chatRepository.pendingApprovals(profile, session);
+    if (_isStale(token)) {
+      return;
+    }
+    switch (result) {
+      case Ok<List<PendingApproval>, ChatFailure>(:final value):
+        final approval = value.isEmpty ? null : value.first;
+        if (approval == null) {
+          await _resumeBlockedPrompts(token);
+          return;
+        }
+        final reason = approval is PendingQuestionApproval
+            ? SessionBlockReason.question
+            : SessionBlockReason.permission;
+        final previous = _conversationState;
+        final next = reduceConversationEvent(
+          previous,
+          SessionBlockedEvent(
+            sessionId: session.id,
+            reason: reason,
+            detail: approval,
+          ),
+        );
+        _updateConversationState(next);
+        await _handleBlockTransition(session.id, previous, next, token);
+      case Err<List<PendingApproval>, ChatFailure>():
+        // Fail closed: persisted permission/question pauses remain paused.
+        // A live SSE event can still restore presentation detail, and a
+        // later reconnect retries this authoritative fetch.
+        return;
+    }
   }
 
   /// Reacts to [sessionId]'s block state changing between [previous] and
@@ -885,17 +968,29 @@ class QueueSendCoordinator {
       return;
     }
 
-    final sendResult = await _chatRepository.sendPrompt(
-      profile,
-      session,
-      prompt.promptText,
-    );
+    final sendResult = await switch (prompt.operationType) {
+      QueuedOperationType.prompt => _chatRepository.sendPrompt(
+        profile,
+        session,
+        prompt.promptText,
+        attachments: prompt.attachments,
+        executionOptions: prompt.executionOptions,
+      ),
+      QueuedOperationType.command => _chatRepository.executeCommand(
+        profile,
+        session,
+        prompt.commandName!,
+        prompt.promptText,
+        executionOptions: prompt.executionOptions,
+      ),
+    };
     if (_isStale(token)) {
       return;
     }
 
     if (sendResult is Ok<void, ChatFailure>) {
-      // A `204` from `prompt_async` is the server's definitive acceptance.
+      // A 2xx response from `prompt_async` is the server's definitive
+      // acceptance across supported OpenCode server versions.
       await _queueRepository.markAcknowledged(prompt.id);
       // Do not dispatch the next queue entry until the server reports an
       // explicit terminal state. The busy event may arrive after this 204.

@@ -31,8 +31,10 @@ class OpenCodeSessionsService {
     String? password,
     String directory,
   ) async {
-    final query = Uri(queryParameters: {'directory': directory}).query;
-    final response = await _get(profile, password, '/session?$query');
+    final path = directory.isEmpty
+        ? '/session'
+        : '/session?${Uri(queryParameters: {'directory': directory}).query}';
+    final response = await _get(profile, password, path);
     final decoded = jsonDecode(response.body);
     if (decoded is! List) {
       throw const FormatException('Sessions response must be a list.');
@@ -41,6 +43,34 @@ class OpenCodeSessionsService {
         .whereType<Map<String, dynamic>>()
         .map(OpenCodeSessionRecord.fromJson)
         .toList(growable: false);
+  }
+
+  Future<OpenCodeSessionRecord> createSession(
+    ServerProfile profile,
+    String? password,
+    String directory, {
+    String? title,
+  }) async {
+    final query = Uri(queryParameters: {'directory': directory}).query;
+    final normalizedTitle = title?.trim();
+    final response = await _transport.post(
+      profile,
+      password,
+      '/session?$query',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({
+        if (normalizedTitle != null && normalizedTitle.isNotEmpty)
+          'title': normalizedTitle,
+      }),
+    );
+    _requireSuccess(response);
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException(
+        'Created session response must be an object.',
+      );
+    }
+    return OpenCodeSessionRecord.fromJson(decoded);
   }
 
   Future<void> renameSession(
@@ -70,6 +100,75 @@ class OpenCodeSessionsService {
       '/session/${Uri.encodeComponent(session.id)}?${Uri(queryParameters: {'directory': session.directory}).query}',
     );
     _requireSuccess(response);
+  }
+
+  Future<OpenCodeSessionRecord> forkSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) => _postSession(profile, password, session, 'fork');
+
+  Future<OpenCodeSessionRecord> shareSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) => _postSession(profile, password, session, 'share');
+
+  Future<void> unshareSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) async {
+    final response = await _transport.delete(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/share?'
+      '${Uri(queryParameters: {'directory': session.directory}).query}',
+    );
+    _requireSuccess(response);
+  }
+
+  Future<bool> revertMessage(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String messageId,
+  ) async {
+    final response = await _transport.post(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/revert?'
+      '${Uri(queryParameters: {'directory': session.directory}).query}',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({'messageID': messageId}),
+    );
+    _requireSuccess(response);
+    final decoded = jsonDecode(response.body);
+    if (decoded is! bool) {
+      throw const FormatException('Revert response must be a boolean.');
+    }
+    return decoded;
+  }
+
+  Future<OpenCodeSessionRecord> _postSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String action,
+  ) async {
+    final response = await _transport.post(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/$action?'
+      '${Uri(queryParameters: {'directory': session.directory}).query}',
+      headers: const {'content-type': 'application/json'},
+    );
+    _requireSuccess(response);
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw FormatException('$action response must be a session.');
+    }
+    return OpenCodeSessionRecord.fromJson(decoded);
   }
 
   Future<http.Response> _get(
@@ -117,6 +216,7 @@ class OpenCodeSessionRecord {
     this.changedFiles,
     this.additions,
     this.deletions,
+    this.shareUrl,
   });
 
   factory OpenCodeSessionRecord.fromJson(Map<String, dynamic> json) {
@@ -141,6 +241,8 @@ class OpenCodeSessionRecord {
 
     final summary = json['summary'];
     final summaryMap = summary is Map<String, dynamic> ? summary : null;
+    final share = json['share'];
+    final shareMap = share is Map<String, dynamic> ? share : null;
     return OpenCodeSessionRecord(
       id: id,
       projectId: projectId,
@@ -152,6 +254,7 @@ class OpenCodeSessionRecord {
       changedFiles: summaryMap?['files'] as int?,
       additions: summaryMap?['additions'] as int?,
       deletions: summaryMap?['deletions'] as int?,
+      shareUrl: shareMap?['url'] as String?,
     );
   }
 
@@ -165,4 +268,5 @@ class OpenCodeSessionRecord {
   final int? changedFiles;
   final int? additions;
   final int? deletions;
+  final String? shareUrl;
 }

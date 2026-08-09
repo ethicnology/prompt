@@ -14,7 +14,7 @@ This document defines the target architecture before implementation begins. It i
 
 Prompt is a private Flutter client for a user-controlled OpenCode server. It targets Android, Linux, and Web. The server is reachable over WireGuard; the Web client additionally requires HTTPS. Prompt is not an OpenCode server, an autonomous background worker, or a cloud synchronization service.
 
-Native clients accept HTTP only for RFC1918 IPv4 or IPv6 ULA origins, so each WireGuard user can configure their own server without a hard-coded address. Android enables cleartext transport solely because Android's static network policy cannot express private address ranges; the application validates the origin before every request. Web always rejects HTTP. Widening the client-side origin policy is a security architecture change requiring review and documentation.
+Native clients accept HTTP only for RFC1918 IPv4, Tailscale's CGNAT range (`100.64.0.0/10`), or IPv6 ULA origins, so each WireGuard or Tailscale user can configure their own server without a hard-coded address. Android enables cleartext transport solely because Android's static network policy cannot express private address ranges; the application validates the origin before every request. Web always rejects HTTP. Widening the client-side origin policy is a security architecture change requiring review and documentation.
 
 OpenCode is the authoritative source for projects, sessions, messages, provider state, workspace operations, and agent execution. Prompt owns presentation state, local preference state, its durable prompt queue, and a bounded cache.
 
@@ -149,16 +149,29 @@ draft -> queued -> sending -> acknowledged
                paused <---- failed
 ```
 
-- A new prompt queues when a session is generating.
+- A new prompt or slash command queues when a session is generating. Queue
+  records carry an operation type and command arguments, so commands never
+  implicitly abort active generation.
 - The queue sends only when the server session reaches a terminal, non-blocked state.
 - A pending permission or question transitions queued work to `paused`.
 - `send now` explicitly requests cancellation, waits for a terminal server state, then sends the chosen prompt.
 - Reconnect and app restart reconcile the server state before any queued prompt is sent.
 - Queue records are persisted in Drift. Sending must be idempotency-aware: do not retry blindly when it is unknown whether the server accepted a prompt.
+- Attachments are sent as OpenCode `file` parts whose `url` is a `data:` URL
+  carrying the bytes inline, which is the mechanism the official mobile client
+  uses. A queued prompt stores its attachment bytes in the encrypted local
+  database alongside its text, so an attached prompt survives a restart and a
+  lifecycle transition exactly as a text prompt does.
+- The composer's in-memory selection is released as soon as the queue record is
+  written. Attachment bytes are never logged, exported, or written outside the
+  encrypted database.
+- Attachment bytes are removed from the queue record as soon as OpenCode
+  definitively acknowledges the prompt. They remain only for unsent or
+  submission-unknown work that may need a user-directed recovery.
 
 ## Local Storage and Secrets
 
-Drift holds cacheable application data: server profile metadata, project/session indexes, message cache, message parts, queued prompts, UI preferences, and local-model metadata.
+Drift holds cacheable application data: server profile metadata, project/session indexes, message cache, message parts, queued prompt and command operations, UI preferences, and local-model metadata.
 
 - Android and Linux open an encrypted, on-disk Drift/`NativeDatabase` using `sqlite3` (`^3.5.0`) with its native-asset build hook set to `source: sqlite3mc` (`pubspec.yaml`'s `hooks.user_defines.sqlite3`), which bundles SQLite3MultipleCiphers instead of plain SQLite. Before Drift issues any query, the executor's `setup` applies `PRAGMA cipher = 'chacha20'` (pinned explicitly rather than left to whatever the library currently defaults to), `PRAGMA temp_store = MEMORY` (so sort/temp b-tree spills never write unencrypted temp files to disk), and `PRAGMA key = 'raw:<hex>'` with the raw 32-byte key from `DatabaseKeyStore` (no passphrase key-derivation step, since the key is already random). See `lib/data/local/prompt_local_storage_native.dart`.
 - `DatabaseKeyStore` (`lib/core/security/database_key_store.dart`), implemented by `SecureDatabaseKeyStore`, creates a random 32-byte key on first use and reuses it afterward, held only in `flutter_secure_storage` (Android Keystore, Linux libsecret). It never logs, prints, or otherwise surfaces the key; a read/write failure surfaces only as the typed `DatabaseKeyStoreUnavailable`/`DatabaseOpenFailure.keyStoreUnavailable`.
@@ -168,6 +181,10 @@ Drift holds cacheable application data: server profile metadata, project/session
 - Credentials and database keys use `flutter_secure_storage`, backed by Android Keystore, Linux libsecret, and browser-origin storage where applicable.
 - Drift schema migrations are explicit, tested, and backward compatible for shipped versions.
 - Raw audio is not a Drift value and is never retained after transcription.
+- Attachment bytes exist only in the encrypted queue record while a prompt is
+  unsent or its server acceptance is unknown. They are never a cache, log, or
+  diagnostic value. Composer selections are released on removal, attempted
+  submission, lifecycle inactivity, conversation exit, and disposal.
 
 ## Platform and Voice Boundaries
 
@@ -181,6 +198,19 @@ VoiceEngine
 ```
 
 The local voice engine is preferred. VPS transcription is an explicit user choice and is reachable only over the configured private server route. Audio capture starts only from direct interaction, stops when the app is inactive, and reports a visible recording state.
+
+The initial voice foundation exposes a `VoiceEngine` conditional platform
+boundary and a `VoiceRepository` that owns and releases a memory-only capture.
+Android uses `record`'s 16 kHz mono PCM stream with `whisper_ggml` live
+transcription. A user selects an existing local multilingual GGML model once
+from global Voice settings; that app-scoped configuration enables the Voice
+input control beside Send in every conversation. The control is the only
+permission-capable command and streams partial/final text into the composer.
+Prompt never invokes the package's model download API and no model is bundled
+by this application. Linux and Web adapters remain typed unavailable stubs and
+never start a recorder or Whisper session. Audio is
+passed directly between the recorder and Whisper, never written to a path or retained after stop,
+cancellation, failure, lifecycle inactivity, conversation teardown, or disposal.
 
 Flutter Rust Bridge and Dart Native Assets are not part of the initial runtime architecture. They are valid Android/Linux-only build options should Prompt internalize the native voice engine. They do not solve Web, which requires a separate WASM build.
 
@@ -227,6 +257,15 @@ Prompt targets a smooth 60 Hz experience. Profile and release builds are the sou
 - The Web deployment requires HTTPS and a restrictive Content Security Policy because browser storage is exposed to same-origin script execution.
 - Sensitive actions are visible in the conversation and governed by OpenCode permissions; Prompt does not silently approve server actions.
 - Notifications contain only a generic state such as "Prompt needs your approval"; they never include a prompt, file name, command, transcript, or tool output.
+- Local notifications are opt-in. The app requests notification permission only
+  from the Notifications settings control, never at launch or after a server
+  event. Prompt does not keep SSE alive while inactive, so it only notifies for
+  completion or failure when a future lifecycle-safe source can establish that
+  transition reliably; it never infers a background result.
+- Web notification permissions require HTTPS and a direct browser user gesture;
+  browsers do not support scheduled notifications. Linux delivery depends on
+  the installed desktop notification server and has no runtime permission
+  prompt. Neither limitation changes the generic-only notification content.
 - Background networking and recording are disabled by default to protect battery and privacy.
 
 ## Testing Strategy

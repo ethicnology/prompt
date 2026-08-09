@@ -69,14 +69,16 @@ dedicated WireGuard subnet rule only when every peer is equally trusted.
 ## Prompt Connection
 
 On Android and Linux, Prompt accepts an HTTP origin only when it is a private
-RFC1918 IPv4 address or an IPv6 ULA address. This supports ordinary WireGuard
-deployments without hard-coding one server address into the application.
+RFC1918 IPv4 address, a Tailscale CGNAT IPv4 address in `100.64.0.0/10`, or an
+IPv6 ULA address. This supports ordinary WireGuard and Tailscale deployments
+without hard-coding one server address into the application.
 
 Examples:
 
 ```text
 http://10.80.0.1:4096
 http://172.20.0.5:4096
+http://100.64.0.1:4096
 http://[fd00::1]:4096
 ```
 

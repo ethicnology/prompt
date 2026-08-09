@@ -396,6 +396,73 @@ class $QueuedPromptsTable extends QueuedPrompts
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _operationTypeMeta = const VerificationMeta(
+    'operationType',
+  );
+  @override
+  late final GeneratedColumn<String> operationType = GeneratedColumn<String>(
+    'operation_type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('prompt'),
+  );
+  static const VerificationMeta _commandNameMeta = const VerificationMeta(
+    'commandName',
+  );
+  @override
+  late final GeneratedColumn<String> commandName = GeneratedColumn<String>(
+    'command_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _attachmentsJsonMeta = const VerificationMeta(
+    'attachmentsJson',
+  );
+  @override
+  late final GeneratedColumn<String> attachmentsJson = GeneratedColumn<String>(
+    'attachments_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _modelProviderIdMeta = const VerificationMeta(
+    'modelProviderId',
+  );
+  @override
+  late final GeneratedColumn<String> modelProviderId = GeneratedColumn<String>(
+    'model_provider_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _modelIdMeta = const VerificationMeta(
+    'modelId',
+  );
+  @override
+  late final GeneratedColumn<String> modelId = GeneratedColumn<String>(
+    'model_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _agentNameMeta = const VerificationMeta(
+    'agentName',
+  );
+  @override
+  late final GeneratedColumn<String> agentName = GeneratedColumn<String>(
+    'agent_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _stateMeta = const VerificationMeta('state');
   @override
   late final GeneratedColumn<String> state = GeneratedColumn<String>(
@@ -478,6 +545,12 @@ class $QueuedPromptsTable extends QueuedPrompts
     directory,
     position,
     promptText,
+    operationType,
+    commandName,
+    attachmentsJson,
+    modelProviderId,
+    modelId,
+    agentName,
     state,
     pauseReason,
     attemptCount,
@@ -545,6 +618,54 @@ class $QueuedPromptsTable extends QueuedPrompts
       );
     } else if (isInserting) {
       context.missing(_promptTextMeta);
+    }
+    if (data.containsKey('operation_type')) {
+      context.handle(
+        _operationTypeMeta,
+        operationType.isAcceptableOrUnknown(
+          data['operation_type']!,
+          _operationTypeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('command_name')) {
+      context.handle(
+        _commandNameMeta,
+        commandName.isAcceptableOrUnknown(
+          data['command_name']!,
+          _commandNameMeta,
+        ),
+      );
+    }
+    if (data.containsKey('attachments_json')) {
+      context.handle(
+        _attachmentsJsonMeta,
+        attachmentsJson.isAcceptableOrUnknown(
+          data['attachments_json']!,
+          _attachmentsJsonMeta,
+        ),
+      );
+    }
+    if (data.containsKey('model_provider_id')) {
+      context.handle(
+        _modelProviderIdMeta,
+        modelProviderId.isAcceptableOrUnknown(
+          data['model_provider_id']!,
+          _modelProviderIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('model_id')) {
+      context.handle(
+        _modelIdMeta,
+        modelId.isAcceptableOrUnknown(data['model_id']!, _modelIdMeta),
+      );
+    }
+    if (data.containsKey('agent_name')) {
+      context.handle(
+        _agentNameMeta,
+        agentName.isAcceptableOrUnknown(data['agent_name']!, _agentNameMeta),
+      );
     }
     if (data.containsKey('state')) {
       context.handle(
@@ -649,6 +770,30 @@ class $QueuedPromptsTable extends QueuedPrompts
         DriftSqlType.string,
         data['${effectivePrefix}prompt_text'],
       )!,
+      operationType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}operation_type'],
+      )!,
+      commandName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}command_name'],
+      ),
+      attachmentsJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attachments_json'],
+      ),
+      modelProviderId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}model_provider_id'],
+      ),
+      modelId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}model_id'],
+      ),
+      agentName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}agent_name'],
+      ),
       state: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}state'],
@@ -693,6 +838,16 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
   final String directory;
   final int position;
   final String promptText;
+  final String operationType;
+  final String? commandName;
+
+  /// JSON array of `{name, mediaType, base64}` objects, or null when the
+  /// prompt carries no file. Stored in the encrypted database exactly like
+  /// [promptText], and never logged or exported.
+  final String? attachmentsJson;
+  final String? modelProviderId;
+  final String? modelId;
+  final String? agentName;
   final String state;
   final String? pauseReason;
   final int attemptCount;
@@ -707,6 +862,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
     required this.directory,
     required this.position,
     required this.promptText,
+    required this.operationType,
+    this.commandName,
+    this.attachmentsJson,
+    this.modelProviderId,
+    this.modelId,
+    this.agentName,
     required this.state,
     this.pauseReason,
     required this.attemptCount,
@@ -724,6 +885,22 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
     map['directory'] = Variable<String>(directory);
     map['position'] = Variable<int>(position);
     map['prompt_text'] = Variable<String>(promptText);
+    map['operation_type'] = Variable<String>(operationType);
+    if (!nullToAbsent || commandName != null) {
+      map['command_name'] = Variable<String>(commandName);
+    }
+    if (!nullToAbsent || attachmentsJson != null) {
+      map['attachments_json'] = Variable<String>(attachmentsJson);
+    }
+    if (!nullToAbsent || modelProviderId != null) {
+      map['model_provider_id'] = Variable<String>(modelProviderId);
+    }
+    if (!nullToAbsent || modelId != null) {
+      map['model_id'] = Variable<String>(modelId);
+    }
+    if (!nullToAbsent || agentName != null) {
+      map['agent_name'] = Variable<String>(agentName);
+    }
     map['state'] = Variable<String>(state);
     if (!nullToAbsent || pauseReason != null) {
       map['pause_reason'] = Variable<String>(pauseReason);
@@ -748,6 +925,22 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
       directory: Value(directory),
       position: Value(position),
       promptText: Value(promptText),
+      operationType: Value(operationType),
+      commandName: commandName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(commandName),
+      attachmentsJson: attachmentsJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attachmentsJson),
+      modelProviderId: modelProviderId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(modelProviderId),
+      modelId: modelId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(modelId),
+      agentName: agentName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(agentName),
       state: Value(state),
       pauseReason: pauseReason == null && nullToAbsent
           ? const Value.absent()
@@ -776,6 +969,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
       directory: serializer.fromJson<String>(json['directory']),
       position: serializer.fromJson<int>(json['position']),
       promptText: serializer.fromJson<String>(json['promptText']),
+      operationType: serializer.fromJson<String>(json['operationType']),
+      commandName: serializer.fromJson<String?>(json['commandName']),
+      attachmentsJson: serializer.fromJson<String?>(json['attachmentsJson']),
+      modelProviderId: serializer.fromJson<String?>(json['modelProviderId']),
+      modelId: serializer.fromJson<String?>(json['modelId']),
+      agentName: serializer.fromJson<String?>(json['agentName']),
       state: serializer.fromJson<String>(json['state']),
       pauseReason: serializer.fromJson<String?>(json['pauseReason']),
       attemptCount: serializer.fromJson<int>(json['attemptCount']),
@@ -799,6 +998,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
       'directory': serializer.toJson<String>(directory),
       'position': serializer.toJson<int>(position),
       'promptText': serializer.toJson<String>(promptText),
+      'operationType': serializer.toJson<String>(operationType),
+      'commandName': serializer.toJson<String?>(commandName),
+      'attachmentsJson': serializer.toJson<String?>(attachmentsJson),
+      'modelProviderId': serializer.toJson<String?>(modelProviderId),
+      'modelId': serializer.toJson<String?>(modelId),
+      'agentName': serializer.toJson<String?>(agentName),
       'state': serializer.toJson<String>(state),
       'pauseReason': serializer.toJson<String?>(pauseReason),
       'attemptCount': serializer.toJson<int>(attemptCount),
@@ -816,6 +1021,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
     String? directory,
     int? position,
     String? promptText,
+    String? operationType,
+    Value<String?> commandName = const Value.absent(),
+    Value<String?> attachmentsJson = const Value.absent(),
+    Value<String?> modelProviderId = const Value.absent(),
+    Value<String?> modelId = const Value.absent(),
+    Value<String?> agentName = const Value.absent(),
     String? state,
     Value<String?> pauseReason = const Value.absent(),
     int? attemptCount,
@@ -830,6 +1041,16 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
     directory: directory ?? this.directory,
     position: position ?? this.position,
     promptText: promptText ?? this.promptText,
+    operationType: operationType ?? this.operationType,
+    commandName: commandName.present ? commandName.value : this.commandName,
+    attachmentsJson: attachmentsJson.present
+        ? attachmentsJson.value
+        : this.attachmentsJson,
+    modelProviderId: modelProviderId.present
+        ? modelProviderId.value
+        : this.modelProviderId,
+    modelId: modelId.present ? modelId.value : this.modelId,
+    agentName: agentName.present ? agentName.value : this.agentName,
     state: state ?? this.state,
     pauseReason: pauseReason.present ? pauseReason.value : this.pauseReason,
     attemptCount: attemptCount ?? this.attemptCount,
@@ -854,6 +1075,20 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
       promptText: data.promptText.present
           ? data.promptText.value
           : this.promptText,
+      operationType: data.operationType.present
+          ? data.operationType.value
+          : this.operationType,
+      commandName: data.commandName.present
+          ? data.commandName.value
+          : this.commandName,
+      attachmentsJson: data.attachmentsJson.present
+          ? data.attachmentsJson.value
+          : this.attachmentsJson,
+      modelProviderId: data.modelProviderId.present
+          ? data.modelProviderId.value
+          : this.modelProviderId,
+      modelId: data.modelId.present ? data.modelId.value : this.modelId,
+      agentName: data.agentName.present ? data.agentName.value : this.agentName,
       state: data.state.present ? data.state.value : this.state,
       pauseReason: data.pauseReason.present
           ? data.pauseReason.value
@@ -885,6 +1120,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
           ..write('directory: $directory, ')
           ..write('position: $position, ')
           ..write('promptText: $promptText, ')
+          ..write('operationType: $operationType, ')
+          ..write('commandName: $commandName, ')
+          ..write('attachmentsJson: $attachmentsJson, ')
+          ..write('modelProviderId: $modelProviderId, ')
+          ..write('modelId: $modelId, ')
+          ..write('agentName: $agentName, ')
           ..write('state: $state, ')
           ..write('pauseReason: $pauseReason, ')
           ..write('attemptCount: $attemptCount, ')
@@ -904,6 +1145,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
     directory,
     position,
     promptText,
+    operationType,
+    commandName,
+    attachmentsJson,
+    modelProviderId,
+    modelId,
+    agentName,
     state,
     pauseReason,
     attemptCount,
@@ -922,6 +1169,12 @@ class QueuedPrompt extends DataClass implements Insertable<QueuedPrompt> {
           other.directory == this.directory &&
           other.position == this.position &&
           other.promptText == this.promptText &&
+          other.operationType == this.operationType &&
+          other.commandName == this.commandName &&
+          other.attachmentsJson == this.attachmentsJson &&
+          other.modelProviderId == this.modelProviderId &&
+          other.modelId == this.modelId &&
+          other.agentName == this.agentName &&
           other.state == this.state &&
           other.pauseReason == this.pauseReason &&
           other.attemptCount == this.attemptCount &&
@@ -938,6 +1191,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
   final Value<String> directory;
   final Value<int> position;
   final Value<String> promptText;
+  final Value<String> operationType;
+  final Value<String?> commandName;
+  final Value<String?> attachmentsJson;
+  final Value<String?> modelProviderId;
+  final Value<String?> modelId;
+  final Value<String?> agentName;
   final Value<String> state;
   final Value<String?> pauseReason;
   final Value<int> attemptCount;
@@ -953,6 +1212,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
     this.directory = const Value.absent(),
     this.position = const Value.absent(),
     this.promptText = const Value.absent(),
+    this.operationType = const Value.absent(),
+    this.commandName = const Value.absent(),
+    this.attachmentsJson = const Value.absent(),
+    this.modelProviderId = const Value.absent(),
+    this.modelId = const Value.absent(),
+    this.agentName = const Value.absent(),
     this.state = const Value.absent(),
     this.pauseReason = const Value.absent(),
     this.attemptCount = const Value.absent(),
@@ -969,6 +1234,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
     required String directory,
     required int position,
     required String promptText,
+    this.operationType = const Value.absent(),
+    this.commandName = const Value.absent(),
+    this.attachmentsJson = const Value.absent(),
+    this.modelProviderId = const Value.absent(),
+    this.modelId = const Value.absent(),
+    this.agentName = const Value.absent(),
     required String state,
     this.pauseReason = const Value.absent(),
     this.attemptCount = const Value.absent(),
@@ -993,6 +1264,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
     Expression<String>? directory,
     Expression<int>? position,
     Expression<String>? promptText,
+    Expression<String>? operationType,
+    Expression<String>? commandName,
+    Expression<String>? attachmentsJson,
+    Expression<String>? modelProviderId,
+    Expression<String>? modelId,
+    Expression<String>? agentName,
     Expression<String>? state,
     Expression<String>? pauseReason,
     Expression<int>? attemptCount,
@@ -1009,6 +1286,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
       if (directory != null) 'directory': directory,
       if (position != null) 'position': position,
       if (promptText != null) 'prompt_text': promptText,
+      if (operationType != null) 'operation_type': operationType,
+      if (commandName != null) 'command_name': commandName,
+      if (attachmentsJson != null) 'attachments_json': attachmentsJson,
+      if (modelProviderId != null) 'model_provider_id': modelProviderId,
+      if (modelId != null) 'model_id': modelId,
+      if (agentName != null) 'agent_name': agentName,
       if (state != null) 'state': state,
       if (pauseReason != null) 'pause_reason': pauseReason,
       if (attemptCount != null) 'attempt_count': attemptCount,
@@ -1029,6 +1312,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
     Value<String>? directory,
     Value<int>? position,
     Value<String>? promptText,
+    Value<String>? operationType,
+    Value<String?>? commandName,
+    Value<String?>? attachmentsJson,
+    Value<String?>? modelProviderId,
+    Value<String?>? modelId,
+    Value<String?>? agentName,
     Value<String>? state,
     Value<String?>? pauseReason,
     Value<int>? attemptCount,
@@ -1045,6 +1334,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
       directory: directory ?? this.directory,
       position: position ?? this.position,
       promptText: promptText ?? this.promptText,
+      operationType: operationType ?? this.operationType,
+      commandName: commandName ?? this.commandName,
+      attachmentsJson: attachmentsJson ?? this.attachmentsJson,
+      modelProviderId: modelProviderId ?? this.modelProviderId,
+      modelId: modelId ?? this.modelId,
+      agentName: agentName ?? this.agentName,
       state: state ?? this.state,
       pauseReason: pauseReason ?? this.pauseReason,
       attemptCount: attemptCount ?? this.attemptCount,
@@ -1077,6 +1372,24 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
     }
     if (promptText.present) {
       map['prompt_text'] = Variable<String>(promptText.value);
+    }
+    if (operationType.present) {
+      map['operation_type'] = Variable<String>(operationType.value);
+    }
+    if (commandName.present) {
+      map['command_name'] = Variable<String>(commandName.value);
+    }
+    if (attachmentsJson.present) {
+      map['attachments_json'] = Variable<String>(attachmentsJson.value);
+    }
+    if (modelProviderId.present) {
+      map['model_provider_id'] = Variable<String>(modelProviderId.value);
+    }
+    if (modelId.present) {
+      map['model_id'] = Variable<String>(modelId.value);
+    }
+    if (agentName.present) {
+      map['agent_name'] = Variable<String>(agentName.value);
     }
     if (state.present) {
       map['state'] = Variable<String>(state.value);
@@ -1116,6 +1429,12 @@ class QueuedPromptsCompanion extends UpdateCompanion<QueuedPrompt> {
           ..write('directory: $directory, ')
           ..write('position: $position, ')
           ..write('promptText: $promptText, ')
+          ..write('operationType: $operationType, ')
+          ..write('commandName: $commandName, ')
+          ..write('attachmentsJson: $attachmentsJson, ')
+          ..write('modelProviderId: $modelProviderId, ')
+          ..write('modelId: $modelId, ')
+          ..write('agentName: $agentName, ')
           ..write('state: $state, ')
           ..write('pauseReason: $pauseReason, ')
           ..write('attemptCount: $attemptCount, ')
@@ -1341,6 +1660,12 @@ typedef $$QueuedPromptsTableCreateCompanionBuilder =
       required String directory,
       required int position,
       required String promptText,
+      Value<String> operationType,
+      Value<String?> commandName,
+      Value<String?> attachmentsJson,
+      Value<String?> modelProviderId,
+      Value<String?> modelId,
+      Value<String?> agentName,
       required String state,
       Value<String?> pauseReason,
       Value<int> attemptCount,
@@ -1358,6 +1683,12 @@ typedef $$QueuedPromptsTableUpdateCompanionBuilder =
       Value<String> directory,
       Value<int> position,
       Value<String> promptText,
+      Value<String> operationType,
+      Value<String?> commandName,
+      Value<String?> attachmentsJson,
+      Value<String?> modelProviderId,
+      Value<String?> modelId,
+      Value<String?> agentName,
       Value<String> state,
       Value<String?> pauseReason,
       Value<int> attemptCount,
@@ -1404,6 +1735,36 @@ class $$QueuedPromptsTableFilterComposer
 
   ColumnFilters<String> get promptText => $composableBuilder(
     column: $table.promptText,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get operationType => $composableBuilder(
+    column: $table.operationType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get commandName => $composableBuilder(
+    column: $table.commandName,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get modelProviderId => $composableBuilder(
+    column: $table.modelProviderId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get modelId => $composableBuilder(
+    column: $table.modelId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get agentName => $composableBuilder(
+    column: $table.agentName,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1482,6 +1843,36 @@ class $$QueuedPromptsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get operationType => $composableBuilder(
+    column: $table.operationType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get commandName => $composableBuilder(
+    column: $table.commandName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get modelProviderId => $composableBuilder(
+    column: $table.modelProviderId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get modelId => $composableBuilder(
+    column: $table.modelId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get agentName => $composableBuilder(
+    column: $table.agentName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get state => $composableBuilder(
     column: $table.state,
     builder: (column) => ColumnOrderings(column),
@@ -1548,6 +1939,32 @@ class $$QueuedPromptsTableAnnotationComposer
     column: $table.promptText,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get operationType => $composableBuilder(
+    column: $table.operationType,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get commandName => $composableBuilder(
+    column: $table.commandName,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get attachmentsJson => $composableBuilder(
+    column: $table.attachmentsJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get modelProviderId => $composableBuilder(
+    column: $table.modelProviderId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get modelId =>
+      $composableBuilder(column: $table.modelId, builder: (column) => column);
+
+  GeneratedColumn<String> get agentName =>
+      $composableBuilder(column: $table.agentName, builder: (column) => column);
 
   GeneratedColumn<String> get state =>
       $composableBuilder(column: $table.state, builder: (column) => column);
@@ -1622,6 +2039,12 @@ class $$QueuedPromptsTableTableManager
                 Value<String> directory = const Value.absent(),
                 Value<int> position = const Value.absent(),
                 Value<String> promptText = const Value.absent(),
+                Value<String> operationType = const Value.absent(),
+                Value<String?> commandName = const Value.absent(),
+                Value<String?> attachmentsJson = const Value.absent(),
+                Value<String?> modelProviderId = const Value.absent(),
+                Value<String?> modelId = const Value.absent(),
+                Value<String?> agentName = const Value.absent(),
                 Value<String> state = const Value.absent(),
                 Value<String?> pauseReason = const Value.absent(),
                 Value<int> attemptCount = const Value.absent(),
@@ -1637,6 +2060,12 @@ class $$QueuedPromptsTableTableManager
                 directory: directory,
                 position: position,
                 promptText: promptText,
+                operationType: operationType,
+                commandName: commandName,
+                attachmentsJson: attachmentsJson,
+                modelProviderId: modelProviderId,
+                modelId: modelId,
+                agentName: agentName,
                 state: state,
                 pauseReason: pauseReason,
                 attemptCount: attemptCount,
@@ -1654,6 +2083,12 @@ class $$QueuedPromptsTableTableManager
                 required String directory,
                 required int position,
                 required String promptText,
+                Value<String> operationType = const Value.absent(),
+                Value<String?> commandName = const Value.absent(),
+                Value<String?> attachmentsJson = const Value.absent(),
+                Value<String?> modelProviderId = const Value.absent(),
+                Value<String?> modelId = const Value.absent(),
+                Value<String?> agentName = const Value.absent(),
                 required String state,
                 Value<String?> pauseReason = const Value.absent(),
                 Value<int> attemptCount = const Value.absent(),
@@ -1669,6 +2104,12 @@ class $$QueuedPromptsTableTableManager
                 directory: directory,
                 position: position,
                 promptText: promptText,
+                operationType: operationType,
+                commandName: commandName,
+                attachmentsJson: attachmentsJson,
+                modelProviderId: modelProviderId,
+                modelId: modelId,
+                agentName: agentName,
                 state: state,
                 pauseReason: pauseReason,
                 attemptCount: attemptCount,

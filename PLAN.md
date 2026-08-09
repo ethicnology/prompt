@@ -21,7 +21,7 @@ Client Flutter rapide, prive et adapte au mobile pour un serveur OpenCode person
 
 Le serveur OpenCode, le serveur de transcription eventuel et le reverse proxy sont ecoutes uniquement sur l'adresse de l'interface WireGuard. Le pare-feu n'autorise que le sous-reseau WireGuard.
 
-Android et Linux acceptent toute origine HTTP dont l'adresse est RFC1918 ou IPv6 ULA, afin que chaque utilisateur WireGuard puisse saisir son propre serveur sans adresse codee en dur. Cette validation est appliquee par le client avant chaque requete. Le client Web doit utiliser une origine HTTPS, meme si elle est elle aussi joignable seulement par WireGuard.
+Android et Linux acceptent toute origine HTTP dont l'adresse est RFC1918, dans la plage CGNAT Tailscale `100.64.0.0/10`, ou IPv6 ULA, afin que chaque utilisateur WireGuard ou Tailscale puisse saisir son propre serveur sans adresse codee en dur. Cette validation est appliquee par le client avant chaque requete. Le client Web doit utiliser une origine HTTPS, meme si elle est elle aussi joignable seulement par WireGuard.
 
 Le client Web est servi en HTTPS par le reverse proxy, idealement sous la meme origine que l'API OpenCode :
 
@@ -56,7 +56,7 @@ Les endpoints v1 documentes sont la base de compatibilite. Les endpoints v2 et `
 | Projets et emplacements | Ouvrir/changer/fermer projet, projets recents, arborescence, branche et statut Git, selecteur de repertoire | Liste de projets avec recherche et dernier acces. Le choix de repertoire est une recherche serveur, pas un faux explorateur du telephone. Une session ouverte ferme automatiquement le tiroir de projets. | REST projet, fichier, VCS et recherche. Android ne tente jamais d'ouvrir un chemin du VPS dans son propre systeme de fichiers. |
 | Sessions | Creer, lister, rechercher, renommer, supprimer, archiver, restaurer, enfants/sous-agents, fork, parent, sessions recentes | Accueil de sessions rapide, filtres par projet/etat, recherche locale instantanee et chargement pagine. Une session enfant montre son parent et son objectif. L'archive est accessible, pas cachee dans un menu contextuel. | Cache Drift borne, pagination curseur v2 quand disponible, fallback v1 limite. Les panneaux Linux/Web apportent navigation persistante et raccourcis. |
 | Conversation | Messages, texte, raisonnement, changement agent/modele, outils, couts/tokens, compaction, resume, abort, fork | Transcript lisible et virtualise; les details sont developpables sans bloquer le texte. Le flux reste utilisable quand l'application revient au premier plan ou change de reseau. | Reducer SSE par parties de message, relecture REST apres reprise, historique pagine et marqueurs de synchronisation. |
-| Composeur | Texte, commandes `/`, commandes shell, `@fichier`, alias de references, pieces jointes, collage image, historique de saisie, selection agent/modele/effort | Champ multi-ligne fixe, touche explicite Nouvelle ligne, collage de texte entier editable et collage d'image depuis le presse-papiers. Aucun texte colle n'est masque dans un placeholder. Les controles agent/modele/effort restent accessibles dans une feuille dediee, jamais superposes au clavier. | Parts de prompt OpenCode, service presse-papiers/fichiers conditionnel. Controle de taille et apercu avant transfert; pieces jointes jamais encodees et persistees sans limite dans Drift. |
+| Composeur | Texte, commandes `/`, commandes shell, `@fichier`, alias de references, pieces jointes, collage image, historique de saisie, selection agent/modele/effort | Champ multi-ligne fixe, touche explicite Nouvelle ligne, collage de texte entier editable et collage d'image depuis le presse-papiers. Aucun texte colle n'est masque dans un placeholder. Les controles agent/modele/effort restent accessibles dans une feuille dediee, jamais superposes au clavier. | Parts de prompt OpenCode, service presse-papiers/fichiers conditionnel. Controle de taille avant transfert: au plus 5 fichiers, 10 MiB par fichier et 25 MiB au total. Les pieces jointes partent en parts `file` avec une URL `data:` et sont persistees avec leur prompt dans la base chiffree, afin qu'un prompt avec piece jointe survive au redemarrage comme un prompt texte. |
 | File et interruption | Prompt pendant generation, interruption, livraison differree ou immediate | `Ajouter a la file` est le bouton normal. La file est visible, editable, supprimable, reordonnable et persistante. `Envoyer maintenant` explique l'annulation et attend un etat terminal avant envoi. | Machine a etats locale en Drift, reconciliation apres crash/reconnexion, aucune reemission aveugle si l'acceptation serveur est inconnue. |
 | Agents, modeles et providers | Agents Build/Plan/sous-agents, agents configures, skills, catalogue provider/modele, variantes de raisonnement, favoris/recents, providers OpenAI compatibles, connexion OAuth/API key | Selecteur recherche avec favoris, recents, disponibilite et effort. Les options mortes ou incompatibles sont masquees apres erreur verifiee. Connexion provider par navigateur externe puis polling d'integration, jamais callback local suppose. | API agent/provider/config/auth et facade Integration v2. Preferences de modele locales; les cles provider restent cote OpenCode sauf saisie explicite dans le flux serveur. |
 | Outils et controle agent | Bash, lire/ecrire/editer, recherche, glob, LSP, formatters, webfetch/search, apply patch, custom tools, todos, skills, commandes et MCP | Chronologie compacte avec statut, duree et sortie bornee. Une sortie lourde se charge a la demande. Les todos sont accessibles dans un panneau et relient chaque tache a la conversation. | Part renderer par type, API outils/commandes/todo/skill/MCP. Aucun rendu ANSI, JSON ou Markdown lourd dans l'isolate UI. |
@@ -136,12 +136,18 @@ La file d'envoi est une fonctionnalite centrale et locale a Prompt.
 
 ### Dictee vocale locale
 
+- Les **Voice settings** sont globaux a l'application, jamais lies a une
+  session. Apres la selection explicite d'un modele local, le bouton **Voice
+  input** apparait a cote de l'envoi dans chaque composeur et injecte les
+  transcriptions partielles puis finale dans le brouillon editable. Aucun
+  appel STT distant ni demande de permission au lancement n'est effectue.
+
 - Capture explicite : appui-maintien sur Android, demarrer/arreter sur Linux et Web.
 - Transcription francaise ou anglaise, partielle en direct puis editable avant envoi.
 - Arret immediat du microphone lorsque l'application devient inactive; aucun enregistrement permanent.
 - Mode local privilegie : modele Whisper multilingue telecharge avec consentement, de preference en Wi-Fi.
 - `base` est le modele live recommande (environ 150 Mo); `small` privilegie la precision (environ 500 Mo). L'utilisateur peut supprimer les modeles.
-- Android et Linux : `whisper_ggml`, moteur Whisper.cpp local, execution hors UI et transcription live.
+- Android : `whisper_ggml`, moteur Whisper.cpp local, execution hors UI et transcription live. Les modeles `tiny`, `base` et `small` sans suffixe `.en` sont multilingues; `base` est le choix francais recommande.
 - Web : Whisper.cpp WASM construit avec Emscripten et integre via `dart:js_interop`; le moteur Web est distinct car `dart:ffi` et Dart Native Assets ne ciblent pas le Web.
 - Option VPS WireGuard possible uniquement par consentement explicite, comme repli si aucun modele local n'est installe. Audio et transcription ne sont jamais envoyes a un tiers.
 
@@ -187,7 +193,23 @@ L'objectif est une interface a 60 fps stable en generation et une saisie qui ne 
 
 - Aucune telemetrie distante par defaut; export de diagnostic uniquement sur action explicite et apres redaction.
 - Aucun log de prompt, message, token, mot de passe, entete HTTP, audio ou contenu de fichier.
+- Les notifications locales sont desactivees jusqu'a une action explicite dans
+  les parametres. Leur permission n'est jamais demandee au lancement ni en
+  reaction a un evenement serveur. Leur contenu reste generique (fin ou echec
+  de session) et ne contient ni prompt, message, sortie d'outil, fichier,
+  chemin ou identifiant secret.
+- Web requiert HTTPS et un geste utilisateur direct pour la permission de
+  notification; les navigateurs ne planifient pas ces notifications. Sous
+  Linux, la livraison depend du serveur de notifications de bureau et ne
+  comporte pas de permission d'execution.
 - Audio en memoire uniquement. Il est detruit apres transcription, reussie ou echouee.
+- Pieces jointes locales : maximum 10 MiB chacune, 5 fichiers et 25 MiB au
+  total. La selection du composeur reste en memoire et est ecrasee et liberee
+  a la suppression, tentative d'envoi, inactivite, sortie de conversation et
+  destruction. Une copie est conservee dans la file chiffree seulement tant
+  que le prompt n'est pas envoye ou que son acceptation est inconnue, afin de
+  permettre une reprise explicite apres redemarrage. Elle est effacee des que
+  le serveur accuse reception du prompt.
 - Android/Linux : cache Drift chiffre avec SQLite3MultipleCiphers; cle aleatoire dans le stockage securise systeme.
 - Web : pas de chiffrement SQLite/WASM equivalent. Aucun cache durable du contenu de conversation par defaut, uniquement les metadonnees. L'utilisateur peut activer ce cache en connaissance de cause.
 - Registre local minimal et borne pour les diagnostics, avec rotation courte.

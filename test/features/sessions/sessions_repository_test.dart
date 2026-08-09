@@ -1,12 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
 import 'package:prompt/features/sessions/data/sessions_repository.dart';
 import 'package:prompt/features/sessions/domain/session_load_result.dart';
+import 'package:prompt/features/sessions/domain/open_code_session.dart';
 
 void main() {
   final profile = ServerProfile(
@@ -14,7 +16,7 @@ void main() {
     username: 'opencode',
   );
 
-  test('loads and orders sessions from every OpenCode project', () async {
+  test('merges the global index with every project catalog', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/project') {
         return http.Response(
@@ -23,24 +25,33 @@ void main() {
           200,
         );
       }
-      if (request.url.path == '/session' &&
-          request.url.queryParameters['directory'] == '/workspace/alpha') {
+      if (request.url.path == '/session' && request.url.query.isEmpty) {
         return http.Response(
           '[{"id":"older","projectID":"project-a",'
           '"directory":"/workspace/alpha","title":"Older session",'
-          '"time":{"created":1000,"updated":2000}}]',
-          200,
-        );
-      }
-      if (request.url.path == '/session' &&
-          request.url.queryParameters['directory'] == '/workspace/beta') {
-        return http.Response(
-          '[{"id":"newer","projectID":"project-b",'
+          '"time":{"created":1000,"updated":2000}},'
+          '{"id":"newer","projectID":"project-b",'
           '"directory":"/workspace/beta","title":"Newer session",'
           '"time":{"created":1000,"updated":3000},'
           '"summary":{"files":2,"additions":3,"deletions":1}}]',
           200,
         );
+      }
+      if (request.url.path == '/session' &&
+          request.url.queryParameters['directory'] == '/workspace/alpha') {
+        return http.Response(
+          '[{"id":"older","projectID":"project-a",'
+          '"directory":"/workspace/alpha","title":"Older session",'
+          '"time":{"created":1000,"updated":2000}},'
+          '{"id":"alpha-only","projectID":"project-a",'
+          '"directory":"/workspace/alpha","title":"Alpha only",'
+          '"time":{"created":1000,"updated":4000}}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session' &&
+          request.url.queryParameters['directory'] == '/workspace/beta') {
+        return http.Response('[]', 200);
       }
       return http.Response('', 404);
     });
@@ -53,9 +64,87 @@ void main() {
 
     expect(result, isA<SessionsLoaded>());
     final sessions = (result as SessionsLoaded).sessions;
-    expect(sessions.map((session) => session.id), ['newer', 'older']);
-    expect(sessions.first.changedFiles, 2);
+    expect(sessions.map((session) => session.id), [
+      'alpha-only',
+      'newer',
+      'older',
+    ]);
+    expect(
+      sessions.singleWhere((session) => session.id == 'newer').changedFiles,
+      2,
+    );
   });
+
+  test('keeps the sessions that loaded when one project fails', () async {
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response(
+          '[{"id":"project-a","worktree":"/workspace/alpha"},'
+          '{"id":"project-b","worktree":"/workspace/beta"}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session' && request.url.query.isEmpty) {
+        return http.Response(
+          '[{"id":"global","projectID":"project-a",'
+          '"directory":"/workspace/alpha","title":"Global session",'
+          '"time":{"created":1000,"updated":2000}}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session' &&
+          request.url.queryParameters['directory'] == '/workspace/alpha') {
+        return http.Response(
+          '[{"id":"alpha-only","projectID":"project-a",'
+          '"directory":"/workspace/alpha","title":"Alpha only",'
+          '"time":{"created":1000,"updated":4000}}]',
+          200,
+        );
+      }
+      // The second project is unreachable for this load.
+      return http.Response('', 500);
+    });
+    final repository = SessionsRepository(
+      OpenCodeSessionsService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.load(profile);
+
+    expect(result, isA<SessionsLoaded>());
+    expect((result as SessionsLoaded).sessions.map((session) => session.id), [
+      'alpha-only',
+      'global',
+    ]);
+  });
+
+  test(
+    'keeps the global index when the project endpoint is unavailable',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.path == '/session') {
+          return http.Response(
+            '[{"id":"global","projectID":"project-a",'
+            '"directory":"/workspace/alpha","title":"Global session",'
+            '"time":{"created":1000,"updated":2000}}]',
+            200,
+          );
+        }
+        return http.Response('', 500);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.load(profile);
+
+      expect(result, isA<SessionsLoaded>());
+      final loaded = result as SessionsLoaded;
+      expect(loaded.sessions.single.id, 'global');
+      expect(loaded.projects, isEmpty);
+    },
+  );
 
   test('maps a rejected session request to an authorization failure', () async {
     final client = MockClient((_) async => http.Response('', 401));
@@ -72,7 +161,106 @@ void main() {
       SessionsFailure.unauthorized,
     );
   });
+
+  test(
+    'forks a session through the official endpoint and maps the result',
+    () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response(_sessionJson('forked'), 200);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.fork(profile, _session());
+
+      expect(result, isA<Ok<OpenCodeSession, SessionsFailure>>());
+      expect(
+        (result as Ok<OpenCodeSession, SessionsFailure>).value.id,
+        'forked',
+      );
+      expect(captured!.method, 'POST');
+      expect(captured!.url.path, '/session/session-1/fork');
+      expect(captured!.url.queryParameters['directory'], '/workspace/project');
+    },
+  );
+
+  test(
+    'shares only a safe returned HTTPS URL and unshares through OpenCode',
+    () async {
+      final requests = <http.Request>[];
+      final client = MockClient((request) async {
+        requests.add(request);
+        return request.method == 'POST'
+            ? http.Response(
+                _sessionJson(
+                  'session-1',
+                  shareUrl: 'https://share.example/s/1',
+                ),
+                200,
+              )
+            : http.Response('true', 200);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final shared = await repository.share(profile, _session());
+      final unshared = await repository.unshare(profile, _session());
+
+      expect(
+        (shared as Ok<String?, SessionsFailure>).value,
+        'https://share.example/s/1',
+      );
+      expect(unshared, isA<Ok<void, SessionsFailure>>());
+      expect(requests[0].url.path, '/session/session-1/share');
+      expect(requests[1].method, 'DELETE');
+      expect(requests[1].url.path, '/session/session-1/share');
+    },
+  );
+
+  test(
+    'reverts only the supplied message ID through the official endpoint',
+    () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response('true', 200);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.revert(profile, _session(), 'message-1');
+
+      expect((result as Ok<bool, SessionsFailure>).value, isTrue);
+      expect(captured!.url.path, '/session/session-1/revert');
+      expect(captured!.url.queryParameters['directory'], '/workspace/project');
+      expect(captured!.body, '{"messageID":"message-1"}');
+    },
+  );
 }
+
+OpenCodeSession _session() => OpenCodeSession(
+  id: 'session-1',
+  projectId: 'project-1',
+  directory: '/workspace/project',
+  title: 'Session',
+  createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+  updatedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+);
+
+String _sessionJson(String id, {String? shareUrl}) =>
+    '''
+{"id":"$id","projectID":"project-1","directory":"/workspace/project",
+"title":"Session","time":{"created":1000,"updated":1000}
+${shareUrl == null ? '' : ',"share":{"url":"$shareUrl"}'}}
+''';
 
 class _PasswordStore implements CredentialsStore {
   const _PasswordStore(this._password);

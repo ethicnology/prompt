@@ -24,7 +24,7 @@ extension ConnectionFailureMessage on ConnectionFailure {
   String get message {
     return switch (this) {
       ConnectionFailure.invalidAddress =>
-        'Enter a private HTTP address or a valid HTTPS address.',
+        'Enter a private WireGuard or Tailscale HTTP address, or a valid HTTPS address.',
       ConnectionFailure.unauthorized =>
         'The server rejected these credentials.',
       ConnectionFailure.unavailable =>

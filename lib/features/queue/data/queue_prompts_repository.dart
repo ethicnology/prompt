@@ -6,8 +6,10 @@ import '../../../data/local/prompt_database.dart' as db;
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
 import '../domain/queue_failure.dart';
+import '../domain/prompt_execution_options.dart';
 import '../domain/queued_prompt.dart';
 import 'queue_prompts_dao.dart';
+import 'queued_attachment_codec.dart';
 
 /// The durable, per-session source of truth for Prompt's local send queue.
 ///
@@ -30,9 +32,11 @@ class QueuePromptsRepository {
     required ServerProfile profile,
     required OpenCodeSession session,
     required String promptText,
+    List<QueuedAttachment> attachments = const <QueuedAttachment>[],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
   }) async {
     final trimmed = promptText.trim();
-    if (trimmed.isEmpty) {
+    if (trimmed.isEmpty && attachments.isEmpty) {
       return const Err(QueueFailure.emptyPromptText);
     }
     return _run(() async {
@@ -42,6 +46,37 @@ class QueuePromptsRepository {
         sessionId: session.id,
         directory: session.directory,
         promptText: trimmed,
+        attachments: attachments,
+        executionOptions: executionOptions,
+        now: DateTime.now(),
+      );
+      return _toDomain(row);
+    });
+  }
+
+  /// Adds a slash command to the same durable queue as prompts, so it never
+  /// implicitly interrupts active session work.
+  Future<Result<QueuedPrompt, QueueFailure>> enqueueCommand({
+    required ServerProfile profile,
+    required OpenCodeSession session,
+    required String commandName,
+    required String arguments,
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
+    final name = commandName.trim();
+    if (name.isEmpty) {
+      return const Err(QueueFailure.emptyPromptText);
+    }
+    return _run(() async {
+      final row = await _dao.enqueue(
+        id: _idGenerator(),
+        serverProfileId: profile.id,
+        sessionId: session.id,
+        directory: session.directory,
+        promptText: arguments.trim(),
+        operationType: QueuedOperationType.command,
+        commandName: name,
+        executionOptions: executionOptions,
         now: DateTime.now(),
       );
       return _toDomain(row);
@@ -212,6 +247,14 @@ class QueuePromptsRepository {
       directory: row.directory,
       position: row.position,
       promptText: row.promptText,
+      operationType: QueuedOperationType.values.byName(row.operationType),
+      commandName: row.commandName,
+      attachments: decodeQueuedAttachments(row.attachmentsJson),
+      executionOptions: PromptExecutionOptions(
+        modelProviderId: row.modelProviderId,
+        modelId: row.modelId,
+        agentName: row.agentName,
+      ),
       state: QueuedPromptState.values.byName(row.state),
       pauseReason: row.pauseReason == null
           ? null

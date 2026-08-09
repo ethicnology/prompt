@@ -5,14 +5,17 @@ import 'package:flutter/foundation.dart';
 import '../../../core/async/result.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../queue/queue.dart';
-import '../../sessions/domain/open_code_session.dart';
+import '../../sessions/sessions.dart';
 import '../data/chat_repository.dart';
+import '../data/attachment_picker.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/conversation_message.dart';
 import '../domain/conversation_state.dart';
 import '../domain/pending_approval.dart';
 import '../domain/permission_response.dart';
+import '../domain/prompt_attachment.dart';
+import '../domain/session_artifacts.dart';
 
 sealed class ConversationUiState {
   const ConversationUiState();
@@ -53,13 +56,17 @@ class ConversationError extends ConversationUiState {
 class ConversationViewModel {
   ConversationViewModel({
     required this._chatRepository,
+    required this._sessionsRepository,
     required this._queueRepositoryProvider,
     required this._queueCoordinatorProvider,
+    required this._attachmentPicker,
   });
 
   final ChatRepository _chatRepository;
+  final SessionsRepository _sessionsRepository;
   final Future<QueuePromptsRepository> Function() _queueRepositoryProvider;
   final Future<QueueSendCoordinator> Function() _queueCoordinatorProvider;
+  final AttachmentPicker _attachmentPicker;
 
   QueuePromptsRepository? _queueRepository;
   QueueSendCoordinator? _queueCoordinator;
@@ -69,9 +76,21 @@ class ConversationViewModel {
     const ConversationLoading(),
   );
 
+  /// The session's todos and file diffs, fetched on open and on demand.
+  final ValueNotifier<SessionArtifactsState> artifacts = ValueNotifier(
+    const SessionArtifactsLoading(),
+  );
+
   /// The active session's durable queue, in dispatch order.
   final ValueNotifier<List<QueuedPrompt>> queue = ValueNotifier(
     const <QueuedPrompt>[],
+  );
+
+  /// Memory-only files selected for the active composer. They never enter the
+  /// durable prompt queue because OpenCode currently offers no upload or
+  /// durable file-reference protocol.
+  final ValueNotifier<List<PromptAttachment>> attachments = ValueNotifier(
+    const <PromptAttachment>[],
   );
 
   /// The active session's pending permission or question, for a
@@ -109,6 +128,8 @@ class ConversationViewModel {
   /// left can never reach [_applyLiveConversationState].
   ValueListenable<ConversationState>? _liveConversationState;
   VoidCallback? _liveConversationStateListener;
+  Timer? _liveRenderTimer;
+  ConversationState? _pendingLiveRender;
 
   /// The open session's live connection status, as exposed by
   /// [QueueSendCoordinator.connectionState]. Cleared in [leave] and
@@ -164,7 +185,7 @@ class ConversationViewModel {
         // session); never apply its live state to the visible transcript.
         return;
       }
-      _applyLiveConversationState(liveConversationState.value);
+      _scheduleLiveConversationRender(liveConversationState.value);
       pendingApproval.value =
           liveConversationState.value.pendingApprovals[session.id];
     }
@@ -200,11 +221,72 @@ class ConversationViewModel {
     remoteConnectionState.addListener(onRemoteConnectionStateChanged);
     connectionState.value = remoteConnectionState.value;
 
-    await _loadMessages();
+    await Future.wait([_loadMessages(), _loadArtifacts()]);
   }
 
   /// Re-fetches the transcript for the currently open session.
   Future<void> reload() => _loadMessages();
+
+  /// Re-fetches todos and the session diff. [messageId] narrows the diff to
+  /// the point OpenCode associates with that message when supplied.
+  Future<void> reloadArtifacts({String? messageId}) =>
+      _loadArtifacts(messageId: messageId);
+
+  Future<SessionCreateResult?> fork() {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return Future.value(null);
+    }
+    return _sessionsRepository.fork(profile, session);
+  }
+
+  Future<SessionShareResult?> share() {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return Future.value(null);
+    }
+    return _sessionsRepository.share(profile, session);
+  }
+
+  Future<SessionsFailure?> unshare() async {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return SessionsFailure.unexpectedResponse;
+    }
+    final result = await _sessionsRepository.unshare(profile, session);
+    return switch (result) {
+      Ok() => null,
+      Err(:final failure) => failure,
+    };
+  }
+
+  Future<SessionsFailure?> revert(String messageId) async {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null || messageId.isEmpty) {
+      return SessionsFailure.unexpectedResponse;
+    }
+    final result = await _sessionsRepository.revert(
+      profile,
+      session,
+      messageId,
+    );
+    return switch (result) {
+      Ok(:final value) when value => await _refreshAfterRevert(messageId),
+      Ok() => SessionsFailure.unexpectedResponse,
+      Err(:final failure) => failure,
+    };
+  }
+
+  Future<SessionsFailure?> _refreshAfterRevert(String messageId) async {
+    await Future.wait([_loadMessages(), _loadArtifacts(messageId: messageId)]);
+    return null;
+  }
+
+  void retryConnection() => _queueCoordinator?.retryConnection();
 
   Future<void> _loadMessages() async {
     final profile = _profile;
@@ -233,15 +315,34 @@ class ConversationViewModel {
     }
   }
 
+  Future<void> _loadArtifacts({String? messageId}) async {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null || session == null) {
+      return;
+    }
+    artifacts.value = const SessionArtifactsLoading();
+    final result = await _chatRepository.loadArtifacts(
+      profile,
+      session,
+      messageId: messageId,
+    );
+    if (_disposed || _session != session) {
+      return;
+    }
+    artifacts.value = switch (result) {
+      Ok(:final value) => value,
+      Err(:final failure) => SessionArtifactsError(failure),
+    };
+  }
+
   /// Merges [liveState] — the active session's live conversation, reduced
   /// from SSE `message.updated`/`message.part.updated` events — onto the
   /// currently visible transcript.
   ///
-  /// Only messages [liveState] has actually rendered text for are merged:
-  /// this never overwrites an already-loaded REST message with a blank
-  /// transcript before its own SSE events have caught up, and never shows
-  /// an empty placeholder bubble before a new message's first text part
-  /// arrives. `message.removed`/`message.part.removed` are reduced by
+  /// Rendering is scheduled in small batches by
+  /// [_scheduleLiveConversationRender], rather than once per SSE event.
+  /// `message.removed`/`message.part.removed` are reduced by
   /// `conversation_state.dart` but intentionally not reflected here; a
   /// removal is reconciled by the next REST [reload], consistent with this
   /// app's reconnect-then-REST-reconcile rule for the transcript.
@@ -259,23 +360,141 @@ class ConversationViewModel {
     }
   }
 
+  /// Coalesces bursty token/tool events into a visual update every 60ms. The
+  /// coordinator still reduces each event immediately, so queue safety and
+  /// approval handling are never delayed by this display optimisation.
+  void _scheduleLiveConversationRender(ConversationState liveState) {
+    _pendingLiveRender = liveState;
+    if (_liveRenderTimer != null) {
+      return;
+    }
+    _liveRenderTimer = Timer(const Duration(milliseconds: 60), () {
+      _liveRenderTimer = null;
+      final pending = _pendingLiveRender;
+      _pendingLiveRender = null;
+      if (pending != null && !_disposed && _session != null) {
+        _applyLiveConversationState(pending);
+      }
+    });
+  }
+
   /// Durably enqueues [text] for the open session. Never sends directly:
   /// dispatch timing is entirely owned by [QueueSendCoordinator].
-  Future<void> enqueuePrompt(String text) async {
+  Future<bool> enqueuePrompt(
+    String text, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
+    // The composer's selection is copied into the durable queue record, so
+    // the memory-only buffers can be released as soon as it is stored.
+    final selected = attachments.value;
+    final queuedAttachments = [
+      for (final attachment in selected)
+        QueuedAttachment(
+          name: attachment.name,
+          mediaType: attachment.mediaType,
+          bytes: Uint8List.fromList(attachment.bytes),
+        ),
+    ];
     final profile = _profile;
     final session = _session;
     final queueRepository = _queueRepository;
     if (profile == null || session == null || queueRepository == null) {
-      return;
+      return false;
     }
     final result = await queueRepository.enqueue(
       profile: profile,
       session: session,
       promptText: text,
+      attachments: queuedAttachments,
+      executionOptions: executionOptions,
     );
     if (result case Err<QueuedPrompt, QueueFailure>(:final failure)) {
       _queueErrors.add(failure.message);
+      return false;
     }
+    releaseAttachments();
+    return true;
+  }
+
+  /// Invoked only by the composer's explicit attachment control.
+  Future<AttachmentPickResult> pickAttachments() async {
+    if (_disposed) {
+      return const AttachmentPickCancelled();
+    }
+    final result = await _attachmentPicker.pick();
+    if (_disposed) {
+      if (result case AttachmentsPicked(:final attachments)) {
+        _releaseAttachments(attachments);
+      }
+      return const AttachmentPickCancelled();
+    }
+    if (result case AttachmentsPicked(:final attachments)) {
+      final current = this.attachments.value;
+      final combinedCount = current.length + attachments.length;
+      final combinedBytes =
+          current.fold<int>(
+            0,
+            (total, attachment) => total + attachment.byteCount,
+          ) +
+          attachments.fold<int>(
+            0,
+            (total, attachment) => total + attachment.byteCount,
+          );
+      if (combinedCount > PromptAttachment.maxAttachmentCount ||
+          combinedBytes > PromptAttachment.maxTotalBytes) {
+        _releaseAttachments(attachments);
+        return const AttachmentPickRejected(
+          'Keep up to 5 attachments totaling 25 MiB or less.',
+        );
+      }
+      this.attachments.value = [...current, ...attachments];
+    }
+    return result;
+  }
+
+  void removeAttachment(PromptAttachment attachment) {
+    final current = attachments.value;
+    if (!current.contains(attachment)) {
+      return;
+    }
+    attachment.release();
+    attachments.value = current
+        .where((candidate) => !identical(candidate, attachment))
+        .toList(growable: false);
+  }
+
+  /// Discards every memory-only attachment. Called after a cancelled or
+  /// rejected attached submission, on lifecycle inactivity, and on teardown.
+  void releaseAttachments() {
+    _releaseAttachments(attachments.value);
+    attachments.value = const <PromptAttachment>[];
+  }
+
+  /// Durably enqueues a slash command. Commands share the prompt queue so a
+  /// busy session never loses or implicitly aborts active work.
+  Future<bool> enqueueCommand(
+    String commandName,
+    String arguments, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
+    final profile = _profile;
+    final session = _session;
+    final queueRepository = _queueRepository;
+    if (profile == null || session == null || queueRepository == null) {
+      return false;
+    }
+    final result = await queueRepository.enqueueCommand(
+      profile: profile,
+      session: session,
+      commandName: commandName,
+      arguments: arguments,
+      executionOptions: executionOptions,
+    );
+    if (result case Err<QueuedPrompt, QueueFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+      return false;
+    }
+    return true;
   }
 
   /// Removes a queued prompt. Rejected by the repository while the prompt
@@ -360,6 +579,10 @@ class ConversationViewModel {
   /// screen leaves the active session, and internally by [open] before
   /// switching to a different one.
   Future<void> leave() async {
+    _liveRenderTimer?.cancel();
+    _liveRenderTimer = null;
+    _pendingLiveRender = null;
+    releaseAttachments();
     await _queueSubscription?.cancel();
     _queueSubscription = null;
     _detachLiveConversationState();
@@ -367,6 +590,7 @@ class ConversationViewModel {
     await _queueCoordinator?.deactivate();
     connectionState.value = const SseSuspended();
     pendingApproval.value = null;
+    artifacts.value = const SessionArtifactsLoading();
     _profile = null;
     _session = null;
   }
@@ -376,13 +600,19 @@ class ConversationViewModel {
       return;
     }
     _disposed = true;
+    _liveRenderTimer?.cancel();
+    _liveRenderTimer = null;
+    _pendingLiveRender = null;
+    releaseAttachments();
     await _queueSubscription?.cancel();
     _queueSubscription = null;
     _detachLiveConversationState();
     _detachRemoteConnectionState();
     await _queueCoordinator?.deactivate();
     messages.dispose();
+    artifacts.dispose();
     queue.dispose();
+    attachments.dispose();
     connectionState.dispose();
     pendingApproval.dispose();
     unawaited(_queueErrors.close());
@@ -406,6 +636,12 @@ class ConversationViewModel {
     }
     _remoteConnectionState = null;
     _remoteConnectionStateListener = null;
+  }
+}
+
+void _releaseAttachments(Iterable<PromptAttachment> attachments) {
+  for (final attachment in attachments) {
+    attachment.release();
   }
 }
 
@@ -444,12 +680,24 @@ List<ChatMessage> _mergeLiveConversationState(
     if (role == null) {
       continue;
     }
-    final text = _renderTextParts(liveMessage.parts);
-    if (text == null) {
+    final text = _renderTextParts(liveMessage.parts) ?? '';
+    final existing = byId[liveMessage.id];
+    final details = _renderLiveDetails(liveMessage.parts);
+    // A task/tool may arrive before the assistant writes prose. Keep that
+    // message in the transcript so its live progress is never invisible.
+    if (text.isEmpty && details.isEmpty) {
       continue;
     }
-    final existing = byId[liveMessage.id];
-    if (existing != null && existing.role == role && existing.text == text) {
+    final mergedText = existing != null && existing.text.startsWith(text)
+        ? existing.text
+        : text;
+    final mergedDetails = details.isEmpty
+        ? existing?.details ?? const []
+        : details;
+    if (existing != null &&
+        existing.role == role &&
+        existing.text == mergedText &&
+        _sameDetails(existing.details, mergedDetails)) {
       continue;
     }
     if (existing == null) {
@@ -459,7 +707,9 @@ List<ChatMessage> _mergeLiveConversationState(
       id: liveMessage.id,
       role: role,
       createdAt: existing?.createdAt ?? DateTime.now(),
-      text: text,
+      text: mergedText,
+      details: mergedDetails,
+      error: existing?.error,
     );
     changed = true;
   }
@@ -468,6 +718,59 @@ List<ChatMessage> _mergeLiveConversationState(
     return restMessages;
   }
   return [for (final id in order) byId[id]!];
+}
+
+List<ChatMessageDetail> _renderLiveDetails(List<MessagePart> parts) {
+  return [
+    for (final part in parts)
+      switch (part) {
+        ReasoningMessagePart(:final id, :final text) => ChatReasoningDetail(
+          id: id,
+          text: text,
+        ),
+        ToolMessagePart(
+          :final id,
+          :final tool,
+          :final status,
+          :final summary,
+          :final error,
+        ) =>
+          ChatToolDetail(
+            id: id,
+            tool: tool,
+            status: status.name,
+            input: summary,
+            error: error,
+          ),
+        _ => null,
+      },
+  ].whereType<ChatMessageDetail>().toList(growable: false);
+}
+
+bool _sameDetails(List<ChatMessageDetail> left, List<ChatMessageDetail> right) {
+  if (left.length != right.length) {
+    return false;
+  }
+  for (var i = 0; i < left.length; i++) {
+    final a = left[i];
+    final b = right[i];
+    if (a.runtimeType != b.runtimeType || a.id != b.id) {
+      return false;
+    }
+    if (a is ChatReasoningDetail && b is ChatReasoningDetail) {
+      if (a.text != b.text) {
+        return false;
+      }
+    } else if (a is ChatToolDetail && b is ChatToolDetail) {
+      if (a.tool != b.tool ||
+          a.status != b.status ||
+          a.input != b.input ||
+          a.error != b.error) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /// Concatenates every [TextMessagePart] in [parts], in order. Returns

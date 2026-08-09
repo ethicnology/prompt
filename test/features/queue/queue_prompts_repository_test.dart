@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/core/async/result.dart';
@@ -8,7 +11,9 @@ import 'package:prompt/features/queue/data/queue_prompts_dao.dart';
 import 'package:prompt/features/queue/data/queue_prompts_repository.dart';
 import 'package:prompt/features/queue/domain/queue_failure.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
+import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3lib;
 
 /// Lets a Drift `watch()` stream's `Timer.run`-scheduled re-query and
 /// notification reach this test's listener before the next assertion.
@@ -39,6 +44,49 @@ void main() {
 
   group('InMemoryQueuePromptsDao', () {
     _runQueuePromptsRepositoryTests(createDao: () => InMemoryQueuePromptsDao());
+  });
+
+  test('migrates version 1 queued prompts without execution options', () async {
+    final file = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}'
+      'prompt-queue-migration-${DateTime.now().microsecondsSinceEpoch}.sqlite',
+    );
+    final sqlite = sqlite3lib.sqlite3.open(file.path);
+    sqlite.execute('''
+      CREATE TABLE queued_prompts (
+        id TEXT NOT NULL PRIMARY KEY,
+        server_profile_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        directory TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        state TEXT NOT NULL,
+        pause_reason TEXT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        created_at_millis INTEGER NOT NULL,
+        updated_at_millis INTEGER NOT NULL,
+        sending_started_at_millis INTEGER NULL,
+        acknowledged_at_millis INTEGER NULL,
+        UNIQUE (server_profile_id, session_id, position)
+      );
+      INSERT INTO queued_prompts VALUES (
+        'old-prompt', 'profile', 'session', '/workspace', 0, 'existing',
+        'queued', NULL, 0, 1, 1, NULL, NULL
+      );
+      PRAGMA user_version = 1;
+    ''');
+    sqlite.close();
+    final database = PromptDatabase.forTesting(NativeDatabase(file));
+
+    final row = await (database.select(
+      database.queuedPrompts,
+    )..where((table) => table.id.equals('old-prompt'))).getSingle();
+
+    expect(row.modelProviderId, isNull);
+    expect(row.modelId, isNull);
+    expect(row.agentName, isNull);
+    await database.close();
+    await file.delete();
   });
 }
 
@@ -85,11 +133,13 @@ void _runQueuePromptsRepositoryTests({
   Future<QueuedPrompt> enqueue(
     String text, {
     OpenCodeSession? forSession,
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
   }) async {
     final result = await repository.enqueue(
       profile: profile,
       session: forSession ?? session,
       promptText: text,
+      executionOptions: executionOptions,
     );
     expect(result, isA<Ok<QueuedPrompt, QueueFailure>>());
     return (result as Ok<QueuedPrompt, QueueFailure>).value;
@@ -130,6 +180,30 @@ void _runQueuePromptsRepositoryTests({
       expect(inOtherSession.position, 0);
       expect(inOtherSession.sessionId, otherSession.id);
     });
+
+    test(
+      'keeps selected execution options through storage and queue reads',
+      () async {
+        final prompt = await enqueue(
+          'selected prompt',
+          executionOptions: const PromptExecutionOptions(
+            modelProviderId: 'anthropic',
+            modelId: 'claude-sonnet-4',
+            agentName: 'build',
+          ),
+        );
+
+        expect(prompt.executionOptions.modelProviderId, 'anthropic');
+        expect(prompt.executionOptions.modelId, 'claude-sonnet-4');
+        expect(prompt.executionOptions.agentName, 'build');
+        final stored = await repository
+            .watchQueue(profile: profile, session: session)
+            .first;
+        expect(stored.single.executionOptions.modelProviderId, 'anthropic');
+        expect(stored.single.executionOptions.modelId, 'claude-sonnet-4');
+        expect(stored.single.executionOptions.agentName, 'build');
+      },
+    );
   });
 
   group('edit', () {
@@ -223,6 +297,30 @@ void _runQueuePromptsRepositoryTests({
         QueuedPromptState.acknowledged,
       );
       expect(acknowledged.value.acknowledgedAt, isNotNull);
+    });
+
+    test('removes attachment bytes once a prompt is acknowledged', () async {
+      final queued = await repository.enqueue(
+        profile: profile,
+        session: session,
+        promptText: 'Review this file',
+        attachments: [
+          QueuedAttachment(
+            name: 'notes.txt',
+            mediaType: 'text/plain',
+            bytes: Uint8List.fromList([1, 2, 3]),
+          ),
+        ],
+      );
+      final prompt = (queued as Ok<QueuedPrompt, QueueFailure>).value;
+
+      await repository.markSending(prompt.id);
+      final acknowledged = await repository.markAcknowledged(prompt.id);
+
+      expect(
+        (acknowledged as Ok<QueuedPrompt, QueueFailure>).value.attachments,
+        isEmpty,
+      );
     });
 
     test('follows queued -> sending -> failed -> paused', () async {

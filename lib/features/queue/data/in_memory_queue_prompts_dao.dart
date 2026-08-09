@@ -1,7 +1,10 @@
 import 'dart:async';
 
 import '../../../data/local/prompt_database.dart' as db;
-import '../domain/queued_prompt.dart' show QueuedPromptState;
+import '../domain/queued_prompt.dart'
+    show QueuedAttachment, QueuedOperationType, QueuedPromptState;
+import 'queued_attachment_codec.dart';
+import '../domain/prompt_execution_options.dart';
 import 'queue_prompts_dao.dart';
 
 /// Web's memory-only default [QueuePromptsDao]: implements the exact same
@@ -23,6 +26,10 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
     required String sessionId,
     required String directory,
     required String promptText,
+    QueuedOperationType operationType = QueuedOperationType.prompt,
+    String? commandName,
+    List<QueuedAttachment> attachments = const <QueuedAttachment>[],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
     required DateTime now,
   }) async {
     final nowMillis = now.millisecondsSinceEpoch;
@@ -33,6 +40,12 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
       directory: directory,
       position: _nextPosition(serverProfileId, sessionId),
       promptText: promptText,
+      operationType: operationType.name,
+      commandName: commandName,
+      attachmentsJson: encodeQueuedAttachments(attachments),
+      modelProviderId: executionOptions.modelProviderId,
+      modelId: executionOptions.modelId,
+      agentName: executionOptions.agentName,
       state: QueuedPromptState.queued.name,
       attemptCount: 0,
       createdAtMillis: nowMillis,
@@ -59,6 +72,12 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
         directory: row.directory,
         position: row.position,
         promptText: promptText,
+        operationType: row.operationType,
+        commandName: row.commandName,
+        attachmentsJson: row.attachmentsJson,
+        modelProviderId: row.modelProviderId,
+        modelId: row.modelId,
+        agentName: row.agentName,
         state: row.state,
         pauseReason: row.pauseReason,
         attemptCount: row.attemptCount,
@@ -134,6 +153,12 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
           directory: row.directory,
           position: slots[i],
           promptText: row.promptText,
+          operationType: row.operationType,
+          commandName: row.commandName,
+          attachmentsJson: row.attachmentsJson,
+          modelProviderId: row.modelProviderId,
+          modelId: row.modelId,
+          agentName: row.agentName,
           state: row.state,
           pauseReason: row.pauseReason,
           attemptCount: row.attemptCount,
@@ -175,6 +200,7 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
       now: now,
       acknowledgedAtMillis: now.millisecondsSinceEpoch,
       pauseReason: null,
+      attachmentsJson: null,
     );
   }
 
@@ -233,8 +259,9 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
     );
   }
 
-  /// Applies a state transition. [pauseReason] uses [_unset] as its
-  /// default so a transition that never mentions it (such as
+  /// Applies a state transition. [pauseReason] and [attachmentsJson] use
+  /// [_unset] as their default so a transition that never mentions either
+  /// value (such as
   /// [markSending]) leaves the row's existing pause reason untouched,
   /// while a transition that explicitly passes `null` (such as
   /// [markAcknowledged] and [markQueued]) clears it - mirroring how
@@ -247,6 +274,7 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
     required DateTime now,
     bool incrementAttempt = false,
     Object? pauseReason = _unset,
+    Object? attachmentsJson = _unset,
     int? sendingStartedAtMillis,
     int? acknowledgedAtMillis,
   }) {
@@ -259,6 +287,14 @@ class InMemoryQueuePromptsDao implements QueuePromptsDao {
       directory: row.directory,
       position: row.position,
       promptText: row.promptText,
+      operationType: row.operationType,
+      commandName: row.commandName,
+      attachmentsJson: identical(attachmentsJson, _unset)
+          ? row.attachmentsJson
+          : attachmentsJson as String?,
+      modelProviderId: row.modelProviderId,
+      modelId: row.modelId,
+      agentName: row.agentName,
       state: to,
       pauseReason: identical(pauseReason, _unset)
           ? row.pauseReason

@@ -5,6 +5,10 @@ import 'package:http/http.dart' as http;
 import '../../../data/remote/opencode_transport.dart';
 import '../../connection/domain/server_profile.dart';
 import '../../sessions/domain/open_code_session.dart';
+import '../../queue/domain/prompt_execution_options.dart';
+import '../../queue/domain/queued_prompt.dart';
+import '../domain/conversation_event.dart';
+import '../domain/pending_approval.dart';
 import '../domain/permission_response.dart';
 import '../domain/session_execution_state.dart';
 
@@ -36,18 +40,62 @@ class OpenCodeChatService {
         .toList(growable: false);
   }
 
+  Future<List<OpenCodeTodoRecord>> listTodos(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) async {
+    final response = await _get(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/todo',
+    );
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List) {
+      throw const FormatException('Todo response must be a list.');
+    }
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(OpenCodeTodoRecord.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<List<OpenCodeFileDiffRecord>> listDiffs(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session, {
+    String? messageId,
+  }) async {
+    final query = Uri(queryParameters: {'messageID': ?messageId}).query;
+    final response = await _get(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/diff'
+      '${query.isEmpty ? '' : '?$query'}',
+    );
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List) {
+      throw const FormatException('Diff response must be a list.');
+    }
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(OpenCodeFileDiffRecord.fromJson)
+        .toList(growable: false);
+  }
+
   /// Sends [text] as a new user message to [session] without waiting for
-  /// the assistant's reply. The server responds with an empty `204` once
-  /// the message is accepted and generation has started; any other status,
-  /// or a non-empty body, is treated as a failure by the caller.
+  /// the assistant's reply. OpenCode server versions use different successful
+  /// response codes, so every 2xx response is definitive acceptance.
   ///
   /// Never logs [text] or any part of the request/response.
   Future<void> sendPromptAsync(
     ServerProfile profile,
     String? password,
     OpenCodeSession session,
-    String text,
-  ) async {
+    String text, {
+    List<QueuedAttachment> attachments = const <QueuedAttachment>[],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
     final query = Uri(queryParameters: {'directory': session.directory}).query;
     final response = await _transport.post(
       profile,
@@ -56,15 +104,62 @@ class OpenCodeChatService {
       headers: const {'content-type': 'application/json'},
       body: jsonEncode({
         'parts': [
-          {'type': 'text', 'text': text},
+          if (text.isNotEmpty) {'type': 'text', 'text': text},
+          // OpenCode accepts file parts by URL; a `data:` URL carries the
+          // bytes inline, which is how the official mobile client uploads.
+          for (final attachment in attachments)
+            {
+              'type': 'file',
+              'mime': attachment.mediaType,
+              'filename': attachment.name,
+              'url':
+                  'data:${attachment.mediaType};base64,'
+                  '${base64Encode(attachment.bytes)}',
+            },
         ],
+        if (executionOptions.hasModel)
+          'model': {
+            'providerID': executionOptions.modelProviderId,
+            'modelID': executionOptions.modelId,
+          },
+        if (executionOptions.agentName != null)
+          'agent': executionOptions.agentName,
       }),
     );
-    if (response.statusCode != 204) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenCodeHttpFailure(response.statusCode);
     }
-    if (response.body.isNotEmpty) {
-      throw const FormatException('Prompt response must be empty.');
+  }
+
+  /// Executes a slash command selected from OpenCode's command capability.
+  Future<void> executeCommand(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+    String command,
+    String arguments, {
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+  }) async {
+    final query = Uri(queryParameters: {'directory': session.directory}).query;
+    final response = await _transport.post(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/command?$query',
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode({
+        'command': command,
+        'arguments': arguments,
+        if (executionOptions.agentName != null)
+          'agent': executionOptions.agentName,
+        if (executionOptions.hasModel)
+          'model': {
+            'providerID': executionOptions.modelProviderId,
+            'modelID': executionOptions.modelId,
+          },
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw OpenCodeHttpFailure(response.statusCode);
     }
   }
 
@@ -204,6 +299,38 @@ class OpenCodeChatService {
     return statuses;
   }
 
+  /// Re-fetches human interactions that may have been emitted while the app
+  /// was asleep or disconnected. OpenCode keeps permissions and questions in
+  /// separate global lists, both scoped by the project directory.
+  Future<List<PendingApproval>> listPendingApprovals(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) async {
+    final query = Uri(queryParameters: {'directory': session.directory}).query;
+    final responses = await Future.wait([
+      _get(profile, password, '/permission?$query'),
+      _get(profile, password, '/question?$query'),
+    ]);
+    final permissions = jsonDecode(responses[0].body);
+    final questions = jsonDecode(responses[1].body);
+    if (permissions is! List || questions is! List) {
+      throw const FormatException(
+        'Pending permission and question responses must be lists.',
+      );
+    }
+    return [
+      ...permissions
+          .whereType<Map<String, dynamic>>()
+          .map((json) => mapPendingPermission(json, sessionId: session.id))
+          .whereType<PendingApproval>(),
+      ...questions
+          .whereType<Map<String, dynamic>>()
+          .map((json) => mapPendingQuestion(json, sessionId: session.id))
+          .whereType<PendingApproval>(),
+    ];
+  }
+
   Future<http.Response> _get(
     ServerProfile profile,
     String? password,
@@ -244,12 +371,83 @@ SessionExecutionState? _mapSessionExecutionState(Map<String, dynamic> json) {
   }
 }
 
+class OpenCodeTodoRecord {
+  const OpenCodeTodoRecord({
+    this.id,
+    required this.content,
+    required this.status,
+    required this.priority,
+  });
+
+  factory OpenCodeTodoRecord.fromJson(Map<String, dynamic> json) {
+    final id = json['id'];
+    final content = json['content'];
+    final status = json['status'];
+    final priority = json['priority'];
+    // OpenCode's `Todo` schema requires only content/status/priority; `id`
+    // is not part of it, so it must stay optional here.
+    if (content is! String || status is! String || priority is! String) {
+      throw const FormatException('Todo has invalid required fields.');
+    }
+    return OpenCodeTodoRecord(
+      id: id is String ? id : null,
+      content: content,
+      status: status,
+      priority: priority,
+    );
+  }
+
+  final String? id;
+  final String content;
+  final String status;
+  final String priority;
+}
+
+class OpenCodeFileDiffRecord {
+  const OpenCodeFileDiffRecord({
+    required this.file,
+    required this.patch,
+    required this.additions,
+    required this.deletions,
+    this.status,
+  });
+
+  /// Maps OpenCode's `SnapshotFileDiff`, whose only required fields are
+  /// `additions` and `deletions`. The unified `patch` and the file path are
+  /// optional, so a diff for a renamed or binary file still parses.
+  factory OpenCodeFileDiffRecord.fromJson(Map<String, dynamic> json) {
+    final file = json['file'];
+    final patch = json['patch'];
+    final status = json['status'];
+    final additions = json['additions'];
+    final deletions = json['deletions'];
+    if (additions is! num || deletions is! num) {
+      throw const FormatException('File diff has invalid required fields.');
+    }
+    return OpenCodeFileDiffRecord(
+      file: file is String ? file : '',
+      patch: patch is String ? patch : '',
+      additions: additions.toInt(),
+      deletions: deletions.toInt(),
+      status: status is String ? status : null,
+    );
+  }
+
+  final String file;
+  final String patch;
+  final int additions;
+  final int deletions;
+  final String? status;
+}
+
 class OpenCodeMessageRecord {
   const OpenCodeMessageRecord({
     required this.id,
     required this.role,
     required this.createdAtMillis,
     required this.text,
+    required this.details,
+    this.error,
   });
 
   factory OpenCodeMessageRecord.fromJson(Map<String, dynamic> json) {
@@ -274,11 +472,43 @@ class OpenCodeMessageRecord {
         .map((part) => part['text'])
         .whereType<String>()
         .join();
+    final details = <OpenCodeMessageDetailRecord>[];
+    for (final rawPart in parts.whereType<Map<String, dynamic>>()) {
+      final id = rawPart['id'];
+      final type = rawPart['type'];
+      if (id is! String || type is! String) {
+        continue;
+      }
+      if (type == 'reasoning' && rawPart['text'] is String) {
+        details.add(
+          OpenCodeReasoningRecord(id: id, text: rawPart['text'] as String),
+        );
+      } else if (type == 'tool') {
+        final tool = rawPart['tool'];
+        final state = rawPart['state'];
+        if (tool is String && state is Map<String, dynamic>) {
+          details.add(
+            OpenCodeToolRecord(
+              id: id,
+              tool: tool,
+              status: state['status'] is String
+                  ? state['status'] as String
+                  : 'pending',
+              input: _boundedJson(state['input'], 1600),
+              output: _boundedText(state['output'], 6000),
+              error: _boundedText(state['error'], 2400),
+            ),
+          );
+        }
+      }
+    }
     return OpenCodeMessageRecord(
       id: id,
       role: role,
       createdAtMillis: createdAt.toInt(),
       text: text,
+      details: details,
+      error: _messageError(info['error']),
     );
   }
 
@@ -286,4 +516,78 @@ class OpenCodeMessageRecord {
   final String role;
   final int createdAtMillis;
   final String text;
+  final List<OpenCodeMessageDetailRecord> details;
+  final String? error;
+}
+
+sealed class OpenCodeMessageDetailRecord {
+  const OpenCodeMessageDetailRecord({required this.id});
+
+  final String id;
+}
+
+class OpenCodeReasoningRecord extends OpenCodeMessageDetailRecord {
+  const OpenCodeReasoningRecord({required super.id, required this.text});
+
+  final String text;
+}
+
+class OpenCodeToolRecord extends OpenCodeMessageDetailRecord {
+  const OpenCodeToolRecord({
+    required super.id,
+    required this.tool,
+    required this.status,
+    this.input,
+    this.output,
+    this.error,
+  });
+
+  final String tool;
+  final String status;
+  final String? input;
+  final String? output;
+  final String? error;
+}
+
+String? _boundedJson(Object? value, int maxLength) {
+  if (value == null) {
+    return null;
+  }
+  try {
+    return _truncate(jsonEncode(value), maxLength);
+  } on JsonUnsupportedObjectError {
+    return null;
+  }
+}
+
+String? _boundedText(Object? value, int maxLength) {
+  return value is String && value.isNotEmpty
+      ? _truncate(value, maxLength)
+      : null;
+}
+
+String _truncate(String value, int maxLength) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return '${value.substring(0, maxLength)}\n… output truncated';
+}
+
+String? _messageError(Object? value) {
+  if (value is String && value.isNotEmpty) {
+    return value;
+  }
+  if (value is Map<String, dynamic>) {
+    final data = value['data'];
+    if (data is Map<String, dynamic> && data['message'] is String) {
+      return data['message'] as String;
+    }
+    if (value['message'] is String) {
+      return value['message'] as String;
+    }
+    if (value['name'] is String) {
+      return value['name'] as String;
+    }
+  }
+  return null;
 }

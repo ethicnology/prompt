@@ -10,6 +10,7 @@ class OpenCodeSession {
     this.changedFiles,
     this.additions,
     this.deletions,
+    this.shareUrl,
   });
 
   final String id;
@@ -22,4 +23,5 @@ class OpenCodeSession {
   final int? changedFiles;
   final int? additions;
   final int? deletions;
+  final String? shareUrl;
 }
