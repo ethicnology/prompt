@@ -39,6 +39,7 @@ void main() {
       }
       if (request.url.path == '/session' &&
           request.url.queryParameters['directory'] == '/workspace/alpha') {
+        expect(request.url.queryParameters['scope'], 'project');
         return http.Response(
           '[{"id":"older","projectID":"project-a",'
           '"directory":"/workspace/alpha","title":"Older session",'
@@ -51,6 +52,7 @@ void main() {
       }
       if (request.url.path == '/session' &&
           request.url.queryParameters['directory'] == '/workspace/beta') {
+        expect(request.url.queryParameters['scope'], 'project');
         return http.Response('[]', 200);
       }
       return http.Response('', 404);

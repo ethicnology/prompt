@@ -33,7 +33,13 @@ class OpenCodeSessionsService {
   ) async {
     final path = directory.isEmpty
         ? '/session'
-        : '/session?${Uri(queryParameters: {'directory': directory}).query}';
+        : '/session?${Uri(queryParameters: {
+            'directory': directory,
+            // A project can retain sessions from a renamed or secondary
+            // worktree. Ask OpenCode for its complete project catalog rather
+            // than filtering it to the current worktree path.
+            'scope': 'project',
+          }).query}';
     final response = await _get(profile, password, path);
     final decoded = jsonDecode(response.body);
     if (decoded is! List) {
