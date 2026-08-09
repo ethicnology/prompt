@@ -92,11 +92,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            onPressed: () => widget.viewModel.load(widget.profile),
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh sessions',
-          ),
+          // No refresh action here: the session list is pull-to-refresh.
           // Secondary destinations live in one menu so a phone-width app bar
           // keeps a single, reachable primary action.
           PopupMenuButton<_CatalogAction>(
