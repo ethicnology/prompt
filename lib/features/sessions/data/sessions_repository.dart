@@ -20,17 +20,18 @@ class SessionsRepository {
   Future<SessionLoadResult> load(ServerProfile profile) async {
     try {
       final password = await _credentialsStore.readPassword(profile.id);
-      // Server versions differ on whether the unscoped index includes every
-      // project. Merge it with each discovered project catalog so sessions in
-      // another worktree are never silently hidden. One unreachable project
-      // must not hide the sessions that did load, so failures are collected
-      // and only reported when nothing at all could be read.
+      // A project's catalog is authoritative for that worktree. The unscoped
+      // index is only a fallback when a project catalog cannot be read: some
+      // servers keep historical IDs in that index after a session is deleted.
       final byId = <String, OpenCodeSessionRecord>{};
       Object? firstFailure;
       var loadedAnyCatalog = false;
       var projects = <OpenCodeProjectRecord>[];
+      var loadedProjects = false;
+      final globalSessions = <OpenCodeSessionRecord>[];
+      final unavailableDirectories = <String>{};
 
-      Future<void> mergeCatalog(String directory) async {
+      Future<void> loadProjectCatalog(String directory) async {
         try {
           final catalog = await _sessionsService.listSessions(
             profile,
@@ -43,24 +44,47 @@ class SessionsRepository {
           }
         } on Object catch (error) {
           firstFailure ??= error;
+          unavailableDirectories.add(directory);
         }
       }
 
-      await mergeCatalog('');
+      try {
+        globalSessions.addAll(
+          await _sessionsService.listSessions(profile, password, ''),
+        );
+        loadedAnyCatalog = true;
+      } on Object catch (error) {
+        firstFailure ??= error;
+      }
       try {
         projects = await _sessionsService.listProjects(profile, password);
+        loadedProjects = true;
       } on Object catch (error) {
-        // The global index remains useful on servers that do not expose, or
-        // temporarily fail, the project endpoint.
+        // The global index remains the only catalog on servers that do not
+        // expose, or temporarily fail, the project endpoint.
         firstFailure ??= error;
       }
       await _forEachBounded(
         projects.map((project) => project.worktree),
-        mergeCatalog,
+        loadProjectCatalog,
       );
 
       if (!loadedAnyCatalog && firstFailure != null) {
         throw firstFailure!;
+      }
+
+      if (!loadedProjects) {
+        for (final session in globalSessions) {
+          byId[session.id] = session;
+        }
+      } else {
+        // Keep global entries only for an unavailable worktree. Every other
+        // project response, including an empty one, is an explicit snapshot.
+        for (final session in globalSessions) {
+          if (unavailableDirectories.contains(session.directory)) {
+            byId.putIfAbsent(session.id, () => session);
+          }
+        }
       }
 
       final sessions = byId.values.map(_toDomain).toList()

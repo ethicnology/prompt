@@ -16,7 +16,7 @@ void main() {
     username: 'opencode',
   );
 
-  test('merges the global index with every project catalog', () async {
+  test('uses successful project catalogs as authoritative snapshots', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/project') {
         return http.Response(
@@ -64,15 +64,7 @@ void main() {
 
     expect(result, isA<SessionsLoaded>());
     final sessions = (result as SessionsLoaded).sessions;
-    expect(sessions.map((session) => session.id), [
-      'alpha-only',
-      'newer',
-      'older',
-    ]);
-    expect(
-      sessions.singleWhere((session) => session.id == 'newer').changedFiles,
-      2,
-    );
+    expect(sessions.map((session) => session.id), ['alpha-only', 'older']);
   });
 
   test('keeps the sessions that loaded when one project fails', () async {
@@ -114,9 +106,45 @@ void main() {
     expect(result, isA<SessionsLoaded>());
     expect((result as SessionsLoaded).sessions.map((session) => session.id), [
       'alpha-only',
-      'global',
     ]);
   });
+
+  test(
+    'falls back to the global index only for an unavailable project',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.path == '/project') {
+          return http.Response(
+            '[{"id":"project-a","worktree":"/workspace/alpha"},'
+            '{"id":"project-b","worktree":"/workspace/beta"}]',
+            200,
+          );
+        }
+        if (request.url.path == '/session' && request.url.query.isEmpty) {
+          return http.Response(
+            '[{"id":"beta","projectID":"project-b",'
+            '"directory":"/workspace/beta","title":"Beta session",'
+            '"time":{"created":1000,"updated":2000}}]',
+            200,
+          );
+        }
+        if (request.url.queryParameters['directory'] == '/workspace/alpha') {
+          return http.Response('[]', 200);
+        }
+        return http.Response('', 500);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.load(profile);
+
+      expect((result as SessionsLoaded).sessions.map((session) => session.id), [
+        'beta',
+      ]);
+    },
+  );
 
   test(
     'keeps the global index when the project endpoint is unavailable',
