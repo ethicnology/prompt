@@ -16,6 +16,10 @@ VoiceEngine createVoiceEngine() => switch (Platform.operatingSystem) {
 /// Android/iOS-only adapter. It streams PCM directly to Whisper; no recording
 /// is ever written to a file, and model paths are supplied by a user selection.
 class AndroidIosWhisperEngine implements VoiceEngine {
+  // Keep the selected model resident across short dictation turns. Loading it
+  // from storage dominated the latency of every subsequent voice action.
+  final WhisperController _controller = WhisperController();
+
   @override
   Future<Result<void, VoiceEngineFailure>> requestMicrophonePermission() async {
     final recorder = AudioRecorder();
@@ -45,13 +49,15 @@ class AndroidIosWhisperEngine implements VoiceEngine {
           numChannels: 1,
         ),
       );
-      final controller = WhisperController();
-      final session = await controller.transcribeLive(
+      final session = await _controller.transcribeLive(
         modelPath: modelPath,
         pcm16Stream: pcm16Stream,
-        lang: 'auto',
+        // French is the application's local dictation default. It avoids the
+        // language-identification pass for each live utterance.
+        lang: 'fr',
+        keepModelLoaded: true,
       );
-      return Ok(_AndroidIosVoiceCapture(recorder, controller, session));
+      return Ok(_AndroidIosVoiceCapture(recorder, session));
     } catch (_) {
       await recorder.cancel();
       await recorder.dispose();
@@ -65,10 +71,9 @@ class LinuxWhisperEngineStub extends UnsupportedVoiceEngine {
 }
 
 class _AndroidIosVoiceCapture implements VoiceCapture {
-  _AndroidIosVoiceCapture(this._recorder, this._controller, this._session);
+  _AndroidIosVoiceCapture(this._recorder, this._session);
 
   final AudioRecorder _recorder;
-  final WhisperController _controller;
   final WhisperLiveSession _session;
   bool _released = false;
 
@@ -99,7 +104,6 @@ class _AndroidIosVoiceCapture implements VoiceCapture {
     } catch (_) {
       // The final transcript is deliberately discarded during cancellation.
     }
-    await _controller.releaseModel();
     await _recorder.dispose();
   }
 }
