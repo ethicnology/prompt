@@ -111,8 +111,19 @@ class ConversationViewModel {
     const SseSuspended(),
   );
 
+  /// Whether a reconciliation is running over an already-visible transcript,
+  /// so the UI can float a progress indicator instead of replacing it.
+  final ValueNotifier<bool> refreshing = ValueNotifier(false);
+
   final StreamController<String> _queueErrors =
       StreamController<String>.broadcast();
+
+  final StreamController<String> _transcriptErrors =
+      StreamController<String>.broadcast();
+
+  /// User-facing messages for a refresh that failed while a transcript was
+  /// already visible; the visible transcript is kept as-is.
+  Stream<String> get transcriptErrors => _transcriptErrors.stream;
 
   /// User-facing messages for a rejected queue command (enqueue, remove, or
   /// send now). Each event describes one rejected command; it is not
@@ -318,11 +329,20 @@ class ConversationViewModel {
     if (profile == null || session == null) {
       return;
     }
-    messages.value = const ConversationLoading();
+    // Reloading an already-visible transcript keeps it on screen and only
+    // reports progress, so the reader never loses their place — and the whole
+    // transcript is not rebuilt from an empty state.
+    final hadTranscript = messages.value is ConversationReady;
+    if (hadTranscript) {
+      refreshing.value = true;
+    } else {
+      messages.value = const ConversationLoading();
+    }
     final result = await _chatRepository.load(profile, session);
     if (_disposed || _session != session) {
       return;
     }
+    refreshing.value = false;
     switch (result) {
       case ChatLoaded(messages: final loadedMessages):
         messages.value = ConversationReady(loadedMessages);
@@ -335,7 +355,12 @@ class ConversationViewModel {
           _applyLiveConversationState(liveState);
         }
       case ChatLoadFailed(:final failure):
-        messages.value = ConversationError(failure);
+        // A failed refresh must not discard a readable transcript.
+        if (hadTranscript) {
+          _transcriptErrors.add(failure.message);
+        } else {
+          messages.value = ConversationError(failure);
+        }
     }
   }
 
@@ -438,6 +463,54 @@ class ConversationViewModel {
     }
     releaseAttachments();
     return true;
+  }
+
+  /// Appends a queued prompt's text to the prompt directly above it and
+  /// removes it, so both are delivered as a single turn instead of two
+  /// separate deferred sends. Only plain prompts that are still editable can
+  /// be merged; commands and in-flight prompts are rejected with a message.
+  Future<void> mergeIntoPrevious(String promptId) async {
+    final repository = _queueRepository;
+    if (repository == null) {
+      return;
+    }
+    final prompts = queue.value
+        .where((prompt) => prompt.state != QueuedPromptState.acknowledged)
+        .toList(growable: false);
+    final index = prompts.indexWhere((prompt) => prompt.id == promptId);
+    if (index <= 0) {
+      _queueErrors.add('There is no earlier prompt to merge this one into.');
+      return;
+    }
+    final source = prompts[index];
+    final target = prompts[index - 1];
+    if (!_canMerge(source) || !_canMerge(target)) {
+      _queueErrors.add('Only queued prompts can be merged.');
+      return;
+    }
+    if (source.attachments.isNotEmpty) {
+      _queueErrors.add('Remove this prompt\'s attachments before merging it.');
+      return;
+    }
+    final edited = await repository.edit(
+      promptId: target.id,
+      promptText: '${target.promptText}\n\n${source.promptText}',
+    );
+    if (edited case Err<QueuedPrompt, QueueFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+      return;
+    }
+    final removed = await repository.remove(source.id);
+    if (removed case Err<QueuedPrompt, QueueFailure>(:final failure)) {
+      _queueErrors.add(failure.message);
+    }
+  }
+
+  bool _canMerge(QueuedPrompt prompt) {
+    return prompt.operationType == QueuedOperationType.prompt &&
+        (prompt.state == QueuedPromptState.queued ||
+            prompt.state == QueuedPromptState.paused ||
+            prompt.state == QueuedPromptState.failed);
   }
 
   /// Invoked only by the composer's explicit attachment control.
@@ -639,7 +712,9 @@ class ConversationViewModel {
     attachments.dispose();
     connectionState.dispose();
     pendingApproval.dispose();
+    refreshing.dispose();
     unawaited(_queueErrors.close());
+    unawaited(_transcriptErrors.close());
   }
 
   void _detachLiveConversationState() {
@@ -707,7 +782,12 @@ List<ChatMessage> _mergeLiveConversationState(
     }
     final text = _renderTextParts(liveMessage.parts) ?? '';
     final existing = byId[liveMessage.id];
-    final details = _renderLiveDetails(liveMessage.parts);
+    // Live tool events carry only a short summary, never the tool's output.
+    // Merging them over the REST detail would blank an already-loaded body.
+    final details = _keepLoadedDetailBodies(
+      _renderLiveDetails(liveMessage.parts),
+      existing?.details ?? const <ChatMessageDetail>[],
+    );
     // A task/tool may arrive before the assistant writes prose. Keep that
     // message in the transcript so its live progress is never invisible.
     if (text.isEmpty && details.isEmpty) {
@@ -772,6 +852,44 @@ List<ChatMessageDetail> _renderLiveDetails(List<MessagePart> parts) {
   ].whereType<ChatMessageDetail>().toList(growable: false);
 }
 
+/// Returns [live] with any tool body already loaded over REST preserved.
+///
+/// `message.part.updated` reports a tool's identity, status, and a short
+/// input summary, but never its output or reasoning body. Without this, a
+/// later live status change would replace a fully loaded tool card with an
+/// empty one.
+List<ChatMessageDetail> _keepLoadedDetailBodies(
+  List<ChatMessageDetail> live,
+  List<ChatMessageDetail> loaded,
+) {
+  if (loaded.isEmpty || live.isEmpty) {
+    return live;
+  }
+  final loadedById = {for (final detail in loaded) detail.id: detail};
+  return [
+    for (final detail in live)
+      if (detail is ChatToolDetail)
+        switch (loadedById[detail.id]) {
+          final ChatToolDetail prior => ChatToolDetail(
+            id: detail.id,
+            tool: detail.tool,
+            status: detail.status,
+            input: detail.input ?? prior.input,
+            output: detail.output ?? prior.output,
+            error: detail.error ?? prior.error,
+          ),
+          _ => detail,
+        }
+      else if (detail is ChatReasoningDetail && detail.text.isEmpty)
+        switch (loadedById[detail.id]) {
+          final ChatReasoningDetail prior => prior,
+          _ => detail,
+        }
+      else
+        detail,
+  ];
+}
+
 bool _sameDetails(List<ChatMessageDetail> left, List<ChatMessageDetail> right) {
   if (left.length != right.length) {
     return false;
@@ -790,6 +908,7 @@ bool _sameDetails(List<ChatMessageDetail> left, List<ChatMessageDetail> right) {
       if (a.tool != b.tool ||
           a.status != b.status ||
           a.input != b.input ||
+          a.output != b.output ||
           a.error != b.error) {
         return false;
       }

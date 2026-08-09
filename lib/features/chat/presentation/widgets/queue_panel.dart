@@ -8,12 +8,14 @@ class QueuePanel extends StatelessWidget {
     required this.prompts,
     required this.onRemove,
     required this.onSendNow,
+    required this.onMergeIntoPrevious,
     super.key,
   });
 
   final List<QueuedPrompt> prompts;
   final ValueChanged<QueuedPrompt> onRemove;
   final ValueChanged<QueuedPrompt> onSendNow;
+  final ValueChanged<QueuedPrompt> onMergeIntoPrevious;
 
   @override
   Widget build(BuildContext context) {
@@ -48,8 +50,10 @@ class QueuePanel extends StatelessWidget {
                   return _QueueRow(
                     prompt: prompt,
                     position: index + 1,
+                    previous: index == 0 ? null : prompts[index - 1],
                     onRemove: () => onRemove(prompt),
                     onSendNow: () => onSendNow(prompt),
+                    onMergeIntoPrevious: () => onMergeIntoPrevious(prompt),
                   );
                 },
               ),
@@ -65,19 +69,29 @@ class _QueueRow extends StatelessWidget {
   const _QueueRow({
     required this.prompt,
     required this.position,
+    required this.previous,
     required this.onRemove,
     required this.onSendNow,
+    required this.onMergeIntoPrevious,
   });
 
   final QueuedPrompt prompt;
   final int position;
+
+  /// The prompt this row would be merged into, or `null` for the queue head.
+  final QueuedPrompt? previous;
   final VoidCallback onRemove;
   final VoidCallback onSendNow;
+  final VoidCallback onMergeIntoPrevious;
 
   @override
   Widget build(BuildContext context) {
     final canSendNow = prompt.state == QueuedPromptState.queued;
     final canRemove = prompt.state != QueuedPromptState.sending;
+    // Merging keeps one deferred turn instead of several: the row's text is
+    // appended to the prompt above it, which stays the one that dispatches.
+    final canMerge =
+        previous != null && _mergeable(prompt) && _mergeable(previous!);
     final statusLabel = _statusLabel(prompt);
 
     return Semantics(
@@ -102,6 +116,12 @@ class _QueueRow extends StatelessWidget {
                 icon: const Icon(Icons.bolt),
                 tooltip: 'Send now (aborts current generation)',
               ),
+            if (canMerge)
+              IconButton(
+                onPressed: onMergeIntoPrevious,
+                icon: const Icon(Icons.arrow_upward_rounded),
+                tooltip: 'Merge into the prompt above',
+              ),
             IconButton(
               onPressed: canRemove ? onRemove : null,
               icon: const Icon(Icons.delete_outline),
@@ -111,6 +131,13 @@ class _QueueRow extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  bool _mergeable(QueuedPrompt prompt) {
+    return prompt.operationType == QueuedOperationType.prompt &&
+        (prompt.state == QueuedPromptState.queued ||
+            prompt.state == QueuedPromptState.paused ||
+            prompt.state == QueuedPromptState.failed);
   }
 
   String _statusLabel(QueuedPrompt prompt) {

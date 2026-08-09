@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -5,7 +7,7 @@ import '../../../../app/prompt_theme.dart';
 import '../../domain/chat_message.dart';
 import '../basic_markdown_text.dart';
 
-class Transcript extends StatefulWidget {
+class Transcript extends StatelessWidget {
   const Transcript({
     required this.messages,
     required this.onRefresh,
@@ -20,100 +22,51 @@ class Transcript extends StatefulWidget {
   final ValueChanged<ChatMessage> onRevert;
 
   @override
-  State<Transcript> createState() => _TranscriptState();
-}
-
-class _TranscriptState extends State<Transcript> {
-  static const _refreshThreshold = 72.0;
-  double _bottomOverscroll = 0;
-  bool _refreshing = false;
-
-  bool _handleScroll(ScrollNotification notification) {
-    if (_refreshing) return false;
-    if (notification is OverscrollNotification &&
-        notification.metrics.extentAfter == 0 &&
-        notification.overscroll > 0) {
-      setState(() {
-        _bottomOverscroll = (_bottomOverscroll + notification.overscroll).clamp(
-          0,
-          _refreshThreshold,
-        );
-      });
-      return false;
-    }
-    if (notification is ScrollEndNotification && _bottomOverscroll > 0) {
-      final shouldRefresh = _bottomOverscroll >= _refreshThreshold;
-      setState(() => _bottomOverscroll = 0);
-      if (shouldRefresh) {
-        setState(() => _refreshing = true);
-        widget.onRefresh().whenComplete(() {
-          if (mounted) setState(() => _refreshing = false);
-        });
-      }
-    }
-    return false;
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final visibleMessages = widget.messages
+    // The transcript is built bottom-up: index 0 is the newest message and
+    // sits at the bottom, so the latest turn is visible without any
+    // post-layout scrolling. `RefreshIndicator` only ever attaches to a
+    // scrollable's leading edge, so the whole scrollable is turned upside
+    // down and each row is turned back: the standard indicator, with its
+    // usual resistance, arming threshold and spinner, is then pulled up from
+    // the bottom of the conversation.
+    final visibleMessages = messages
         .where(
           (message) =>
               message.text.trim().isNotEmpty || message.details.isNotEmpty,
         )
+        .toList(growable: false)
+        .reversed
         .toList(growable: false);
 
-    return NotificationListener<ScrollNotification>(
-      onNotification: _handleScroll,
-      child: Stack(
-        children: [
-          CustomScrollView(
-            controller: widget.controller,
-            physics: const AlwaysScrollableScrollPhysics(),
-            slivers: [
-              SliverPadding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 20,
-                ),
-                sliver: SliverList.separated(
-                  itemCount: visibleMessages.length,
-                  itemBuilder: (context, index) {
-                    final message = visibleMessages[index];
-                    return _MessageBubble(
+    return Transform.rotate(
+      angle: math.pi,
+      child: RefreshIndicator(
+        onRefresh: onRefresh,
+        child: CustomScrollView(
+          controller: controller,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+              sliver: SliverList.separated(
+                itemCount: visibleMessages.length,
+                itemBuilder: (context, index) {
+                  final message = visibleMessages[index];
+                  return Transform.rotate(
+                    angle: math.pi,
+                    child: _MessageBubble(
                       key: ValueKey(message.id),
                       message: message,
-                      onRevert: () => widget.onRevert(message),
-                    );
-                  },
-                  separatorBuilder: (_, _) => const SizedBox(height: 12),
-                ),
-              ),
-            ],
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 12,
-            child: IgnorePointer(
-              child: Center(
-                child: _refreshing
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : _bottomOverscroll > 0
-                    ? Text(
-                        _bottomOverscroll >= _refreshThreshold
-                            ? 'Release to refresh'
-                            : 'Pull up to refresh',
-                      )
-                    : const SizedBox.shrink(),
+                      onRevert: () => onRevert(message),
+                    ),
+                  );
+                },
+                separatorBuilder: (_, _) => const SizedBox(height: 12),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

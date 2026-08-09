@@ -343,14 +343,34 @@ void main() {
     );
     await pumpScreen(tester);
 
-    // Ensure the test gesture starts from the physical bottom after the first
-    // layout, rather than relying on a scheduled initial anchor.
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -2000));
+    // The transcript opens anchored to the newest message, so a pull up from
+    // there drags the standard refresh indicator rather than scrolling.
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -220));
     await tester.pump();
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -180));
-    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
 
     expect(viewModel.refreshCallCount, 1);
+  });
+
+  testWidgets('opens anchored to the newest message without scrolling', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady(
+      List.generate(
+        24,
+        (index) => ChatMessage(
+          id: 'message-$index',
+          role: ChatMessageRole.assistant,
+          text: 'Transcript item $index ' * 8,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+        ),
+      ),
+    );
+    await pumpScreen(tester);
+
+    expect(find.textContaining('Transcript item 23'), findsOneWidget);
+    expect(find.byTooltip('Scroll to latest message'), findsNothing);
   });
 
   testWidgets('streams voice transcription into the composer', (tester) async {
@@ -538,6 +558,24 @@ void main() {
       );
     },
   );
+
+  testWidgets('offers merging only for queued prompts below the queue head', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+    await tester.enterText(find.byType(TextField), 'First');
+    await tester.pump();
+    await tester.tap(find.byTooltip('Queue this prompt'));
+    await tester.pump();
+
+    expect(find.byTooltip('Merge into the prompt above'), findsNothing);
+
+    final queued = viewModel.queue.value.single;
+    viewModel.queue.value = [queued, queued];
+    await tester.pump();
+
+    expect(find.byTooltip('Merge into the prompt above'), findsOneWidget);
+  });
 
   testWidgets(
     'send now shows a clearly labeled abort confirmation, and only calls '

@@ -353,6 +353,70 @@ void main() {
     expect(updated.messages.last.role, ChatMessageRole.assistant);
   });
 
+  test(
+    'keeps a loaded tool output when a live status update arrives for it',
+    () async {
+      backend.sessionStatusType = 'idle';
+      backend.restMessages = [
+        {
+          'info': {
+            'id': 'msg-0',
+            'role': 'assistant',
+            'time': {'created': 1000},
+          },
+          'parts': [
+            {'type': 'text', 'text': 'Reading a file'},
+            {
+              'id': 'part-tool',
+              'type': 'tool',
+              'tool': 'read',
+              'state': {
+                'status': 'completed',
+                'input': {'filePath': 'lib/main.dart'},
+                'output': 'the loaded tool output',
+              },
+            },
+          ],
+        },
+      ];
+
+      await viewModel.open(profile, session);
+      await _settleLive();
+
+      eventClient.emit('message.part.updated', {
+        'part': {
+          'id': 'part-tool',
+          'messageID': 'msg-0',
+          'sessionID': session.id,
+          'type': 'tool',
+          'tool': 'read',
+          'state': {'status': 'completed'},
+        },
+      });
+      await _settleLive();
+
+      final messages = (viewModel.messages.value as ConversationReady).messages;
+      final detail = messages.single.details.whereType<ChatToolDetail>().single;
+      expect(detail.output, 'the loaded tool output');
+    },
+  );
+
+  test('merges a queued prompt into the one above it', () async {
+    backend.sessionStatusType = 'busy';
+    await viewModel.open(profile, session);
+    await _settle();
+
+    await viewModel.enqueuePrompt('first');
+    await viewModel.enqueuePrompt('second');
+    await _settle();
+
+    await viewModel.mergeIntoPrevious(viewModel.queue.value.last.id);
+    await _settle();
+
+    expect(viewModel.queue.value, hasLength(1));
+    expect(viewModel.queue.value.single.promptText, 'first\n\nsecond');
+  });
+
   test('never overwrites an already-loaded REST message before its own live '
       'text part has arrived', () async {
     backend.sessionStatusType = 'idle';

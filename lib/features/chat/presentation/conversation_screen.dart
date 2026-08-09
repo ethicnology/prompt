@@ -78,9 +78,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final _composerController = TextEditingController();
   final _transcriptController = ScrollController();
   StreamSubscription<String>? _queueErrorSubscription;
+  StreamSubscription<String>? _transcriptErrorSubscription;
   bool _showJumpToLatest = false;
-  bool _followingLatest = true;
-  bool _scrollToLatestScheduled = false;
   PromptExecutionOptions _executionOptions = const PromptExecutionOptions();
   OpenCodeSlashCommand? _selectedCommand;
   late bool _isShared;
@@ -95,6 +94,16 @@ class _ConversationScreenState extends State<ConversationScreen> {
     widget.viewModel.open(widget.profile, widget.session);
     widget.capabilitiesViewModel?.load(widget.profile);
     widget.voiceViewModel?.state.addListener(_applyVoiceState);
+    _transcriptErrorSubscription = widget.viewModel.transcriptErrors.listen((
+      message,
+    ) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    });
     _queueErrorSubscription = widget.viewModel.queueErrors.listen((message) {
       if (!mounted) {
         return;
@@ -108,6 +117,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void dispose() {
     _queueErrorSubscription?.cancel();
+    _transcriptErrorSubscription?.cancel();
     widget.voiceViewModel?.state.removeListener(_applyVoiceState);
     unawaited(widget.voiceViewModel?.cancel());
     _composerController.dispose();
@@ -493,40 +503,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (!_transcriptController.hasClients) {
       return;
     }
-    final position = _transcriptController.position;
-    final shouldShow = position.maxScrollExtent - position.pixels > 48;
-    _followingLatest = !shouldShow;
+    // The transcript is reversed, so offset 0 is the newest message and no
+    // scrolling is needed to stay anchored to it.
+    final shouldShow = _transcriptController.position.pixels > 48;
     if (shouldShow != _showJumpToLatest && mounted) {
       setState(() => _showJumpToLatest = shouldShow);
     }
   }
 
-  void _scheduleScrollToLatestIfFollowing() {
-    if (!_followingLatest || _scrollToLatestScheduled) {
-      return;
-    }
-    _scrollToLatestScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToLatestScheduled = false;
-      if (!mounted || !_transcriptController.hasClients) {
-        return;
-      }
-      _transcriptController.jumpTo(
-        _transcriptController.position.maxScrollExtent,
-      );
-    });
-  }
-
   void _jumpToLatest() {
-    setState(() {
-      _followingLatest = true;
-      _showJumpToLatest = false;
-    });
-    _scheduleScrollToLatestIfFollowing();
+    if (_transcriptController.hasClients) {
+      _transcriptController.jumpTo(0);
+    }
   }
 
   Widget _buildTranscript(List<ChatMessage> messages) {
-    _scheduleScrollToLatestIfFollowing();
     return Stack(
       children: [
         Transcript(
@@ -534,6 +525,51 @@ class _ConversationScreenState extends State<ConversationScreen> {
           onRefresh: widget.viewModel.refreshFromUserAction,
           onRevert: _confirmRevert,
           controller: _transcriptController,
+        ),
+        // Reconciliation floats over the transcript so the previous messages
+        // stay readable and the list is never rebuilt from an empty state.
+        Positioned(
+          top: 8,
+          left: 0,
+          right: 0,
+          child: ValueListenableBuilder<bool>(
+            valueListenable: widget.viewModel.refreshing,
+            builder: (context, refreshing, _) {
+              if (!refreshing) {
+                return const SizedBox.shrink();
+              }
+              return Center(
+                child: Semantics(
+                  liveRegion: true,
+                  label: 'Syncing this conversation',
+                  child: Card(
+                    margin: EdgeInsets.zero,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            height: 14,
+                            width: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Syncing…',
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
         ),
         if (_showJumpToLatest)
           Positioned(
@@ -748,6 +784,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     onRemove: (prompt) =>
                         widget.viewModel.removeFromQueue(prompt.id),
                     onSendNow: _confirmSendNow,
+                    onMergeIntoPrevious: (prompt) =>
+                        widget.viewModel.mergeIntoPrevious(prompt.id),
                   ),
                 ],
               );
