@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/async/result.dart';
 import '../data/voice_repository.dart';
 import '../domain/voice_failure.dart';
+import '../domain/voice_language.dart';
 
 sealed class VoiceUiState {
   const VoiceUiState();
@@ -49,6 +50,9 @@ class VoiceViewModel {
   /// App-scoped configuration: one selected local model enables voice input
   /// for every conversation until the app is closed or the model is changed.
   final ValueNotifier<bool> hasSelectedModel = ValueNotifier(false);
+  final ValueNotifier<VoiceLanguage> language = ValueNotifier(
+    VoiceLanguage.french,
+  );
   StreamSubscription<String>? _partialSubscription;
   bool _disposed = false;
 
@@ -61,7 +65,7 @@ class VoiceViewModel {
   Future<void> startFromUserAction() async {
     if (_disposed) return;
     state.value = const VoiceStarting();
-    final result = await _repository.startFromUserAction();
+    final result = await _repository.startFromUserAction(language.value);
     if (_disposed) {
       await _repository.release();
       return;
@@ -116,5 +120,6 @@ class VoiceViewModel {
     await _repository.release();
     state.dispose();
     hasSelectedModel.dispose();
+    language.dispose();
   }
 }

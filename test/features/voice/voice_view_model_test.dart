@@ -4,6 +4,7 @@ import 'package:prompt/features/voice/data/voice_engine.dart';
 import 'package:prompt/features/voice/data/voice_repository.dart';
 import 'package:prompt/features/voice/data/voice_model_picker.dart';
 import 'package:prompt/features/voice/domain/voice_failure.dart';
+import 'package:prompt/features/voice/domain/voice_language.dart';
 import 'package:prompt/features/voice/presentation/voice_view_model.dart';
 
 void main() {
@@ -94,6 +95,20 @@ void main() {
     expect(capture.releaseCalls, 1);
     await viewModel.dispose();
   });
+
+  test('passes the selected dictation language to the local engine', () async {
+    final engine = _FakeVoiceEngine(capture: _FakeCapture());
+    final viewModel = VoiceViewModel(
+      VoiceRepository(engine, _FakeModelPicker()),
+    );
+
+    await viewModel.selectModelFromUserAction();
+    viewModel.language.value = VoiceLanguage.english;
+    await viewModel.startFromUserAction();
+
+    expect(engine.selectedLanguage, VoiceLanguage.english);
+    await viewModel.dispose();
+  });
 }
 
 class _FakeVoiceEngine implements VoiceEngine {
@@ -103,6 +118,7 @@ class _FakeVoiceEngine implements VoiceEngine {
   final _FakeCapture? capture;
   var permissionRequests = 0;
   var captureRequests = 0;
+  VoiceLanguage? selectedLanguage;
 
   @override
   Future<Result<void, VoiceEngineFailure>> requestMicrophonePermission() async {
@@ -111,10 +127,12 @@ class _FakeVoiceEngine implements VoiceEngine {
   }
 
   @override
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  ) async {
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  }) async {
     captureRequests++;
+    selectedLanguage = language;
     final value = capture;
     if (value == null) return const Err(VoiceEngineFailure.captureFailed);
     return Ok(value);

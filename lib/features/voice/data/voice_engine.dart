@@ -1,4 +1,5 @@
 import '../../../core/async/result.dart';
+import '../domain/voice_language.dart';
 
 enum VoiceEngineFailure {
   permissionDenied,
@@ -27,7 +28,8 @@ abstract interface class VoiceCapture {
 abstract interface class VoiceEngine {
   Future<Result<void, VoiceEngineFailure>> requestMicrophonePermission();
 
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  );
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  });
 }

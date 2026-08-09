@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../domain/voice_language.dart';
 import 'voice_view_model.dart';
 
 /// Global local-model configuration. Recording is available only from a
@@ -30,6 +31,27 @@ class VoiceSettingsScreen extends StatelessWidget {
             const SizedBox(height: 8),
             const Text(
               'Audio and any future transcript stay in memory only. Prompt does not use remote speech-to-text.',
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Dictation language',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            ValueListenableBuilder<VoiceLanguage>(
+              valueListenable: viewModel.language,
+              builder: (context, language, _) => SegmentedButton<VoiceLanguage>(
+                segments: VoiceLanguage.values
+                    .map(
+                      (option) => ButtonSegment<VoiceLanguage>(
+                        value: option,
+                        label: Text(option.label),
+                      ),
+                    )
+                    .toList(growable: false),
+                selected: {language},
+                onSelectionChanged: (selection) =>
+                    viewModel.language.value = selection.single,
+              ),
             ),
             const SizedBox(height: 20),
             const Text(

@@ -33,6 +33,7 @@ import 'package:prompt/features/sessions/data/sessions_repository.dart';
 import 'package:prompt/features/voice/data/voice_engine.dart';
 import 'package:prompt/features/voice/data/voice_model_picker.dart';
 import 'package:prompt/features/voice/data/voice_repository.dart';
+import 'package:prompt/features/voice/domain/voice_language.dart';
 import 'package:prompt/features/voice/presentation/voice_view_model.dart';
 
 class _StaticPasswordStore implements CredentialsStore {
@@ -68,9 +69,10 @@ class _VoiceEngine implements VoiceEngine {
   requestMicrophonePermission() async => const Ok(null);
 
   @override
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  ) async => Ok(capture);
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  }) async => Ok(capture);
 }
 
 class _VoiceCapture implements VoiceCapture {

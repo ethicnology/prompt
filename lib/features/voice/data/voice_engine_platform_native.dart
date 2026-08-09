@@ -4,6 +4,7 @@ import 'package:record/record.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
 import '../../../core/async/result.dart';
+import '../domain/voice_language.dart';
 import 'voice_engine.dart';
 import 'voice_engine_platform_stub.dart';
 
@@ -37,9 +38,10 @@ class AndroidIosWhisperEngine implements VoiceEngine {
   }
 
   @override
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  ) async {
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  }) async {
     final recorder = AudioRecorder();
     try {
       final pcm16Stream = await recorder.startStream(
@@ -52,9 +54,9 @@ class AndroidIosWhisperEngine implements VoiceEngine {
       final session = await _controller.transcribeLive(
         modelPath: modelPath,
         pcm16Stream: pcm16Stream,
-        // French is the application's local dictation default. It avoids the
-        // language-identification pass for each live utterance.
-        lang: 'fr',
+        // An explicit language avoids the identification pass for every live
+        // utterance while keeping French and English available in settings.
+        lang: language.code,
         keepModelLoaded: true,
       );
       return Ok(_AndroidIosVoiceCapture(recorder, session));

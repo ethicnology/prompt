@@ -1,5 +1,6 @@
 import '../../../core/async/result.dart';
 import '../domain/voice_failure.dart';
+import '../domain/voice_language.dart';
 import 'voice_engine.dart';
 import 'voice_model_picker.dart';
 
@@ -22,7 +23,9 @@ class VoiceRepository {
     return true;
   }
 
-  Future<Result<void, VoiceFailure>> startFromUserAction() async {
+  Future<Result<void, VoiceFailure>> startFromUserAction(
+    VoiceLanguage language,
+  ) async {
     await release();
     final modelPath = _modelPath;
     if (modelPath == null) {
@@ -33,7 +36,10 @@ class VoiceRepository {
       return Err(_mapFailure(failure));
     }
 
-    final capture = await _engine.startCapture(modelPath);
+    final capture = await _engine.startCapture(
+      modelPath: modelPath,
+      language: language,
+    );
     return switch (capture) {
       Ok<VoiceCapture, VoiceEngineFailure>(:final value) => () {
         _activeCapture = value;

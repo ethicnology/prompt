@@ -4,6 +4,7 @@ import 'package:prompt/core/async/result.dart';
 import 'package:prompt/features/voice/data/voice_engine.dart';
 import 'package:prompt/features/voice/data/voice_repository.dart';
 import 'package:prompt/features/voice/data/voice_model_picker.dart';
+import 'package:prompt/features/voice/domain/voice_language.dart';
 import 'package:prompt/features/voice/presentation/voice_settings_screen.dart';
 import 'package:prompt/features/voice/presentation/voice_view_model.dart';
 
@@ -20,6 +21,9 @@ void main() {
       );
 
       expect(engine.permissionRequests, 0);
+      await tester.tap(find.text('English'));
+      await tester.pump();
+      expect(viewModel.language.value, VoiceLanguage.english);
       await tester.tap(find.text('Choose local Whisper model file'));
       await tester.pumpAndSettle();
       expect(engine.permissionRequests, 0);
@@ -39,9 +43,10 @@ class _UnavailableVoiceEngine implements VoiceEngine {
   }
 
   @override
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  ) async => const Err(VoiceEngineFailure.assetsNotBundled);
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  }) async => const Err(VoiceEngineFailure.assetsNotBundled);
 }
 
 class _UnavailableModelPicker implements VoiceModelPicker {

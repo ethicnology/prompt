@@ -1,4 +1,5 @@
 import '../../../core/async/result.dart';
+import '../domain/voice_language.dart';
 import 'voice_engine.dart';
 
 VoiceEngine createVoiceEngine() => const UnsupportedVoiceEngine();
@@ -12,7 +13,8 @@ class UnsupportedVoiceEngine implements VoiceEngine {
       const Err(VoiceEngineFailure.assetsNotBundled);
 
   @override
-  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture(
-    String modelPath,
-  ) async => const Err(VoiceEngineFailure.assetsNotBundled);
+  Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
+    required String modelPath,
+    required VoiceLanguage language,
+  }) async => const Err(VoiceEngineFailure.assetsNotBundled);
 }
