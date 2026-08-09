@@ -363,13 +363,21 @@ class _SearchResults extends StatelessWidget {
             Icons.account_tree_outlined,
           ),
         };
-        return ListTile(
-          leading: Icon(icon),
-          title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(
-            subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+        final type = switch (result) {
+          WorkspaceTextSearchResult() => 'Text search result',
+          WorkspaceFileSearchResult() => 'File search result',
+          WorkspaceSymbolSearchResult() => 'Symbol search result',
+        };
+        return Semantics(
+          label: '$type: $title, $subtitle',
+          child: ListTile(
+            leading: Icon(icon),
+            title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         );
       },

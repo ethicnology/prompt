@@ -87,6 +87,29 @@ class Composer extends StatelessWidget {
             ),
             const SizedBox(height: 6),
           ],
+          if (voiceState case final voiceState?)
+            ValueListenableBuilder<VoiceUiState>(
+              valueListenable: voiceState,
+              builder: (context, state, _) {
+                final status = switch (state) {
+                  VoiceStarting() => 'Starting local voice input.',
+                  VoiceRecording() =>
+                    'Listening locally. Voice text appears in the composer.',
+                  VoiceTranscribing() => 'Finishing local transcription.',
+                  VoiceUnavailable(:final failure) => failure.message,
+                  VoiceIdle() || VoiceTranscriptReady() => null,
+                };
+                if (status == null) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Semantics(
+                    liveRegion: true,
+                    label: 'Voice input status: $status',
+                    child: Text(status),
+                  ),
+                );
+              },
+            ),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [

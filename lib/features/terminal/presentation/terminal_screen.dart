@@ -66,7 +66,7 @@ class _TerminalScreenState extends State<TerminalScreen>
           const SizedBox(height: 12),
           TextField(
             controller: _directory,
-            textInputAction: TextInputAction.done,
+            textInputAction: TextInputAction.search,
             onSubmitted: (_) => _load(),
             decoration: const InputDecoration(
               labelText: 'Server directory',

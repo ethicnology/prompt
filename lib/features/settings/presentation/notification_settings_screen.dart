@@ -57,7 +57,14 @@ class _NotificationSettingsScreenState
             'paths, or credentials.',
           ),
           const SizedBox(height: 20),
-          Text(status, key: const ValueKey('notification-permission-status')),
+          Semantics(
+            liveRegion: true,
+            label: 'Notification permission: $status',
+            child: Text(
+              status,
+              key: const ValueKey('notification-permission-status'),
+            ),
+          ),
           const SizedBox(height: 12),
           FilledButton(
             onPressed: _requesting ? null : _enableNotifications,
