@@ -24,7 +24,10 @@ class VoiceRepository {
     return true;
   }
 
-  Future<Result<void, VoiceFailure>> prepareFromUserAction() async {
+  Future<Result<void, VoiceFailure>> prepareFromUserAction(
+    VoiceLanguage language,
+  ) async {
+    await release();
     final modelPath = _modelPath;
     if (modelPath == null) {
       return const Err(VoiceEngineUnavailable());
@@ -33,18 +36,6 @@ class VoiceRepository {
     if (permission case Err<void, VoiceEngineFailure>(:final failure)) {
       return Err(_mapFailure(failure));
     }
-    return const Ok(null);
-  }
-
-  Future<Result<void, VoiceFailure>> startSegment(
-    VoiceLanguage language,
-  ) async {
-    await release();
-    final modelPath = _modelPath;
-    if (modelPath == null) {
-      return const Err(VoiceEngineUnavailable());
-    }
-
     final capture = await _engine.startCapture(
       modelPath: modelPath,
       language: language,
@@ -57,6 +48,26 @@ class VoiceRepository {
       Err<VoiceCapture, VoiceEngineFailure>(:final failure) => Err(
         _mapFailure(failure),
       ),
+    };
+  }
+
+  Future<Result<void, VoiceFailure>> resumeMicrophone() async {
+    final capture = _activeCapture;
+    if (capture == null) return const Err(VoiceCaptureFailed());
+    final result = await capture.resumeMicrophone();
+    return switch (result) {
+      Ok() => const Ok(null),
+      Err(:final failure) => Err(_mapFailure(failure)),
+    };
+  }
+
+  Future<Result<void, VoiceFailure>> pauseMicrophone() async {
+    final capture = _activeCapture;
+    if (capture == null) return const Err(VoiceCaptureFailed());
+    final result = await capture.pauseMicrophone();
+    return switch (result) {
+      Ok() => const Ok(null),
+      Err(:final failure) => Err(_mapFailure(failure)),
     };
   }
 

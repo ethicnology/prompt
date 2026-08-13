@@ -15,6 +15,10 @@ enum VoiceEngineFailure {
 abstract interface class VoiceCapture {
   Stream<String> get partialTranscripts;
 
+  Future<Result<void, VoiceEngineFailure>> resumeMicrophone();
+
+  Future<Result<void, VoiceEngineFailure>> pauseMicrophone();
+
   Future<Result<String, VoiceEngineFailure>> stop();
 
   Future<void> release();

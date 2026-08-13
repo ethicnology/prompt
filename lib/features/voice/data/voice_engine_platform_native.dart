@@ -51,6 +51,9 @@ class AndroidIosWhisperEngine implements VoiceEngine {
           numChannels: 1,
         ),
       );
+      // The live Whisper session stays open for the whole voice mode, but the
+      // microphone starts muted until the user holds push-to-talk.
+      await recorder.pause();
       final session = await _controller.transcribeLive(
         modelPath: modelPath,
         pcm16Stream: pcm16Stream,
@@ -91,6 +94,26 @@ class _AndroidIosVoiceCapture implements VoiceCapture {
 
   @override
   Stream<String> get partialTranscripts => _session.partials;
+
+  @override
+  Future<Result<void, VoiceEngineFailure>> resumeMicrophone() async {
+    try {
+      await _recorder.resume();
+      return const Ok(null);
+    } catch (_) {
+      return const Err(VoiceEngineFailure.captureFailed);
+    }
+  }
+
+  @override
+  Future<Result<void, VoiceEngineFailure>> pauseMicrophone() async {
+    try {
+      await _recorder.pause();
+      return const Ok(null);
+    } catch (_) {
+      return const Err(VoiceEngineFailure.captureFailed);
+    }
+  }
 
   @override
   Future<Result<String, VoiceEngineFailure>> stop() async {

@@ -57,9 +57,9 @@ class VoiceViewModel {
   );
   StreamSubscription<String>? _partialSubscription;
   bool _disposed = false;
-  bool _stopping = false;
   bool _releaseRequested = false;
   bool _modeActive = false;
+  String _latestTranscript = '';
 
   /// Called only from the visible voice control's user gesture.
   Future<void> selectModelFromUserAction() async {
@@ -70,33 +70,35 @@ class VoiceViewModel {
   Future<void> enterModeFromUserAction() async {
     if (_disposed) return;
     _modeActive = true;
+    _latestTranscript = '';
     state.value = const VoiceStarting();
-    final result = await _repository.prepareFromUserAction();
-    if (_disposed || !_modeActive) {
-      await _repository.release(releaseModel: true);
-      return;
-    }
-    state.value = switch (result) {
-      Ok() => const VoiceReady(),
-      Err(:final failure) => () {
-        _modeActive = false;
-        return VoiceUnavailable(failure);
-      }(),
-    };
-  }
-
-  Future<void> startSegmentFromUserAction() async {
-    if (_disposed || !_modeActive || state.value is! VoiceReady) return;
-    _releaseRequested = false;
-    state.value = const VoiceStarting();
-    final result = await _repository.startSegment(language.value);
+    final result = await _repository.prepareFromUserAction(language.value);
     if (_disposed || !_modeActive) {
       await _repository.release(releaseModel: true);
       return;
     }
     switch (result) {
       case Ok():
-        state.value = _listenForPartials();
+        _listenForPartials();
+        state.value = const VoiceReady();
+      case Err(:final failure):
+        _modeActive = false;
+        state.value = VoiceUnavailable(failure);
+    }
+  }
+
+  Future<void> startSegmentFromUserAction() async {
+    if (_disposed || !_modeActive || state.value is! VoiceReady) return;
+    _releaseRequested = false;
+    state.value = const VoiceStarting();
+    final result = await _repository.resumeMicrophone();
+    if (_disposed || !_modeActive) {
+      await _repository.release(releaseModel: true);
+      return;
+    }
+    switch (result) {
+      case Ok():
+        state.value = VoiceRecording(_latestTranscript);
         if (_releaseRequested) {
           await finishSegmentFromUserAction();
         }
@@ -106,14 +108,17 @@ class VoiceViewModel {
     }
   }
 
-  VoiceUiState _listenForPartials() {
+  void _listenForPartials() {
     _partialSubscription?.cancel();
     _partialSubscription = _repository.partialTranscripts.listen(
       (partial) {
         if (!_disposed) {
-          state.value = _stopping
-              ? VoiceTranscribing(partial)
-              : VoiceRecording(partial);
+          _latestTranscript = partial;
+          state.value = switch (state.value) {
+            VoiceRecording() => VoiceRecording(partial),
+            VoiceTranscribing() => VoiceTranscribing(partial),
+            _ => VoiceReady(transcript: partial),
+          };
         }
       },
       onError: (_) {
@@ -122,7 +127,6 @@ class VoiceViewModel {
         }
       },
     );
-    return const VoiceRecording('');
   }
 
   Future<void> finishSegmentFromUserAction() async {
@@ -132,20 +136,10 @@ class VoiceViewModel {
       return;
     }
     if (state.value is! VoiceRecording) return;
-    final partial = switch (state.value) {
-      VoiceRecording(:final partialTranscript) => partialTranscript,
-      VoiceTranscribing(:final partialTranscript) => partialTranscript,
-      _ => '',
-    };
-    _stopping = true;
-    state.value = VoiceTranscribing(partial);
-    final result = await _repository.stop();
-    _stopping = false;
-    await _partialSubscription?.cancel();
-    _partialSubscription = null;
+    final result = await _repository.pauseMicrophone();
     if (_disposed || !_modeActive) return;
     state.value = switch (result) {
-      Ok(:final value) => VoiceReady(transcript: value),
+      Ok() => VoiceReady(transcript: _latestTranscript),
       Err(:final failure) => () {
         _modeActive = false;
         return VoiceUnavailable(failure);
@@ -153,11 +147,29 @@ class VoiceViewModel {
     };
   }
 
-  Future<void> stopModeFromUserAction() => cancel();
+  Future<void> stopModeFromUserAction() async {
+    if (_disposed || !_modeActive) return;
+    state.value = VoiceTranscribing(_latestTranscript);
+    final result = await _repository.stop();
+    await _partialSubscription?.cancel();
+    _partialSubscription = null;
+    if (_disposed) return;
+    switch (result) {
+      case Ok(:final value):
+        _latestTranscript = value;
+        state.value = VoiceReady(transcript: value);
+        await _repository.release(releaseModel: true);
+        _modeActive = false;
+        state.value = const VoiceIdle();
+      case Err(:final failure):
+        _modeActive = false;
+        await _repository.release(releaseModel: true);
+        state.value = VoiceUnavailable(failure);
+    }
+  }
 
   Future<void> cancel() async {
     _modeActive = false;
-    _stopping = false;
     await _partialSubscription?.cancel();
     _partialSubscription = null;
     _releaseRequested = false;
@@ -171,7 +183,6 @@ class VoiceViewModel {
     if (_disposed) return;
     _disposed = true;
     _modeActive = false;
-    _stopping = false;
     await _partialSubscription?.cancel();
     await _repository.release(releaseModel: true);
     state.dispose();

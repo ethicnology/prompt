@@ -187,9 +187,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _composerController
         ..text = text
         ..selection = TextSelection.collapsed(offset: text.length);
-      if (state is VoiceReady) {
-        _voiceDraftPrefix = text;
-      }
     }
     if (state is VoiceIdle || state is VoiceUnavailable) {
       _voiceDraftPrefix = null;

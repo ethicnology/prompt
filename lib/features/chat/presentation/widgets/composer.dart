@@ -106,13 +106,8 @@ class Composer extends StatelessWidget {
               valueListenable: voiceState,
               builder: (context, state, _) {
                 final status = switch (state) {
-                  VoiceStarting() => 'Starting local voice input.',
-                  VoiceReady() => 'Voice mode ready. The microphone is muted.',
-                  VoiceRecording() =>
-                    'Listening locally. Voice text appears in the composer.',
-                  VoiceTranscribing() => 'Processing the last words locally…',
                   VoiceUnavailable(:final failure) => failure.message,
-                  VoiceIdle() => null,
+                  _ => null,
                 };
                 if (status == null) return const SizedBox.shrink();
                 return Padding(
@@ -272,17 +267,69 @@ class _VoiceModeBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final recording = state is VoiceRecording;
     final processing = state is VoiceStarting || state is VoiceTranscribing;
+    final colorScheme = Theme.of(context).colorScheme;
+    final title = switch (state) {
+      VoiceRecording() => 'Listening',
+      VoiceTranscribing() => 'Finishing transcription',
+      VoiceStarting() => 'Opening microphone',
+      _ => 'Microphone muted',
+    };
+    final instruction = switch (state) {
+      VoiceRecording() => 'Release to mute',
+      VoiceTranscribing() => 'Stop is closing the voice session',
+      VoiceStarting() => 'Keep holding to speak',
+      _ => 'Hold to talk',
+    };
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Material(
-        elevation: 4,
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(28),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: recording
+              ? colorScheme.primaryContainer
+              : colorScheme.surfaceContainerHigh,
+          border: Border.all(
+            color: recording ? colorScheme.primary : colorScheme.outlineVariant,
+            width: recording ? 2 : 1,
+          ),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x24000000),
+              blurRadius: 14,
+              offset: Offset(0, 5),
+            ),
+          ],
+        ),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 6, 6, 6),
+          padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
+              Expanded(
+                child: Semantics(
+                  liveRegion: true,
+                  label: '$title. $instruction.',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        instruction,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
               Semantics(
                 button: true,
                 label: recording
@@ -308,18 +355,40 @@ class _VoiceModeBar extends StatelessWidget {
                   onPointerCancel: onHoldEnd == null
                       ? null
                       : (_) => unawaited(onHoldEnd!()),
-                  child: FilledButton.icon(
-                    onPressed: null,
-                    icon: Icon(recording ? Icons.mic : Icons.mic_none),
-                    label: Text(processing ? 'Processing…' : 'Hold to talk'),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 140),
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: recording
+                          ? colorScheme.primary
+                          : colorScheme.primaryContainer,
+                      border: Border.all(color: colorScheme.primary, width: 2),
+                    ),
+                    child: Icon(
+                      recording ? Icons.mic_rounded : Icons.mic_none_rounded,
+                      size: 34,
+                      color: recording
+                          ? colorScheme.onPrimary
+                          : colorScheme.onPrimaryContainer,
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(width: 4),
-              IconButton.filledTonal(
-                onPressed: onStop == null ? null : () => unawaited(onStop!()),
-                icon: const Icon(Icons.stop_rounded),
-                tooltip: 'Stop voice mode',
+              const SizedBox(width: 8),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton.filledTonal(
+                    onPressed: onStop == null
+                        ? null
+                        : () => unawaited(onStop!()),
+                    icon: const Icon(Icons.stop_rounded),
+                    tooltip: 'Stop voice mode',
+                  ),
+                  Text('Stop', style: Theme.of(context).textTheme.labelSmall),
+                ],
               ),
             ],
           ),

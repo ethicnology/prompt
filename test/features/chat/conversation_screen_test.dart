@@ -91,12 +91,25 @@ class _VoiceCapture implements VoiceCapture {
   Stream<String> get partialTranscripts => partials.stream;
 
   @override
+  Future<Result<void, VoiceEngineFailure>> pauseMicrophone() async =>
+      const Ok(null);
+
+  @override
+  Future<Result<void, VoiceEngineFailure>> resumeMicrophone() async =>
+      const Ok(null);
+
+  @override
   Future<void> release() async {
     unawaited(partials.close());
   }
 
   @override
-  Future<Result<String, VoiceEngineFailure>> stop() async => Ok(transcript);
+  Future<Result<String, VoiceEngineFailure>> stop() async {
+    if (!partials.isClosed) {
+      await partials.close();
+    }
+    return Ok(transcript);
+  }
 }
 
 /// A [ConversationViewModel] test double that never touches the real
@@ -416,9 +429,9 @@ void main() {
     );
 
     await hold.up();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 10)),
-    );
+    await tester.pump();
+    expect(find.text('Hold to talk'), findsOneWidget);
+    capture.partials.add('Bonjour le monde');
     await tester.pump();
 
     expect(
@@ -429,7 +442,8 @@ void main() {
     await tester.tap(find.byTooltip('Stop voice mode'));
     await tester.pump();
     expect(find.text('Hold to talk'), findsNothing);
-    await voiceViewModel.dispose();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 
   testWidgets(

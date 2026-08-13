@@ -206,6 +206,11 @@ transcription. A user selects an existing local multilingual GGML model once
 from global Voice settings; that app-scoped configuration enables the Voice
 input control beside Send in every conversation. The control is the only
 permission-capable command and streams partial/final text into the composer.
+One memory-only Whisper live session remains active for the whole voice mode.
+Holding push-to-talk resumes only the recorder; releasing it pauses only the
+recorder, without finalizing Whisper. Stop is the single action that drains and
+closes Whisper. Changing sessions or leaving the foreground cancels and
+releases the capture and model.
 Prompt never invokes the package's model download API and no model is bundled
 by this application. Linux and Web adapters remain typed unavailable stubs and
 never start a recorder or Whisper session. Audio is
