@@ -1,34 +1,17 @@
-import 'dart:async';
-
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:url_launcher/link.dart';
 
 /// Renders the small Markdown subset used in conversation text without
 /// interpreting HTML or accepting arbitrary link schemes.
-class BasicMarkdownText extends StatefulWidget {
+class BasicMarkdownText extends StatelessWidget {
   const BasicMarkdownText({required this.text, this.style, super.key});
 
   final String text;
   final TextStyle? style;
 
   @override
-  State<BasicMarkdownText> createState() => _BasicMarkdownTextState();
-}
-
-class _BasicMarkdownTextState extends State<BasicMarkdownText> {
-  final _recognizers = <TapGestureRecognizer>[];
-
-  @override
-  void dispose() {
-    _disposeRecognizers();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    _disposeRecognizers();
-    final blocks = _parseBlocks(widget.text);
+    final blocks = _parseBlocks(text);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -38,13 +21,6 @@ class _BasicMarkdownTextState extends State<BasicMarkdownText> {
         ],
       ],
     );
-  }
-
-  void _disposeRecognizers() {
-    for (final recognizer in _recognizers) {
-      recognizer.dispose();
-    }
-    _recognizers.clear();
   }
 
   Widget _buildBlock(BuildContext context, _MarkdownBlock block) {
@@ -67,15 +43,12 @@ class _BasicMarkdownTextState extends State<BasicMarkdownText> {
           color: theme.colorScheme.surfaceContainerHigh,
           child: SelectableText(
             text,
-            style: widget.style?.copyWith(fontFamily: 'monospace'),
+            style: style?.copyWith(fontFamily: 'monospace'),
           ),
         ),
       ),
       _TextBlock(:final text) => SelectableText.rich(
-        TextSpan(
-          style: widget.style,
-          children: _inlineSpans(context, text, widget.style),
-        ),
+        TextSpan(style: style, children: _inlineSpans(context, text, style)),
       ),
     };
   }
@@ -86,7 +59,7 @@ class _BasicMarkdownTextState extends State<BasicMarkdownText> {
       2 => theme.textTheme.titleLarge,
       _ => theme.textTheme.titleMedium,
     };
-    return base?.copyWith(color: widget.style?.color);
+    return base?.copyWith(color: style?.color);
   }
 
   List<InlineSpan> _inlineSpans(
@@ -164,22 +137,31 @@ class _BasicMarkdownTextState extends State<BasicMarkdownText> {
     return spans;
   }
 
-  TextSpan _linkSpan(
+  WidgetSpan _linkSpan(
     BuildContext context,
     String label,
     Uri uri,
     TextStyle? style,
   ) {
-    final recognizer = TapGestureRecognizer()
-      ..onTap = () =>
-          unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
-    _recognizers.add(recognizer);
-    return TextSpan(
-      text: label,
-      recognizer: recognizer,
-      style: (style ?? const TextStyle()).copyWith(
-        color: Theme.of(context).colorScheme.primary,
-        decoration: TextDecoration.underline,
+    final linkStyle = (style ?? const TextStyle()).copyWith(
+      color: Theme.of(context).colorScheme.primary,
+      decoration: TextDecoration.underline,
+      decorationColor: Theme.of(context).colorScheme.primary,
+    );
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.baseline,
+      baseline: TextBaseline.alphabetic,
+      child: Link(
+        uri: uri,
+        target: LinkTarget.blank,
+        builder: (context, followLink) => Semantics(
+          link: true,
+          label: '$label, link',
+          child: InkWell(
+            onTap: followLink,
+            child: Text(label, style: linkStyle),
+          ),
+        ),
       ),
     );
   }

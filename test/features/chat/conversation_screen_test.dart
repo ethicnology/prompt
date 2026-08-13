@@ -37,6 +37,7 @@ import 'package:prompt/features/voice/data/voice_model_picker.dart';
 import 'package:prompt/features/voice/data/voice_repository.dart';
 import 'package:prompt/features/voice/domain/voice_language.dart';
 import 'package:prompt/features/voice/presentation/voice_view_model.dart';
+import 'package:url_launcher/link.dart';
 
 class _StaticPasswordStore implements CredentialsStore {
   const _StaticPasswordStore();
@@ -741,6 +742,13 @@ void main() {
     expect(find.text('Heading'), findsOneWidget);
     expect(find.text('main();'), findsOneWidget);
     expect(find.textContaining('Prompt', findRichText: true), findsOneWidget);
+    expect(find.byType(Link), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Semantics && widget.properties.link == true,
+      ),
+      findsOneWidget,
+    );
     expect(
       find.textContaining('<b>not HTML</b>', findRichText: true),
       findsOneWidget,
