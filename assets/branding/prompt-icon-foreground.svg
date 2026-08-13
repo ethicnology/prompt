@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 432">
   <!-- Adaptive icon foreground. Keep the P inside Android's 66x66 safe zone. -->
-  <g transform="translate(122 74) scale(2.85)">
+  <g transform="translate(139 99) scale(2.35)">
     <path d="M49.286 65.715H16.43V32.857h32.857v32.858Z" fill="#24413D"/>
     <path d="M16.429 65.714h32.857V16.429H16.429v49.285ZM65.714 82.143H16.429V98.57H0V0h65.714v82.143Z" fill="#56D6B2"/>
   </g>
