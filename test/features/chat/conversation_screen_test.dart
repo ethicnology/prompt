@@ -406,6 +406,14 @@ void main() {
     await pumpScreen(tester, voiceViewModel: voiceViewModel);
 
     expect(find.byTooltip('Start voice mode'), findsOneWidget);
+    final voiceRect = tester.getRect(find.byTooltip('Start voice mode'));
+    final attachmentRect = tester.getRect(find.byTooltip('Add attachment'));
+    expect(voiceRect.center.dx, closeTo(attachmentRect.center.dx, 1));
+    expect(voiceRect.top, lessThan(attachmentRect.top));
+    expect(
+      attachmentRect.bottom,
+      lessThan(tester.getTopLeft(find.byType(TextField)).dy),
+    );
     final inputRect = tester.getRect(find.byType(TextField));
     final sendRect = tester.getRect(find.byTooltip('Queue this prompt'));
     expect(inputRect.right, lessThanOrEqualTo(sendRect.left));
@@ -414,6 +422,7 @@ void main() {
     await tester.tap(find.byTooltip('Start voice mode'));
     await tester.pump();
     expect(find.text('Hold to talk'), findsOneWidget);
+    expect(find.byIcon(Icons.mic_off_rounded), findsOneWidget);
     expect(find.byTooltip('Stop voice mode'), findsOneWidget);
 
     final hold = await tester.startGesture(
@@ -544,6 +553,15 @@ void main() {
       ),
     );
     await tester.pump();
+
+    final attachmentRect = tester.getRect(find.byTooltip('Add attachment'));
+    final commandRect = tester.getRect(find.byTooltip('Choose slash command'));
+    expect(attachmentRect.center.dx, closeTo(commandRect.center.dx, 1));
+    expect(attachmentRect.top, lessThan(commandRect.top));
+    expect(
+      attachmentRect.bottom,
+      lessThan(tester.getTopLeft(find.byType(TextField)).dy),
+    );
 
     await tester.tap(find.byTooltip('Choose slash command'));
     await tester.pumpAndSettle();

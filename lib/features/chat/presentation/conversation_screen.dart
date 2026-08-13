@@ -476,22 +476,72 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
         ),
-        if (_showJumpToLatest)
-          Positioned(
-            right: 20,
-            bottom: 20,
-            child: Semantics(
-              button: true,
-              label: 'Scroll to latest message',
-              child: FloatingActionButton.small(
-                heroTag: 'scroll-to-latest',
-                onPressed: _jumpToLatest,
-                tooltip: 'Scroll to latest message',
-                child: const Icon(Icons.south),
-              ),
+        Positioned(right: 16, bottom: 16, child: _composerActionColumn()),
+      ],
+    );
+  }
+
+  Widget _composerActionColumn() {
+    final capabilitiesViewModel = widget.capabilitiesViewModel;
+    Widget buildActions(List<OpenCodeSlashCommand> commands) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_showJumpToLatest) ...[
+          FloatingActionButton.small(
+            heroTag: 'scroll-to-latest',
+            onPressed: _jumpToLatest,
+            tooltip: 'Scroll to latest message',
+            child: const Icon(Icons.south),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (widget.voiceViewModel case final voiceViewModel?)
+          ValueListenableBuilder<VoiceUiState>(
+            valueListenable: voiceViewModel.state,
+            builder: (context, state, _) => ValueListenableBuilder<bool>(
+              valueListenable: voiceViewModel.hasSelectedModel,
+              builder: (context, hasModel, _) {
+                if (!hasModel || state is! VoiceIdle) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: FloatingActionButton.small(
+                    heroTag: 'start-voice-mode',
+                    onPressed: _enterVoiceMode,
+                    tooltip: 'Start voice mode',
+                    child: const Icon(Icons.mic_rounded),
+                  ),
+                );
+              },
             ),
           ),
+        Padding(
+          padding: EdgeInsets.only(bottom: commands.isEmpty ? 0 : 8),
+          child: FloatingActionButton.small(
+            heroTag: 'add-attachment',
+            onPressed: _pickAttachments,
+            tooltip: 'Add attachment',
+            child: const Icon(Icons.attach_file_rounded),
+          ),
+        ),
+        if (commands.isNotEmpty)
+          FloatingActionButton.small(
+            heroTag: 'choose-slash-command',
+            onPressed: () => _selectCommand(commands),
+            tooltip: 'Choose slash command',
+            child: const Icon(Icons.code_rounded),
+          ),
       ],
+    );
+    if (capabilitiesViewModel == null) {
+      return buildActions(const []);
+    }
+    return ValueListenableBuilder<CapabilitiesUiState>(
+      valueListenable: capabilitiesViewModel,
+      builder: (context, state, _) => buildActions(
+        state is CapabilitiesReady ? state.capabilities.commands : const [],
+      ),
     );
   }
 
@@ -751,55 +801,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
           SafeArea(
             top: false,
-            child: widget.capabilitiesViewModel == null
-                ? Composer(
-                    controller: _composerController,
-                    command: _selectedCommand,
-                    commands: const [],
-                    attachments: widget.viewModel.attachments,
-                    onPickAttachments: _pickAttachments,
-                    onRemoveAttachment: widget.viewModel.removeAttachment,
-                    onSelectCommand: _selectCommand,
-                    onSubmit: _submitComposer,
-                    voiceState: widget.voiceViewModel?.state,
-                    hasSelectedVoiceModel:
-                        widget.voiceViewModel?.hasSelectedModel,
-                    onVoicePressed: _enterVoiceMode,
-                    onVoiceHoldStart:
-                        widget.voiceViewModel?.startSegmentFromUserAction,
-                    onVoiceHoldEnd:
-                        widget.voiceViewModel?.finishSegmentFromUserAction,
-                    onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
-                  )
-                : ValueListenableBuilder<CapabilitiesUiState>(
-                    valueListenable: widget.capabilitiesViewModel!,
-                    builder: (context, capabilitiesState, _) {
-                      final capabilities =
-                          capabilitiesState is CapabilitiesReady
-                          ? capabilitiesState.capabilities
-                          : null;
-                      return Composer(
-                        controller: _composerController,
-                        command: _selectedCommand,
-                        commands: capabilities?.commands ?? const [],
-                        attachments: widget.viewModel.attachments,
-                        onPickAttachments: _pickAttachments,
-                        onRemoveAttachment: widget.viewModel.removeAttachment,
-                        onSelectCommand: _selectCommand,
-                        onSubmit: _submitComposer,
-                        voiceState: widget.voiceViewModel?.state,
-                        hasSelectedVoiceModel:
-                            widget.voiceViewModel?.hasSelectedModel,
-                        onVoicePressed: _enterVoiceMode,
-                        onVoiceHoldStart:
-                            widget.voiceViewModel?.startSegmentFromUserAction,
-                        onVoiceHoldEnd:
-                            widget.voiceViewModel?.finishSegmentFromUserAction,
-                        onVoiceStop:
-                            widget.voiceViewModel?.stopModeFromUserAction,
-                      );
-                    },
-                  ),
+            child: Composer(
+              controller: _composerController,
+              command: _selectedCommand,
+              attachments: widget.viewModel.attachments,
+              onRemoveAttachment: widget.viewModel.removeAttachment,
+              onSubmit: _submitComposer,
+              voiceState: widget.voiceViewModel?.state,
+              onVoiceHoldStart:
+                  widget.voiceViewModel?.startSegmentFromUserAction,
+              onVoiceHoldEnd:
+                  widget.voiceViewModel?.finishSegmentFromUserAction,
+              onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
+            ),
           ),
         ],
       ),

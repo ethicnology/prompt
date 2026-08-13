@@ -12,39 +12,25 @@ class Composer extends StatelessWidget {
   const Composer({
     required this.controller,
     required this.command,
-    required this.commands,
     required this.attachments,
-    required this.onPickAttachments,
     required this.onRemoveAttachment,
-    required this.onSelectCommand,
     required this.onSubmit,
     this.voiceState,
-    this.hasSelectedVoiceModel,
-    this.onVoicePressed,
     this.onVoiceHoldStart,
     this.onVoiceHoldEnd,
     this.onVoiceStop,
-    this.executionLabel,
-    this.onSelectExecution,
     super.key,
   });
 
   final TextEditingController controller;
   final OpenCodeSlashCommand? command;
-  final List<OpenCodeSlashCommand> commands;
   final ValueListenable<List<PromptAttachment>> attachments;
-  final Future<void> Function() onPickAttachments;
   final ValueChanged<PromptAttachment> onRemoveAttachment;
-  final Future<void> Function(List<OpenCodeSlashCommand>) onSelectCommand;
   final Future<void> Function() onSubmit;
   final ValueListenable<VoiceUiState>? voiceState;
-  final ValueListenable<bool>? hasSelectedVoiceModel;
-  final Future<void> Function()? onVoicePressed;
   final Future<void> Function()? onVoiceHoldStart;
   final Future<void> Function()? onVoiceHoldEnd;
   final Future<void> Function()? onVoiceStop;
-  final String? executionLabel;
-  final VoidCallback? onSelectExecution;
 
   @override
   Widget build(BuildContext context) {
@@ -90,17 +76,6 @@ class Composer extends StatelessWidget {
               );
             },
           ),
-          if (executionLabel != null) ...[
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ActionChip(
-                avatar: const Icon(Icons.tune_rounded, size: 17),
-                label: Text(executionLabel!),
-                onPressed: onSelectExecution,
-              ),
-            ),
-            const SizedBox(height: 6),
-          ],
           if (voiceState case final voiceState?)
             ValueListenableBuilder<VoiceUiState>(
               valueListenable: voiceState,
@@ -138,12 +113,6 @@ class Composer extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              if (commands.isNotEmpty)
-                IconButton(
-                  onPressed: () => unawaited(onSelectCommand(commands)),
-                  icon: const Icon(Icons.code_rounded),
-                  tooltip: 'Choose slash command',
-                ),
               Expanded(
                 child: Semantics(
                   label: command == null
@@ -210,37 +179,6 @@ class Composer extends StatelessWidget {
                         );
                       },
                     ),
-              ),
-            ],
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (voiceState case final voiceState?)
-                ValueListenableBuilder<VoiceUiState>(
-                  valueListenable: voiceState,
-                  builder: (context, state, _) => ValueListenableBuilder<bool>(
-                    valueListenable:
-                        hasSelectedVoiceModel ??
-                        const _StaticBoolListenable(false),
-                    builder: (context, hasModel, _) {
-                      if (!hasModel || state is! VoiceIdle) {
-                        return const SizedBox.shrink();
-                      }
-                      return IconButton.filledTonal(
-                        onPressed: onVoicePressed == null
-                            ? null
-                            : () => unawaited(onVoicePressed!()),
-                        icon: const Icon(Icons.mic),
-                        tooltip: 'Start voice mode',
-                      );
-                    },
-                  ),
-                ),
-              IconButton(
-                onPressed: () => unawaited(onPickAttachments()),
-                icon: const Icon(Icons.attach_file_rounded),
-                tooltip: 'Add attachment',
               ),
             ],
           ),
@@ -367,7 +305,7 @@ class _VoiceModeBar extends StatelessWidget {
                       border: Border.all(color: colorScheme.primary, width: 2),
                     ),
                     child: Icon(
-                      recording ? Icons.mic_rounded : Icons.mic_none_rounded,
+                      recording ? Icons.mic_rounded : Icons.mic_off_rounded,
                       size: 34,
                       color: recording
                           ? colorScheme.onPrimary
@@ -396,19 +334,6 @@ class _VoiceModeBar extends StatelessWidget {
       ),
     );
   }
-}
-
-class _StaticBoolListenable extends ValueListenable<bool> {
-  const _StaticBoolListenable(this.value);
-
-  @override
-  final bool value;
-
-  @override
-  void addListener(VoidCallback listener) {}
-
-  @override
-  void removeListener(VoidCallback listener) {}
 }
 
 String _formatBytes(int bytes) {
