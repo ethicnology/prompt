@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../connection/domain/server_profile.dart';
 import '../../capabilities/capabilities.dart';
@@ -9,7 +8,6 @@ import '../../queue/queue.dart';
 import '../../sessions/domain/open_code_session.dart';
 import '../../sessions/domain/session_load_result.dart';
 import '../../voice/voice.dart';
-import '../../../core/async/result.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/pending_approval.dart';
@@ -82,14 +80,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _showJumpToLatest = false;
   PromptExecutionOptions _executionOptions = const PromptExecutionOptions();
   OpenCodeSlashCommand? _selectedCommand;
-  late bool _isShared;
-  bool _releasedForFork = false;
   String? _voiceDraftPrefix;
 
   @override
   void initState() {
     super.initState();
-    _isShared = widget.session.shareUrl != null;
     _transcriptController.addListener(_updateJumpToLatestVisibility);
     widget.viewModel.open(widget.profile, widget.session);
     widget.capabilitiesViewModel?.load(widget.profile);
@@ -124,9 +119,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _transcriptController
       ..removeListener(_updateJumpToLatestVisibility)
       ..dispose();
-    if (!_releasedForFork) {
-      widget.viewModel.leave();
-    }
+    widget.viewModel.leaveSession(widget.session);
     super.dispose();
   }
 
@@ -162,15 +155,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
     ).showSnackBar(SnackBar(content: Text(result.message)));
   }
 
-  Future<void> _toggleVoiceInput() async {
+  Future<void> _enterVoiceMode() async {
     final voiceViewModel = widget.voiceViewModel;
     if (voiceViewModel == null) return;
-    if (voiceViewModel.state.value is VoiceRecording) {
-      await voiceViewModel.stopFromUserAction();
-      return;
-    }
     _voiceDraftPrefix = _composerController.text;
-    await voiceViewModel.startFromUserAction();
+    await voiceViewModel.enterModeFromUserAction();
   }
 
   void _applyVoiceState() {
@@ -179,7 +168,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final state = voiceViewModel.state.value;
     final transcript = switch (state) {
       VoiceRecording(:final partialTranscript) => partialTranscript,
-      VoiceTranscriptReady(:final transcript) => transcript,
+      VoiceTranscribing(:final partialTranscript) => partialTranscript,
+      VoiceReady(:final transcript) => transcript,
       _ => null,
     };
     if (transcript != null) {
@@ -189,8 +179,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
       _composerController
         ..text = text
         ..selection = TextSelection.collapsed(offset: text.length);
+      if (state is VoiceReady) {
+        _voiceDraftPrefix = text;
+      }
     }
-    if (state is VoiceTranscriptReady || state is VoiceUnavailable) {
+    if (state is VoiceIdle || state is VoiceUnavailable) {
       _voiceDraftPrefix = null;
     }
     setState(() {});
@@ -260,6 +253,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               children: [
                 DropdownButtonFormField<OpenCodeModel?>(
                   initialValue: model,
+                  isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Model'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('Default')),
@@ -268,7 +262,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         .map(
                           (candidate) => DropdownMenuItem(
                             value: candidate,
-                            child: Text(candidate.name),
+                            child: Text(
+                              candidate.name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                         ),
                   ],
@@ -277,6 +274,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 const SizedBox(height: 16),
                 DropdownButtonFormField<OpenCodeAgent?>(
                   initialValue: agent,
+                  isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Agent'),
                   items: [
                     const DropdownMenuItem(value: null, child: Text('Default')),
@@ -362,112 +360,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (confirmed ?? false) {
       await widget.viewModel.sendNow(prompt.id);
     }
-  }
-
-  Future<void> _fork() async {
-    final result = await widget.viewModel.fork();
-    if (!mounted || result == null) {
-      return;
-    }
-    switch (result) {
-      case Ok<OpenCodeSession, SessionsFailure>(:final value):
-        final onOpenFork = widget.onOpenFork;
-        if (onOpenFork == null) {
-          await widget.viewModel.leave();
-          if (mounted) Navigator.of(context).pop();
-          return;
-        }
-        await widget.viewModel.leave();
-        if (mounted) {
-          _releasedForFork = true;
-          onOpenFork(value);
-        }
-      case Err<OpenCodeSession, SessionsFailure>(:final failure):
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(failure.message)));
-    }
-  }
-
-  Future<void> _share() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Share this session?'),
-        content: const Text(
-          'OpenCode may upload the complete session to its sharing service. '
-          'Anyone with the resulting link may be able to read it.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Share session'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    final result = await widget.viewModel.share();
-    if (!mounted || result == null) return;
-    switch (result) {
-      case Ok<String?, SessionsFailure>(:final value):
-        setState(() => _isShared = true);
-        if (value != null) {
-          await _showShareLink(value);
-        } else {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Session shared')));
-        }
-      case Err<String?, SessionsFailure>(:final failure):
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(failure.message)));
-    }
-  }
-
-  Future<void> _showShareLink(String url) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Session share link'),
-      content: SelectableText(url),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-        FilledButton.icon(
-          onPressed: () {
-            Clipboard.setData(ClipboardData(text: url));
-            Navigator.of(context).pop();
-            ScaffoldMessenger.of(
-              this.context,
-            ).showSnackBar(const SnackBar(content: Text('Share link copied')));
-          },
-          icon: const Icon(Icons.content_copy_outlined),
-          label: const Text('Copy link'),
-        ),
-      ],
-    ),
-  );
-
-  Future<void> _unshare() async {
-    final failure = await widget.viewModel.unshare();
-    if (!mounted) return;
-    if (failure != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(failure.message)));
-      return;
-    }
-    setState(() => _isShared = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Session is no longer shared')),
-    );
   }
 
   Future<void> _confirmRevert(ChatMessage message) async {
@@ -598,6 +490,31 @@ class _ConversationScreenState extends State<ConversationScreen> {
     ),
   );
 
+  Future<void> _showArtifacts() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (context) => DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.72,
+      minChildSize: 0.35,
+      maxChildSize: 0.95,
+      builder: (context, scrollController) =>
+          ValueListenableBuilder<SessionArtifactsState>(
+            valueListenable: widget.viewModel.artifacts,
+            builder: (context, state, _) => ListView(
+              controller: scrollController,
+              children: [
+                SessionArtifactsPanel(
+                  state: state,
+                  onRefresh: widget.viewModel.reloadArtifacts,
+                ),
+              ],
+            ),
+          ),
+    ),
+  );
+
   Widget _transcriptPanel() => ValueListenableBuilder<ConversationUiState>(
     valueListenable: widget.viewModel.messages,
     builder: (context, state, _) {
@@ -673,25 +590,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 );
               },
             ),
-          PopupMenuButton<_SessionAction>(
-            tooltip: 'Session actions',
-            onSelected: (action) => switch (action) {
-              _SessionAction.fork => _fork(),
-              _SessionAction.share => _share(),
-              _SessionAction.unshare => _unshare(),
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: _SessionAction.fork,
-                child: Text('Fork session'),
-              ),
-              PopupMenuItem(
-                value: _isShared
-                    ? _SessionAction.unshare
-                    : _SessionAction.share,
-                child: Text(_isShared ? 'Unshare session' : 'Share session'),
-              ),
-            ],
+          IconButton(
+            onPressed: _showArtifacts,
+            icon: const Icon(Icons.assignment_outlined),
+            tooltip: 'Session artifacts',
           ),
           const SizedBox(width: 8),
         ],
@@ -721,12 +623,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 // A context panel only becomes persistent once it can retain
                 // a readable transcript width. Phones keep a one-column flow.
                 if (constraints.maxWidth < 900) {
-                  return Column(
-                    children: [
-                      _artifactsPanel(),
-                      Expanded(child: _transcriptPanel()),
-                    ],
-                  );
+                  return _transcriptPanel();
                 }
                 return Row(
                   children: [
@@ -806,7 +703,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
                     voiceState: widget.voiceViewModel?.state,
                     hasSelectedVoiceModel:
                         widget.voiceViewModel?.hasSelectedModel,
-                    onVoicePressed: _toggleVoiceInput,
+                    onVoicePressed: _enterVoiceMode,
+                    onVoiceHoldStart:
+                        widget.voiceViewModel?.startSegmentFromUserAction,
+                    onVoiceHoldEnd:
+                        widget.voiceViewModel?.finishSegmentFromUserAction,
+                    onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
                   )
                 : ValueListenableBuilder<CapabilitiesUiState>(
                     valueListenable: widget.capabilitiesViewModel!,
@@ -823,8 +725,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           : _selectedAgent(capabilities.agents);
                       final executionLabel = capabilities == null
                           ? null
-                          : '${model?.name ?? 'Default model'} · '
-                                '${agent?.name ?? 'Default agent'}';
+                          : 'Model: ${model?.name ?? 'Default'} · '
+                                'Agent: ${agent?.name ?? 'Default'}';
                       return Composer(
                         controller: _composerController,
                         command: _selectedCommand,
@@ -837,7 +739,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
                         voiceState: widget.voiceViewModel?.state,
                         hasSelectedVoiceModel:
                             widget.voiceViewModel?.hasSelectedModel,
-                        onVoicePressed: _toggleVoiceInput,
+                        onVoicePressed: _enterVoiceMode,
+                        onVoiceHoldStart:
+                            widget.voiceViewModel?.startSegmentFromUserAction,
+                        onVoiceHoldEnd:
+                            widget.voiceViewModel?.finishSegmentFromUserAction,
+                        onVoiceStop:
+                            widget.voiceViewModel?.stopModeFromUserAction,
                         executionLabel: executionLabel,
                         onSelectExecution: capabilities == null
                             ? null
@@ -851,5 +759,3 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 }
-
-enum _SessionAction { fork, share, unshare }

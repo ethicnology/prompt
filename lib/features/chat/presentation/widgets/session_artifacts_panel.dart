@@ -18,61 +18,77 @@ class SessionArtifactsPanel extends StatelessWidget {
     return Semantics(
       container: true,
       label: 'Session artifacts',
-      child: ExpansionTile(
-        leading: const Icon(Icons.assignment_outlined),
-        title: const Text('Session artifacts'),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        children: [
-          switch (state) {
-            SessionArtifactsLoading() => Padding(
-              padding: const EdgeInsets.all(12),
-              child: Semantics(
-                label: 'Loading session artifacts',
-                child: const CircularProgressIndicator(),
-              ),
-            ),
-            SessionArtifactsError(:final failure) => Row(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
               children: [
-                Expanded(child: Text(failure.message)),
-                TextButton(onPressed: onRefresh, child: const Text('Retry')),
-              ],
-            ),
-            SessionArtifactsReady(:final todos, :final diffs) => Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Todos (${todos.length}) · Changed files (${diffs.length})',
-                        style: Theme.of(context).textTheme.labelLarge,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: onRefresh,
-                      tooltip: 'Refresh session artifacts',
-                      icon: const Icon(Icons.refresh_rounded),
-                    ),
-                  ],
+                const Icon(Icons.assignment_outlined),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Session artifacts',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
-                if (todos.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Text('No todos reported for this session.'),
-                  )
-                else
-                  for (final todo in todos) _TodoRow(todo: todo),
-                if (diffs.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Text('No changed files reported for this session.'),
-                  )
-                else
-                  for (final diff in diffs) _DiffRow(diff: diff),
               ],
             ),
-          },
-        ],
+            const SizedBox(height: 8),
+            switch (state) {
+              SessionArtifactsLoading() => Padding(
+                padding: const EdgeInsets.all(12),
+                child: Semantics(
+                  label: 'Loading session artifacts',
+                  child: const CircularProgressIndicator(),
+                ),
+              ),
+              SessionArtifactsError(:final failure) => Row(
+                children: [
+                  Expanded(child: Text(failure.message)),
+                  TextButton(onPressed: onRefresh, child: const Text('Retry')),
+                ],
+              ),
+              SessionArtifactsReady(:final todos, :final diffs) => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Todos (${todos.length}) · Changed files (${diffs.length})',
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: onRefresh,
+                        tooltip: 'Refresh session artifacts',
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                    ],
+                  ),
+                  if (todos.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No todos reported for this session.'),
+                    )
+                  else
+                    for (final todo in todos) _TodoRow(todo: todo),
+                  if (diffs.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        'No changed files reported for this session.',
+                      ),
+                    )
+                  else
+                    for (final diff in diffs) _DiffRow(diff: diff),
+                ],
+              ),
+            },
+          ],
+        ),
       ),
     );
   }

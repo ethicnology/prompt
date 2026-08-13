@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -73,6 +73,9 @@ class _VoiceEngine implements VoiceEngine {
     required String modelPath,
     required VoiceLanguage language,
   }) async => Ok(capture);
+
+  @override
+  Future<void> releaseModel() async {}
 }
 
 class _VoiceCapture implements VoiceCapture {
@@ -165,6 +168,11 @@ class _FakeConversationViewModel extends ConversationViewModel {
 
   @override
   Future<void> leave() async {
+    leaveCalled = true;
+  }
+
+  @override
+  Future<void> leaveSession(OpenCodeSession session) async {
     leaveCalled = true;
   }
 
@@ -381,17 +389,20 @@ void main() {
     await voiceViewModel.selectModelFromUserAction();
     await pumpScreen(tester, voiceViewModel: voiceViewModel);
 
-    expect(find.byTooltip('Start voice input'), findsOneWidget);
+    expect(find.byTooltip('Start voice mode'), findsOneWidget);
     final inputRect = tester.getRect(find.byType(TextField));
-    final voiceRect = tester.getRect(find.byTooltip('Start voice input'));
-    final attachmentRect = tester.getRect(find.byTooltip('Add attachment'));
     final sendRect = tester.getRect(find.byTooltip('Queue this prompt'));
-    expect(inputRect.right, lessThan(voiceRect.left));
-    expect(voiceRect.left, lessThan(attachmentRect.left));
-    expect(attachmentRect.left, lessThan(sendRect.left));
+    expect(inputRect.right, lessThanOrEqualTo(sendRect.left));
 
     await tester.enterText(find.byType(TextField), 'Existing draft');
-    await tester.tap(find.byTooltip('Start voice input'));
+    await tester.tap(find.byTooltip('Start voice mode'));
+    await tester.pump();
+    expect(find.text('Hold to talk'), findsOneWidget);
+    expect(find.byTooltip('Stop voice mode'), findsOneWidget);
+
+    final hold = await tester.startGesture(
+      tester.getCenter(find.text('Hold to talk')),
+    );
     await tester.pump();
     capture.partials.add('Bonjour');
     await tester.pump();
@@ -401,7 +412,7 @@ void main() {
       'Existing draft\nBonjour',
     );
 
-    await tester.tap(find.byTooltip('Stop voice input'));
+    await hold.up();
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
     );
@@ -411,6 +422,10 @@ void main() {
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       'Existing draft\nBonjour le monde',
     );
+    expect(find.text('Hold to talk'), findsOneWidget);
+    await tester.tap(find.byTooltip('Stop voice mode'));
+    await tester.pump();
+    expect(find.text('Hold to talk'), findsNothing);
     await voiceViewModel.dispose();
   });
 
@@ -775,12 +790,49 @@ void main() {
     );
     await pumpScreen(tester);
 
-    await tester.tap(find.text('Session artifacts'));
+    await tester.tap(find.byTooltip('Session artifacts'));
     await tester.pumpAndSettle();
 
     expect(find.text('Review diff'), findsOneWidget);
     expect(find.text('lib/example.dart'), findsOneWidget);
     expect(find.byType(SelectableText), findsWidgets);
+  });
+
+  testWidgets('opens artifacts in a scrollable sheet on a narrow layout', (
+    tester,
+  ) async {
+    viewModel.artifacts.value = SessionArtifactsReady(
+      todos: List.generate(
+        20,
+        (index) => SessionTodo(
+          content: 'Todo $index',
+          status: SessionTodoStatus.pending,
+          priority: SessionTodoPriority.medium,
+        ),
+      ),
+      diffs: const [],
+    );
+    await pumpScreen(tester);
+
+    await tester.tap(find.byTooltip('Session artifacts'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(DraggableScrollableSheet), findsOneWidget);
+    expect(find.byType(ListView), findsWidgets);
+    await tester.drag(find.text('Todo 0'), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('does not show the desktop queue shortcut hint on Android', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+    await pumpScreen(tester);
+
+    expect(find.text('Ctrl/Cmd+Enter to queue'), findsNothing);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('moves artifacts into a side panel on wide layouts', (
