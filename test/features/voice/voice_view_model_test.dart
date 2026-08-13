@@ -135,18 +135,18 @@ void main() {
     },
   );
 
-  test('passes the selected dictation language to the local engine', () async {
+  test('configures multilingual automatic language detection', () async {
     final engine = _FakeVoiceEngine(capture: _FakeCapture());
     final viewModel = VoiceViewModel(
       VoiceRepository(engine, _FakeModelPicker()),
     );
 
     await viewModel.selectModelFromUserAction();
-    viewModel.language.value = VoiceLanguage.english;
     await viewModel.enterModeFromUserAction();
     await viewModel.startSegmentFromUserAction();
 
-    expect(engine.selectedLanguage, VoiceLanguage.english);
+    expect(engine.selectedLanguage, VoiceLanguage.frenchAndEnglish);
+    expect(engine.selectedLanguage?.code, 'auto');
     await viewModel.dispose();
   });
 

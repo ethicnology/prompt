@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../domain/voice_language.dart';
 import 'voice_view_model.dart';
 
 /// Global local-model configuration. Recording is available only from a
@@ -37,20 +36,12 @@ class VoiceSettingsScreen extends StatelessWidget {
               'Dictation language',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            ValueListenableBuilder<VoiceLanguage>(
-              valueListenable: viewModel.language,
-              builder: (context, language, _) => SegmentedButton<VoiceLanguage>(
-                segments: VoiceLanguage.values
-                    .map(
-                      (option) => ButtonSegment<VoiceLanguage>(
-                        value: option,
-                        label: Text(option.label),
-                      ),
-                    )
-                    .toList(growable: false),
-                selected: {language},
-                onSelectionChanged: (selection) =>
-                    viewModel.language.value = selection.single,
+            const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.translate_rounded),
+              title: Text('French + English'),
+              subtitle: Text(
+                'Whisper detects the spoken language automatically.',
               ),
             ),
             const SizedBox(height: 20),

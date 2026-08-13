@@ -21,9 +21,8 @@ void main() {
       );
 
       expect(engine.permissionRequests, 0);
-      await tester.tap(find.text('English'));
-      await tester.pump();
-      expect(viewModel.language.value, VoiceLanguage.english);
+      expect(find.text('French + English'), findsOneWidget);
+      expect(viewModel.language.value, VoiceLanguage.frenchAndEnglish);
       await tester.tap(find.text('Choose local Whisper model file'));
       await tester.pumpAndSettle();
       expect(engine.permissionRequests, 0);

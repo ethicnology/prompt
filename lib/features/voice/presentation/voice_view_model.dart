@@ -53,7 +53,7 @@ class VoiceViewModel {
   /// for every conversation until the app is closed or the model is changed.
   final ValueNotifier<bool> hasSelectedModel = ValueNotifier(false);
   final ValueNotifier<VoiceLanguage> language = ValueNotifier(
-    VoiceLanguage.french,
+    VoiceLanguage.frenchAndEnglish,
   );
   StreamSubscription<String>? _partialSubscription;
   bool _disposed = false;

@@ -202,7 +202,8 @@ The local voice engine is preferred. VPS transcription is an explicit user choic
 The initial voice foundation exposes a `VoiceEngine` conditional platform
 boundary and a `VoiceRepository` that owns and releases a memory-only capture.
 Android uses `record`'s 16 kHz mono PCM stream with `whisper_ggml` live
-transcription. A user selects an existing local multilingual GGML model once
+transcription in automatic multilingual mode so one live session accepts both
+French and English without a language restart. A user selects an existing local multilingual GGML model once
 from global Voice settings; that app-scoped configuration enables the Voice
 input control beside Send in every conversation. The control is the only
 permission-capable command and streams partial/final text into the composer.

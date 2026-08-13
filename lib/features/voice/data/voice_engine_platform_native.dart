@@ -57,8 +57,8 @@ class AndroidIosWhisperEngine implements VoiceEngine {
       final session = await _controller.transcribeLive(
         modelPath: modelPath,
         pcm16Stream: pcm16Stream,
-        // An explicit language avoids the identification pass for every live
-        // utterance while keeping French and English available in settings.
+        // The multilingual session detects French or English automatically so
+        // users can switch language without restarting voice mode.
         lang: language.code,
         keepModelLoaded: true,
       );
