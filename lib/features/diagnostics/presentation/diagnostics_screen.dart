@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/platform/local_notification_service.dart';
 import '../../settings/presentation/notification_settings_screen.dart';
+import '../../settings/presentation/theme_view_model.dart';
 import '../../connection/domain/server_profile.dart';
 import '../domain/diagnostics_snapshot.dart';
 import 'diagnostics_view_model.dart';
@@ -11,6 +12,7 @@ class DiagnosticsScreen extends StatefulWidget {
     required this.profile,
     required this.viewModel,
     required this.localNotificationService,
+    required this.themeViewModel,
     required this.onReconnect,
     required this.onDisconnect,
     super.key,
@@ -19,6 +21,7 @@ class DiagnosticsScreen extends StatefulWidget {
   final ServerProfile profile;
   final DiagnosticsViewModel viewModel;
   final LocalNotificationService localNotificationService;
+  final ThemeViewModel themeViewModel;
   final Future<bool> Function() onReconnect;
   final VoidCallback onDisconnect;
 
@@ -82,6 +85,51 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                         service: widget.localNotificationService,
                       ),
                     ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Appearance',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      const Text('Choose how Prompt displays its interface.'),
+                      const SizedBox(height: 12),
+                      ValueListenableBuilder<ThemeMode>(
+                        valueListenable: widget.themeViewModel,
+                        builder: (context, selected, _) =>
+                            SegmentedButton<ThemeMode>(
+                              segments: const [
+                                ButtonSegment(
+                                  value: ThemeMode.system,
+                                  icon: Icon(Icons.brightness_auto_outlined),
+                                  label: Text('System'),
+                                ),
+                                ButtonSegment(
+                                  value: ThemeMode.light,
+                                  icon: Icon(Icons.light_mode_outlined),
+                                  label: Text('Light'),
+                                ),
+                                ButtonSegment(
+                                  value: ThemeMode.dark,
+                                  icon: Icon(Icons.dark_mode_outlined),
+                                  label: Text('Dark'),
+                                ),
+                              ],
+                              selected: {selected},
+                              onSelectionChanged: (selection) {
+                                widget.themeViewModel.select(selection.single);
+                              },
+                            ),
+                      ),
+                    ],
                   ),
                 ),
               ),

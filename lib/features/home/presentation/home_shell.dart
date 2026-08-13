@@ -7,6 +7,7 @@ import '../../connection/connection.dart';
 import '../../diagnostics/diagnostics.dart';
 import '../../sessions/sessions.dart';
 import '../../sessions/presentation/sessions_screen.dart';
+import '../../settings/presentation/theme_view_model.dart';
 import '../../workspace/presentation/workspace_screen.dart';
 import '../../workspace/presentation/workspace_view_model.dart';
 import '../../terminal/presentation/terminal_screen.dart';
@@ -24,6 +25,7 @@ class HomeShell extends StatelessWidget {
     required this.diagnosticsViewModel,
     required this.voiceViewModel,
     required this.localNotificationService,
+    required this.themeViewModel,
     required this.onReconnect,
     required this.onDisconnect,
     super.key,
@@ -38,6 +40,7 @@ class HomeShell extends StatelessWidget {
   final DiagnosticsViewModel diagnosticsViewModel;
   final VoiceViewModel voiceViewModel;
   final LocalNotificationService localNotificationService;
+  final ThemeViewModel themeViewModel;
   final Future<bool> Function() onReconnect;
   final VoidCallback onDisconnect;
 
@@ -62,6 +65,7 @@ class HomeShell extends StatelessWidget {
           profile: profile,
           viewModel: diagnosticsViewModel,
           localNotificationService: localNotificationService,
+          themeViewModel: themeViewModel,
           onReconnect: onReconnect,
           onDisconnect: onDisconnect,
         ),

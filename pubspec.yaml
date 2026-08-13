@@ -50,6 +50,9 @@ dependencies:
   # opens.
   path_provider: ^2.1.5
   url_launcher: ^6.3.2
+  # Official Flutter persistence for non-sensitive UI preferences such as the
+  # selected appearance mode. Credentials remain in secure storage.
+  shared_preferences: ^2.5.5
   # Native file selection for prompt attachments on Android, iOS, Linux, and
   # Web. Selected bytes remain memory-only until the prompt is submitted.
   file_picker: ^10.3.3

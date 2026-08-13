@@ -27,6 +27,8 @@ import '../features/connection/presentation/connection_view_model.dart';
 import '../features/diagnostics/data/diagnostics_repository.dart';
 import '../features/diagnostics/data/opencode_diagnostics_service.dart';
 import '../features/diagnostics/presentation/diagnostics_view_model.dart';
+import '../features/settings/data/theme_preference_store.dart';
+import '../features/settings/presentation/theme_view_model.dart';
 import '../features/home/presentation/home_shell.dart';
 import '../features/queue/data/queue_prompts_repository.dart';
 import '../features/queue/data/queue_send_coordinator.dart';
@@ -43,9 +45,14 @@ import '../features/voice/voice.dart';
 import 'prompt_theme.dart';
 
 class PromptApp extends StatefulWidget {
-  const PromptApp({this.lastProfileLoader, super.key});
+  const PromptApp({
+    this.lastProfileLoader,
+    this.themePreferenceStore,
+    super.key,
+  });
 
   final Future<ServerProfile?> Function()? lastProfileLoader;
+  final ThemePreferenceStore? themePreferenceStore;
 
   @override
   State<PromptApp> createState() => _PromptAppState();
@@ -61,6 +68,7 @@ class _PromptAppState extends State<PromptApp> {
   late final TerminalViewModel _terminalViewModel;
   late final DiagnosticsViewModel _diagnosticsViewModel;
   late final VoiceViewModel _voiceViewModel;
+  late final ThemeViewModel _themeViewModel;
   late final LocalNotificationService _localNotificationService;
   ServerProfile? _connectedProfile;
 
@@ -144,6 +152,10 @@ class _PromptAppState extends State<PromptApp> {
       VoiceRepository(createVoiceEngine(), const FilePickerVoiceModelPicker()),
     );
     _localNotificationService = LocalNotificationService.platform();
+    _themeViewModel = ThemeViewModel(
+      widget.themePreferenceStore ?? SharedPreferencesThemePreferenceStore(),
+    );
+    unawaited(_themeViewModel.load());
   }
 
   Future<PromptLocalStorageHandle> _ensureLocalStorage() {
@@ -203,6 +215,7 @@ class _PromptAppState extends State<PromptApp> {
     _terminalViewModel.dispose();
     _diagnosticsViewModel.dispose();
     unawaited(_voiceViewModel.dispose());
+    _themeViewModel.dispose();
     unawaited(_queueCoordinator?.dispose());
     final localStorage = _localStorage;
     if (localStorage != null) {
@@ -253,31 +266,35 @@ class _PromptAppState extends State<PromptApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Prompt',
-      debugShowCheckedModeBanner: false,
-      theme: promptTheme(),
-      darkTheme: promptDarkTheme(),
-      themeMode: ThemeMode.system,
-      home: _connectedProfile == null
-          ? ConnectionScreen(
-              viewModel: _connectionViewModel,
-              profileLoader: widget.lastProfileLoader ?? _loadLastProfile,
-              onConnected: _openConnectedServer,
-            )
-          : HomeShell(
-              profile: _connectedProfile!,
-              sessionsViewModel: _sessionsViewModel,
-              conversationViewModel: _conversationViewModel,
-              capabilitiesViewModel: _capabilitiesViewModel,
-              workspaceViewModel: _workspaceViewModel,
-              terminalViewModel: _terminalViewModel,
-              diagnosticsViewModel: _diagnosticsViewModel,
-              voiceViewModel: _voiceViewModel,
-              localNotificationService: _localNotificationService,
-              onReconnect: _reconnect,
-              onDisconnect: _disconnect,
-            ),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: _themeViewModel,
+      builder: (context, themeMode, _) => MaterialApp(
+        title: 'Prompt',
+        debugShowCheckedModeBanner: false,
+        theme: promptTheme(),
+        darkTheme: promptDarkTheme(),
+        themeMode: themeMode,
+        home: _connectedProfile == null
+            ? ConnectionScreen(
+                viewModel: _connectionViewModel,
+                profileLoader: widget.lastProfileLoader ?? _loadLastProfile,
+                onConnected: _openConnectedServer,
+              )
+            : HomeShell(
+                profile: _connectedProfile!,
+                sessionsViewModel: _sessionsViewModel,
+                conversationViewModel: _conversationViewModel,
+                capabilitiesViewModel: _capabilitiesViewModel,
+                workspaceViewModel: _workspaceViewModel,
+                terminalViewModel: _terminalViewModel,
+                diagnosticsViewModel: _diagnosticsViewModel,
+                voiceViewModel: _voiceViewModel,
+                localNotificationService: _localNotificationService,
+                themeViewModel: _themeViewModel,
+                onReconnect: _reconnect,
+                onDisconnect: _disconnect,
+              ),
+      ),
     );
   }
 

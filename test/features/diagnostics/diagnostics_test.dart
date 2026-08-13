@@ -14,12 +14,17 @@ import 'package:prompt/features/diagnostics/data/opencode_diagnostics_service.da
 import 'package:prompt/features/diagnostics/domain/diagnostics_load_result.dart';
 import 'package:prompt/features/diagnostics/presentation/diagnostics_view_model.dart';
 import 'package:prompt/features/diagnostics/presentation/diagnostics_screen.dart';
+import 'package:prompt/features/settings/data/theme_preference_store.dart';
+import 'package:prompt/features/settings/presentation/theme_view_model.dart';
 
 void main() {
   final profile = ServerProfile(
     origin: Uri.parse('http://10.80.0.1:4096'),
     username: 'prompt',
   );
+
+  ThemeViewModel themeViewModel() =>
+      ThemeViewModel(InMemoryThemePreferenceStore());
 
   DiagnosticsRepository repositoryFor(http.Client client) {
     return DiagnosticsRepository(
@@ -201,6 +206,7 @@ void main() {
           localNotificationService: LocalNotificationService(
             const _UnavailableNotifications(),
           ),
+          themeViewModel: themeViewModel(),
           onReconnect: () async => true,
           onDisconnect: () {},
         ),
@@ -243,6 +249,7 @@ void main() {
           localNotificationService: LocalNotificationService(
             const _UnavailableNotifications(),
           ),
+          themeViewModel: themeViewModel(),
           onReconnect: () async => true,
           onDisconnect: () {},
         ),
@@ -255,6 +262,49 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(calls, 8);
+    viewModel.dispose();
+  });
+
+  testWidgets('selects and persists dark appearance', (tester) async {
+    final store = InMemoryThemePreferenceStore();
+    final theme = ThemeViewModel(store);
+    final viewModel = DiagnosticsViewModel(
+      repositoryFor(
+        MockClient((request) async {
+          return switch (request.url.path) {
+            '/global/health' => http.Response(
+              jsonEncode({'healthy': true, 'version': '1.2.3'}),
+              200,
+            ),
+            '/mcp' => http.Response('{}', 200),
+            '/lsp' || '/formatter' => http.Response('[]', 200),
+            _ => http.Response('', 404),
+          };
+        }),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DiagnosticsScreen(
+          profile: profile,
+          viewModel: viewModel,
+          localNotificationService: LocalNotificationService(
+            const _UnavailableNotifications(),
+          ),
+          themeViewModel: theme,
+          onReconnect: () async => true,
+          onDisconnect: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Dark'));
+    await tester.pump();
+
+    expect(theme.value, ThemeMode.dark);
+    expect(store.value, ThemeMode.dark);
+    theme.dispose();
     viewModel.dispose();
   });
 }

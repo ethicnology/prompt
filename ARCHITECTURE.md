@@ -217,6 +217,11 @@ never start a recorder or Whisper session. Audio is
 passed directly between the recorder and Whisper, never written to a path or retained after stop,
 cancellation, failure, lifecycle inactivity, conversation teardown, or disposal.
 
+The selected appearance mode (`system`, `light`, or `dark`) is a non-sensitive
+UI preference stored through Flutter's `shared_preferences` platform adapter.
+It is loaded at app startup and never shares storage with credentials, queue
+content, transcripts, or the encrypted conversation database.
+
 Session deletion remains an OpenCode API operation, never direct database
 access. Prompt aborts and deletes every known descendant session from deepest
 to shallowest before deleting the selected parent, allowing OpenCode's foreign
