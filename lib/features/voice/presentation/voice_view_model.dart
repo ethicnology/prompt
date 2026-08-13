@@ -158,7 +158,10 @@ class VoiceViewModel {
       case Ok(:final value):
         _latestTranscript = value;
         state.value = VoiceReady(transcript: value);
-        await _repository.release(releaseModel: true);
+        // Keep the native model warm for the next voice turn in this
+        // transcript. Conversation teardown and lifecycle inactivity still
+        // release it deterministically through cancel().
+        await _repository.release();
         _modeActive = false;
         state.value = const VoiceIdle();
       case Err(:final failure):

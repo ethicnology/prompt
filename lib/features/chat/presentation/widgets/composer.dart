@@ -215,7 +215,7 @@ class _VoiceModeBar extends StatelessWidget {
     final instruction = switch (state) {
       VoiceRecording() => 'Release to mute',
       VoiceTranscribing() => 'Stop is closing the voice session',
-      VoiceStarting() => 'Keep holding to speak',
+      VoiceStarting() => 'Wait for vibration before speaking',
       _ => 'Hold to talk',
     };
     return Padding(
@@ -272,6 +272,8 @@ class _VoiceModeBar extends StatelessWidget {
                 button: true,
                 label: recording
                     ? 'Recording. Release to mute microphone'
+                    : processing
+                    ? 'Opening microphone. Wait for vibration before speaking'
                     : 'Hold to talk. Microphone muted',
                 hint: 'Press and hold while speaking, then release',
                 onTap: processing

@@ -426,9 +426,10 @@ void main() {
     expect(find.byTooltip('Stop voice mode'), findsOneWidget);
 
     final hold = await tester.startGesture(
-      tester.getCenter(find.text('Hold to talk')),
+      tester.getCenter(find.byIcon(Icons.mic_off_rounded)),
     );
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Listening'), findsOneWidget);
     capture.partials.add('Bonjour');
     await tester.pump();
 

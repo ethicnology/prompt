@@ -184,7 +184,33 @@ void main() {
 
       await viewModel.stopModeFromUserAction();
       expect(viewModel.state.value, isA<VoiceIdle>());
+      // Selecting a replacement model releases the previous one; Stop keeps
+      // the current model warm until the view model is disposed.
+      expect(engine.releaseModelCalls, 1);
+      await viewModel.dispose();
       expect(engine.releaseModelCalls, 2);
+    },
+  );
+
+  test(
+    'a release during recorder resume mutes as soon as resume completes',
+    () async {
+      final resume = Completer<Result<void, VoiceEngineFailure>>();
+      final capture = _FakeCapture(resumeResult: resume.future);
+      final viewModel = VoiceViewModel(
+        VoiceRepository(_FakeVoiceEngine(capture: capture), _FakeModelPicker()),
+      );
+      await viewModel.selectModelFromUserAction();
+      await viewModel.enterModeFromUserAction();
+
+      final starting = viewModel.startSegmentFromUserAction();
+      await Future<void>.delayed(Duration.zero);
+      await viewModel.finishSegmentFromUserAction();
+      resume.complete(const Ok(null));
+      await starting;
+
+      expect(viewModel.state.value, isA<VoiceReady>());
+      expect(capture.pauseCalls, 1);
       await viewModel.dispose();
     },
   );
@@ -225,10 +251,11 @@ class _FakeVoiceEngine implements VoiceEngine {
 }
 
 class _FakeCapture implements VoiceCapture {
-  _FakeCapture({this.transcript = '', this.stopResult});
+  _FakeCapture({this.transcript = '', this.stopResult, this.resumeResult});
 
   final String transcript;
   final Future<Result<String, VoiceEngineFailure>>? stopResult;
+  final Future<Result<void, VoiceEngineFailure>>? resumeResult;
   final partials = StreamController<String>.broadcast();
   var releaseCalls = 0;
   var resumeCalls = 0;
@@ -247,7 +274,8 @@ class _FakeCapture implements VoiceCapture {
   @override
   Future<Result<void, VoiceEngineFailure>> resumeMicrophone() async {
     resumeCalls++;
-    return const Ok(null);
+    return await (resumeResult ??
+        Future<Result<void, VoiceEngineFailure>>.value(const Ok(null)));
   }
 
   @override

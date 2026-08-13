@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../connection/domain/server_profile.dart';
 import '../../capabilities/capabilities.dart';
@@ -168,6 +169,15 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (voiceViewModel == null) return;
     _voiceDraftPrefix = _composerController.text;
     await voiceViewModel.enterModeFromUserAction();
+  }
+
+  Future<void> _startVoiceCapture() async {
+    final voiceViewModel = widget.voiceViewModel;
+    if (voiceViewModel == null) return;
+    await voiceViewModel.startSegmentFromUserAction();
+    if (voiceViewModel.state.value is VoiceRecording) {
+      await HapticFeedback.mediumImpact();
+    }
   }
 
   void _applyVoiceState() {
@@ -808,8 +818,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
               onRemoveAttachment: widget.viewModel.removeAttachment,
               onSubmit: _submitComposer,
               voiceState: widget.voiceViewModel?.state,
-              onVoiceHoldStart:
-                  widget.voiceViewModel?.startSegmentFromUserAction,
+              onVoiceHoldStart: widget.voiceViewModel == null
+                  ? null
+                  : _startVoiceCapture,
               onVoiceHoldEnd:
                   widget.voiceViewModel?.finishSegmentFromUserAction,
               onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
