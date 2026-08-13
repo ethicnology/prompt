@@ -109,6 +109,80 @@ void main() {
     );
   });
 
+  test('accepts agents without the legacy builtIn field', () async {
+    final client = MockClient((request) async {
+      return switch (request.url.path) {
+        '/provider' => http.Response(
+          jsonEncode({'all': [], 'default': {}, 'connected': []}),
+          200,
+        ),
+        '/agent' => http.Response(
+          jsonEncode([
+            {
+              'name': 'build',
+              'description': 'Implement changes',
+              'mode': 'primary',
+            },
+          ]),
+          200,
+        ),
+        '/command' => http.Response('[]', 200),
+        _ => http.Response('', 404),
+      };
+    });
+
+    final result = await repositoryFor(client).load(profile);
+
+    final loaded = result as CapabilitiesLoaded;
+    expect(loaded.capabilities.agents.single.name, 'build');
+    expect(loaded.capabilities.agents.single.isBuiltIn, isFalse);
+  });
+
+  test(
+    'ignores unsupported commands without hiding models and agents',
+    () async {
+      final client = MockClient((request) async {
+        return switch (request.url.path) {
+          '/provider' => http.Response(
+            jsonEncode({
+              'all': [
+                {
+                  'id': 'anthropic',
+                  'models': {
+                    'claude-sonnet': {'name': 'Claude Sonnet'},
+                  },
+                },
+              ],
+              'default': {},
+              'connected': ['anthropic'],
+            }),
+            200,
+          ),
+          '/agent' => http.Response(
+            jsonEncode([
+              {'name': 'build', 'mode': 'primary'},
+            ]),
+            200,
+          ),
+          '/command' => http.Response(
+            jsonEncode([
+              {'name': 'future-command', 'template': 42},
+            ]),
+            200,
+          ),
+          _ => http.Response('', 404),
+        };
+      });
+
+      final result = await repositoryFor(client).load(profile);
+
+      final loaded = result as CapabilitiesLoaded;
+      expect(loaded.capabilities.models.single.name, 'Claude Sonnet');
+      expect(loaded.capabilities.agents.single.name, 'build');
+      expect(loaded.capabilities.commands, isEmpty);
+    },
+  );
+
   test('view model exposes empty, ready, and retryable states', () async {
     var calls = 0;
     final client = MockClient((request) async {

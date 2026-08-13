@@ -22,7 +22,7 @@ class OpenCodeCapabilitiesService {
     return OpenCodeCapabilitiesRecord(
       providers: _parseProviders(jsonDecode(responses[0].body)),
       agents: _parseAgents(jsonDecode(responses[1].body)),
-      commands: _parseCommands(jsonDecode(responses[2].body)),
+      commands: _parseCommandsBestEffort(jsonDecode(responses[2].body)),
     );
   }
 
@@ -154,7 +154,7 @@ OpenCodeAgentRecord _parseAgent(Object? value) {
   if (value is! Map<String, dynamic> ||
       value['name'] is! String ||
       value['mode'] is! String ||
-      value['builtIn'] is! bool ||
+      (value['builtIn'] != null && value['builtIn'] is! bool) ||
       (value['description'] != null && value['description'] is! String)) {
     throw const FormatException('Agent is malformed.');
   }
@@ -162,17 +162,24 @@ OpenCodeAgentRecord _parseAgent(Object? value) {
     name: value['name'] as String,
     description: value['description'] as String?,
     mode: value['mode'] as String,
-    isBuiltIn: value['builtIn'] as bool,
+    isBuiltIn: value['builtIn'] as bool? ?? false,
   );
 }
 
-List<OpenCodeCommandRecord> _parseCommands(Object? value) {
+List<OpenCodeCommandRecord> _parseCommandsBestEffort(Object? value) {
   if (value is! List) {
-    throw const FormatException('Command response must be a list.');
+    return const [];
   }
-  return value
-      .map<OpenCodeCommandRecord>(_parseCommand)
-      .toList(growable: false);
+  final commands = <OpenCodeCommandRecord>[];
+  for (final candidate in value) {
+    try {
+      commands.add(_parseCommand(candidate));
+    } on FormatException {
+      // Slash commands are optional convenience data. A command introduced by
+      // a newer server must not disable model and agent selection.
+    }
+  }
+  return commands;
 }
 
 OpenCodeCommandRecord _parseCommand(Object? value) {
