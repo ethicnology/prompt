@@ -1,9 +1,9 @@
 # Prompt
 
-A fast, private, Android-first Flutter client for a personal OpenCode server.
+A remote mobile-friendly client for OpenCode.
 
 Prompt targets Android, Linux, and Web. It connects only to a user-controlled
-server reachable through WireGuard and is designed around a non-interrupting
+server reachable through WireGuard or Tailscale and is designed around a non-interrupting
 prompt queue, responsive streaming, and local-first voice transcription.
 
 ## Voice status
@@ -20,7 +20,7 @@ The product scope is in [PLAN.md](PLAN.md); the binding implementation rules
 are in [ARCHITECTURE.md](ARCHITECTURE.md) and [AGENTS.md](AGENTS.md).
 
 Read [the private server setup guide](docs/private-server-setup.md) before
-running OpenCode remotely. The OpenCode port must remain WireGuard-only because
+running OpenCode remotely. The OpenCode port must remain private-VPN-only because
 it can access workspace files and provider/source-control credentials.
 
 ## Development
