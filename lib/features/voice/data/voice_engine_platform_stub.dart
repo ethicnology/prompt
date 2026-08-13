@@ -17,4 +17,7 @@ class UnsupportedVoiceEngine implements VoiceEngine {
     required String modelPath,
     required VoiceLanguage language,
   }) async => const Err(VoiceEngineFailure.assetsNotBundled);
+
+  @override
+  Future<void> releaseModel() async {}
 }

@@ -57,7 +57,9 @@ class VoiceSettingsScreen extends StatelessWidget {
             const Text(
               'Download a local multilingual Whisper model, then select its '
               'file. The conversation composer will show Voice input once a '
-              'model is selected. Audio and transcripts stay in memory only.',
+              'model is selected. Tiny finishes fastest, Base balances French '
+              'accuracy and latency, and Small can take noticeably longer to '
+              'finish on a phone. Audio and transcripts stay in memory only.',
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(

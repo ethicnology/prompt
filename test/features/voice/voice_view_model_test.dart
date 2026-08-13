@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/features/voice/data/voice_engine.dart';
@@ -30,7 +32,7 @@ void main() {
     );
 
     await viewModel.selectModelFromUserAction();
-    await viewModel.startFromUserAction();
+    await viewModel.enterModeFromUserAction();
 
     expect(engine.permissionRequests, 1);
     expect(engine.captureRequests, 0);
@@ -50,7 +52,7 @@ void main() {
         VoiceRepository(engine, _FakeModelPicker()),
       );
 
-      await viewModel.startFromUserAction();
+      await viewModel.enterModeFromUserAction();
 
       expect(engine.permissionRequests, 0);
       expect(viewModel.state.value, isA<VoiceUnavailable>());
@@ -66,13 +68,15 @@ void main() {
     );
 
     await viewModel.selectModelFromUserAction();
-    await viewModel.startFromUserAction();
+    await viewModel.enterModeFromUserAction();
+    await viewModel.startSegmentFromUserAction();
     expect(viewModel.state.value, isA<VoiceRecording>());
     await viewModel.notifyAppInactive();
     expect(capture.releaseCalls, 1);
     expect(viewModel.state.value, isA<VoiceIdle>());
 
-    await viewModel.startFromUserAction();
+    await viewModel.enterModeFromUserAction();
+    await viewModel.startSegmentFromUserAction();
     await viewModel.dispose();
     expect(capture.releaseCalls, 2);
   });
@@ -84,17 +88,51 @@ void main() {
     );
 
     await viewModel.selectModelFromUserAction();
-    await viewModel.startFromUserAction();
-    await viewModel.stopFromUserAction();
+    await viewModel.enterModeFromUserAction();
+    expect(viewModel.state.value, isA<VoiceReady>());
+    await viewModel.startSegmentFromUserAction();
+    await viewModel.finishSegmentFromUserAction();
 
-    expect(viewModel.state.value, isA<VoiceTranscriptReady>());
+    expect(viewModel.state.value, isA<VoiceReady>());
     expect(
-      (viewModel.state.value as VoiceTranscriptReady).transcript,
+      (viewModel.state.value as VoiceReady).transcript,
       'local transcript',
     );
     expect(capture.releaseCalls, 1);
     await viewModel.dispose();
   });
+
+  test(
+    'keeps applying partials while final transcription catches up',
+    () async {
+      final stopCompleter = Completer<Result<String, VoiceEngineFailure>>();
+      final capture = _FakeCapture(stopResult: stopCompleter.future);
+      final viewModel = VoiceViewModel(
+        VoiceRepository(_FakeVoiceEngine(capture: capture), _FakeModelPicker()),
+      );
+
+      await viewModel.selectModelFromUserAction();
+      await viewModel.enterModeFromUserAction();
+      await viewModel.startSegmentFromUserAction();
+      capture.partials.add('first words');
+      await Future<void>.delayed(Duration.zero);
+      final stopping = viewModel.finishSegmentFromUserAction();
+      await Future<void>.delayed(Duration.zero);
+      capture.partials.add('first words and last words');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(viewModel.state.value, isA<VoiceTranscribing>());
+      expect(
+        (viewModel.state.value as VoiceTranscribing).partialTranscript,
+        'first words and last words',
+      );
+
+      stopCompleter.complete(const Ok('final transcript'));
+      await stopping;
+      expect(viewModel.state.value, isA<VoiceReady>());
+      await viewModel.dispose();
+    },
+  );
 
   test('passes the selected dictation language to the local engine', () async {
     final engine = _FakeVoiceEngine(capture: _FakeCapture());
@@ -104,21 +142,60 @@ void main() {
 
     await viewModel.selectModelFromUserAction();
     viewModel.language.value = VoiceLanguage.english;
-    await viewModel.startFromUserAction();
+    await viewModel.enterModeFromUserAction();
+    await viewModel.startSegmentFromUserAction();
 
     expect(engine.selectedLanguage, VoiceLanguage.english);
     await viewModel.dispose();
   });
+
+  test(
+    'keeps voice mode ready between segments and releases model on stop',
+    () async {
+      final captures = [
+        _FakeCapture(transcript: 'first'),
+        _FakeCapture(transcript: 'second'),
+      ];
+      final engine = _FakeVoiceEngine(captures: captures);
+      final viewModel = VoiceViewModel(
+        VoiceRepository(engine, _FakeModelPicker()),
+      );
+
+      await viewModel.selectModelFromUserAction();
+      await viewModel.enterModeFromUserAction();
+      expect(viewModel.state.value, isA<VoiceReady>());
+
+      await viewModel.startSegmentFromUserAction();
+      await viewModel.finishSegmentFromUserAction();
+      expect((viewModel.state.value as VoiceReady).transcript, 'first');
+      await viewModel.startSegmentFromUserAction();
+      await viewModel.finishSegmentFromUserAction();
+      expect((viewModel.state.value as VoiceReady).transcript, 'second');
+      expect(engine.permissionRequests, 1);
+      expect(engine.captureRequests, 2);
+
+      await viewModel.stopModeFromUserAction();
+      expect(viewModel.state.value, isA<VoiceIdle>());
+      expect(engine.releaseModelCalls, 2);
+      await viewModel.dispose();
+    },
+  );
 }
 
 class _FakeVoiceEngine implements VoiceEngine {
-  _FakeVoiceEngine({this.permissionResult = const Ok(null), this.capture});
+  _FakeVoiceEngine({
+    this.permissionResult = const Ok(null),
+    this.capture,
+    this.captures,
+  });
 
   final Result<void, VoiceEngineFailure> permissionResult;
   final _FakeCapture? capture;
+  final List<_FakeCapture>? captures;
   var permissionRequests = 0;
   var captureRequests = 0;
   VoiceLanguage? selectedLanguage;
+  var releaseModelCalls = 0;
 
   @override
   Future<Result<void, VoiceEngineFailure>> requestMicrophonePermission() async {
@@ -133,27 +210,38 @@ class _FakeVoiceEngine implements VoiceEngine {
   }) async {
     captureRequests++;
     selectedLanguage = language;
-    final value = capture;
+    final value = captures?.removeAt(0) ?? capture;
     if (value == null) return const Err(VoiceEngineFailure.captureFailed);
     return Ok(value);
+  }
+
+  @override
+  Future<void> releaseModel() async {
+    releaseModelCalls++;
   }
 }
 
 class _FakeCapture implements VoiceCapture {
-  _FakeCapture({this.transcript = ''});
+  _FakeCapture({this.transcript = '', this.stopResult});
 
   final String transcript;
+  final Future<Result<String, VoiceEngineFailure>>? stopResult;
+  final partials = StreamController<String>.broadcast();
   var releaseCalls = 0;
 
   @override
-  Stream<String> get partialTranscripts => const Stream.empty();
+  Stream<String> get partialTranscripts => partials.stream;
 
   @override
-  Future<Result<String, VoiceEngineFailure>> stop() async => Ok(transcript);
+  Future<Result<String, VoiceEngineFailure>> stop() async =>
+      stopResult ?? Ok(transcript);
 
   @override
   Future<void> release() async {
     releaseCalls++;
+    if (!partials.isClosed) {
+      await partials.close();
+    }
   }
 }
 

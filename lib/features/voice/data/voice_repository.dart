@@ -19,14 +19,12 @@ class VoiceRepository {
   Future<bool> selectModelFromUserAction() async {
     final modelPath = await _modelPicker.pickModelFromUserAction();
     if (modelPath == null) return false;
+    await release(releaseModel: true);
     _modelPath = modelPath;
     return true;
   }
 
-  Future<Result<void, VoiceFailure>> startFromUserAction(
-    VoiceLanguage language,
-  ) async {
-    await release();
+  Future<Result<void, VoiceFailure>> prepareFromUserAction() async {
     final modelPath = _modelPath;
     if (modelPath == null) {
       return const Err(VoiceEngineUnavailable());
@@ -34,6 +32,17 @@ class VoiceRepository {
     final permission = await _engine.requestMicrophonePermission();
     if (permission case Err<void, VoiceEngineFailure>(:final failure)) {
       return Err(_mapFailure(failure));
+    }
+    return const Ok(null);
+  }
+
+  Future<Result<void, VoiceFailure>> startSegment(
+    VoiceLanguage language,
+  ) async {
+    await release();
+    final modelPath = _modelPath;
+    if (modelPath == null) {
+      return const Err(VoiceEngineUnavailable());
     }
 
     final capture = await _engine.startCapture(
@@ -51,10 +60,13 @@ class VoiceRepository {
     };
   }
 
-  Future<void> release() async {
+  Future<void> release({bool releaseModel = false}) async {
     final capture = _activeCapture;
     _activeCapture = null;
     await capture?.release();
+    if (releaseModel) {
+      await _engine.releaseModel();
+    }
   }
 
   Future<Result<String, VoiceFailure>> stop() async {

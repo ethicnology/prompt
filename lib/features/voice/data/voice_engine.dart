@@ -32,4 +32,7 @@ abstract interface class VoiceEngine {
     required String modelPath,
     required VoiceLanguage language,
   });
+
+  /// Releases a model retained between short dictation segments.
+  Future<void> releaseModel();
 }

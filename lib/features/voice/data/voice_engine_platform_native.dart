@@ -66,6 +66,15 @@ class AndroidIosWhisperEngine implements VoiceEngine {
       return const Err(VoiceEngineFailure.captureFailed);
     }
   }
+
+  @override
+  Future<void> releaseModel() async {
+    try {
+      await _controller.releaseModel();
+    } catch (_) {
+      // Releasing a parked model is best-effort after native shutdown errors.
+    }
+  }
 }
 
 class LinuxWhisperEngineStub extends UnsupportedVoiceEngine {
@@ -78,6 +87,7 @@ class _AndroidIosVoiceCapture implements VoiceCapture {
   final AudioRecorder _recorder;
   final WhisperLiveSession _session;
   bool _released = false;
+  Future<String>? _finalTranscript;
 
   @override
   Stream<String> get partialTranscripts => _session.partials;
@@ -86,7 +96,11 @@ class _AndroidIosVoiceCapture implements VoiceCapture {
   Future<Result<String, VoiceEngineFailure>> stop() async {
     try {
       await _recorder.stop();
-      return Ok(await _session.stop());
+      return Ok(
+        await (_finalTranscript ??= _session.stop()).timeout(
+          const Duration(seconds: 30),
+        ),
+      );
     } catch (_) {
       return const Err(VoiceEngineFailure.transcriptionFailed);
     }
@@ -102,7 +116,9 @@ class _AndroidIosVoiceCapture implements VoiceCapture {
       // Continue freeing Whisper and recorder resources after recorder errors.
     }
     try {
-      await _session.stop();
+      await (_finalTranscript ??= _session.stop()).timeout(
+        const Duration(seconds: 30),
+      );
     } catch (_) {
       // The final transcript is deliberately discarded during cancellation.
     }
