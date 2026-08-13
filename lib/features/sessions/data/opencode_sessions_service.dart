@@ -108,6 +108,24 @@ class OpenCodeSessionsService {
     _requireSuccess(response);
   }
 
+  Future<bool> abortSession(
+    ServerProfile profile,
+    String? password,
+    OpenCodeSession session,
+  ) async {
+    final response = await _transport.post(
+      profile,
+      password,
+      '/session/${Uri.encodeComponent(session.id)}/abort?${Uri(queryParameters: {'directory': session.directory}).query}',
+    );
+    _requireSuccess(response);
+    final decoded = jsonDecode(response.body);
+    if (decoded is! bool) {
+      throw const FormatException('Abort response must be a boolean.');
+    }
+    return decoded;
+  }
+
   Future<OpenCodeSessionRecord> forkSession(
     ServerProfile profile,
     String? password,

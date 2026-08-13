@@ -186,13 +186,34 @@ class SessionsRepository {
     ServerProfile profile,
     OpenCodeSession session,
   ) {
-    return _mutate(
-      () async => _sessionsService.deleteSession(
+    return _mutate(() async {
+      final password = await _credentialsStore.readPassword(profile.id);
+      final catalog = await _sessionsService.listSessions(
         profile,
-        await _credentialsStore.readPassword(profile.id),
-        session,
-      ),
-    );
+        password,
+        session.directory,
+      );
+      final byParent = <String, List<OpenCodeSessionRecord>>{};
+      for (final candidate in catalog) {
+        final parentId = candidate.parentId;
+        if (parentId != null) {
+          byParent.putIfAbsent(parentId, () => []).add(candidate);
+        }
+      }
+
+      Future<void> deleteTree(OpenCodeSession target) async {
+        for (final child in byParent[target.id] ?? const []) {
+          await deleteTree(_toDomain(child));
+        }
+        await _sessionsService.abortSession(profile, password, target);
+        await _sessionsService.deleteSession(profile, password, target);
+      }
+
+      // Deleting a busy session alone does not guarantee that its running
+      // process is stopped. Descendants are independent OpenCode sessions, so
+      // delete them first and let OpenCode cascade each session's DB records.
+      await deleteTree(session);
+    });
   }
 
   Future<SessionCreateResult> fork(
@@ -257,6 +278,8 @@ class SessionsRepository {
       return const Err(SessionsFailure.unavailable);
     } on http.ClientException {
       return const Err(SessionsFailure.unavailable);
+    } on FormatException {
+      return const Err(SessionsFailure.unexpectedResponse);
     }
   }
 

@@ -132,6 +132,7 @@ class ConversationViewModel {
 
   ServerProfile? _profile;
   OpenCodeSession? _session;
+  OpenCodeSession? _requestedSession;
   StreamSubscription<List<QueuedPrompt>>? _queueSubscription;
 
   /// The open session's live conversation state, as exposed by
@@ -157,8 +158,14 @@ class ConversationViewModel {
   /// session first, mirroring [QueueSendCoordinator]'s single-active-session
   /// rule.
   Future<void> open(ServerProfile profile, OpenCodeSession session) async {
-    await leave();
-    if (_disposed) {
+    _requestedSession = session;
+    messages.value = const ConversationLoading();
+    artifacts.value = const SessionArtifactsLoading();
+    queue.value = const <QueuedPrompt>[];
+    pendingApproval.value = null;
+    refreshing.value = false;
+    await _leaveCurrentSession();
+    if (_disposed || _requestedSession != session) {
       return;
     }
     _profile = profile;
@@ -676,6 +683,21 @@ class ConversationViewModel {
   /// screen leaves the active session, and internally by [open] before
   /// switching to a different one.
   Future<void> leave() async {
+    _requestedSession = null;
+    await _leaveCurrentSession();
+  }
+
+  /// Leaves only when [session] still owns this view model. A route being
+  /// disposed after the next conversation has started must not tear down the
+  /// next route's queue and SSE activation.
+  Future<void> leaveSession(OpenCodeSession session) async {
+    if (_requestedSession != session) {
+      return;
+    }
+    await leave();
+  }
+
+  Future<void> _leaveCurrentSession() async {
     _liveRenderTimer?.cancel();
     _liveRenderTimer = null;
     _pendingLiveRender = null;
@@ -697,6 +719,7 @@ class ConversationViewModel {
       return;
     }
     _disposed = true;
+    _requestedSession = null;
     _liveRenderTimer?.cancel();
     _liveRenderTimer = null;
     _pendingLiveRender = null;

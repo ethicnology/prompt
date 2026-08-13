@@ -203,14 +203,22 @@ The initial voice foundation exposes a `VoiceEngine` conditional platform
 boundary and a `VoiceRepository` that owns and releases a memory-only capture.
 Android uses `record`'s 16 kHz mono PCM stream with `whisper_ggml` live
 transcription. A user selects an existing local multilingual GGML model once
-from global Voice settings; that app-scoped configuration enables the Voice
-input control beside Send in every conversation. The control is the only
-permission-capable command and streams partial/final text into the composer.
+from global Voice settings; that app-scoped configuration enables voice mode
+in every conversation. Entering voice mode requests permission but leaves the
+microphone closed. Holding push-to-talk creates one memory-only live capture;
+releasing it finalizes that short segment while keeping the model resident.
+Stopping voice mode, changing sessions, or leaving the foreground releases the
+capture and model. The control streams partial/final text into the composer.
 Prompt never invokes the package's model download API and no model is bundled
 by this application. Linux and Web adapters remain typed unavailable stubs and
 never start a recorder or Whisper session. Audio is
 passed directly between the recorder and Whisper, never written to a path or retained after stop,
 cancellation, failure, lifecycle inactivity, conversation teardown, or disposal.
+
+Session deletion remains an OpenCode API operation, never direct database
+access. Prompt aborts and deletes every known descendant session from deepest
+to shallowest before deleting the selected parent, allowing OpenCode's foreign
+key cascades to remove each session's messages, parts, todos, and related rows.
 
 Flutter Rust Bridge and Dart Native Assets are not part of the initial runtime architecture. They are valid Android/Linux-only build options should Prompt internalize the native voice engine. They do not solve Web, which requires a separate WASM build.
 

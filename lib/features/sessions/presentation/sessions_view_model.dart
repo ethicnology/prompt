@@ -40,10 +40,17 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
   SessionsViewModel(this._repository) : super(const SessionsIdle());
 
   final SessionsRepository _repository;
+  int _revision = 0;
 
   Future<void> load(ServerProfile profile) async {
-    value = const SessionsLoading();
+    final revision = ++_revision;
+    if (value is! SessionsReady) {
+      value = const SessionsLoading();
+    }
     final result = await _repository.load(profile);
+    if (revision != _revision) {
+      return;
+    }
     switch (result) {
       case SessionsLoaded(:final sessions, :final projects):
         value = sessions.isEmpty
@@ -59,9 +66,12 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
     OpenCodeProject project, {
     String? title,
   }) async {
+    final revision = ++_revision;
     final result = await _repository.create(profile, project, title: title);
-    if (result case Ok<OpenCodeSession, SessionsFailure>()) {
-      await load(profile);
+    if (revision == _revision) {
+      if (result case Ok<OpenCodeSession, SessionsFailure>(:final value)) {
+        _addSession(value);
+      }
     }
     return result;
   }
@@ -71,11 +81,29 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
     OpenCodeSession session,
     String title,
   ) async {
+    final revision = ++_revision;
     final result = await _repository.rename(profile, session, title);
     if (result case Err<void, SessionsFailure>(:final failure)) {
       return failure;
     }
-    await load(profile);
+    if (revision == _revision) {
+      _replaceSession(
+        session,
+        OpenCodeSession(
+          id: session.id,
+          projectId: session.projectId,
+          directory: session.directory,
+          title: title,
+          createdAt: session.createdAt,
+          updatedAt: DateTime.now(),
+          parentId: session.parentId,
+          changedFiles: session.changedFiles,
+          additions: session.additions,
+          deletions: session.deletions,
+          shareUrl: session.shareUrl,
+        ),
+      );
+    }
     return null;
   }
 
@@ -83,11 +111,41 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
     ServerProfile profile,
     OpenCodeSession session,
   ) async {
+    final revision = ++_revision;
     final result = await _repository.delete(profile, session);
     if (result case Err<void, SessionsFailure>(:final failure)) {
       return failure;
     }
-    await load(profile);
+    if (revision == _revision) {
+      if (value case SessionsReady(:final sessions, :final projects)) {
+        value = SessionsReady(
+          List.unmodifiable(
+            sessions.where((candidate) => candidate.id != session.id),
+          ),
+          projects,
+        );
+      }
+    }
     return null;
+  }
+
+  void _addSession(OpenCodeSession session) {
+    if (value case SessionsReady(:final sessions, :final projects)) {
+      final updated = [
+        session,
+        ...sessions.where((candidate) => candidate.id != session.id),
+      ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+      value = SessionsReady(List.unmodifiable(updated), projects);
+    }
+  }
+
+  void _replaceSession(OpenCodeSession previous, OpenCodeSession replacement) {
+    if (value case SessionsReady(:final sessions, :final projects)) {
+      final updated = [
+        for (final session in sessions)
+          if (session.id == previous.id) replacement else session,
+      ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+      value = SessionsReady(List.unmodifiable(updated), projects);
+    }
   }
 }

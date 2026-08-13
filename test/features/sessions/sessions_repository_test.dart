@@ -274,6 +274,65 @@ void main() {
       expect(captured!.body, '{"messageID":"message-1"}');
     },
   );
+
+  test('aborts a session before deleting it from OpenCode', () async {
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.method == 'GET') {
+        return http.Response('[]', 200);
+      }
+      return request.url.path.endsWith('/abort')
+          ? http.Response('false', 200)
+          : http.Response('true', 200);
+    });
+    final repository = SessionsRepository(
+      OpenCodeSessionsService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.delete(profile, _session());
+
+    expect(result, isA<Ok<void, SessionsFailure>>());
+    expect(requests.map((request) => request.method), [
+      'GET',
+      'POST',
+      'DELETE',
+    ]);
+    expect(requests[1].url.path, '/session/session-1/abort');
+    expect(requests[2].url.path, '/session/session-1');
+  });
+
+  test('deletes descendant sessions before their parent', () async {
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.method == 'GET') {
+        return http.Response(
+          '[${_sessionJson('child', parentId: 'session-1')},'
+          '${_sessionJson('grandchild', parentId: 'child')}]',
+          200,
+        );
+      }
+      return request.url.path.endsWith('/abort')
+          ? http.Response('false', 200)
+          : http.Response('true', 200);
+    });
+    final repository = SessionsRepository(
+      OpenCodeSessionsService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.delete(profile, _session());
+
+    expect(result, isA<Ok<void, SessionsFailure>>());
+    expect(
+      requests
+          .where((request) => request.method == 'DELETE')
+          .map((request) => request.url.path),
+      ['/session/grandchild', '/session/child', '/session/session-1'],
+    );
+  });
 }
 
 OpenCodeSession _session() => OpenCodeSession(
@@ -285,11 +344,12 @@ OpenCodeSession _session() => OpenCodeSession(
   updatedAt: DateTime.fromMillisecondsSinceEpoch(1000),
 );
 
-String _sessionJson(String id, {String? shareUrl}) =>
+String _sessionJson(String id, {String? shareUrl, String? parentId}) =>
     '''
 {"id":"$id","projectID":"project-1","directory":"/workspace/project",
 "title":"Session","time":{"created":1000,"updated":1000}
-${shareUrl == null ? '' : ',"share":{"url":"$shareUrl"}'}}
+${shareUrl == null ? '' : ',"share":{"url":"$shareUrl"}'}
+${parentId == null ? '' : ',"parentID":"$parentId"'}}
 ''';
 
 class _PasswordStore implements CredentialsStore {

@@ -138,7 +138,8 @@ class _ScriptedChatBackend {
 
 /// A minimal SSE transport whose byte stream is entirely test-controlled.
 class _ScriptedEventClient extends http.BaseClient {
-  final StreamController<List<int>> _controller = StreamController<List<int>>();
+  final StreamController<List<int>> _controller =
+      StreamController<List<int>>.broadcast();
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
@@ -485,6 +486,42 @@ void main() {
     expect(state, isA<ConversationReady>());
     expect((state as ConversationReady).messages, isEmpty);
   });
+
+  test(
+    'opening another session clears the previous transcript immediately',
+    () async {
+      backend.sessionStatusType = 'idle';
+      backend.restMessages = [
+        {
+          'info': {
+            'id': 'old-message',
+            'role': 'assistant',
+            'time': {'created': 1000},
+          },
+          'parts': [
+            {'type': 'text', 'text': 'Previous transcript'},
+          ],
+        },
+      ];
+      await viewModel.open(profile, session);
+      await _settle();
+      expect(viewModel.messages.value, isA<ConversationReady>());
+
+      final otherSession = OpenCodeSession(
+        id: 'session-2',
+        projectId: 'project-1',
+        directory: '/workspace/project',
+        title: 'Another session',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
+      );
+      backend.restMessages = [];
+      final opening = viewModel.open(profile, otherSession);
+
+      expect(viewModel.messages.value, isA<ConversationLoading>());
+      await opening;
+    },
+  );
 
   test('enqueuePrompt durably queues text and the coordinator dispatches it '
       'once idle, never bypassing the queue', () async {

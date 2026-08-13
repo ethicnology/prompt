@@ -183,11 +183,21 @@ class _SessionsScreenState extends State<SessionsScreen> {
     List<OpenCodeSession> sessions,
     List<OpenCodeProject> projects,
   ) {
+    final projectIdsWithSessions = sessions
+        .map((session) => session.projectId)
+        .toSet();
+    final filterProjects = projects
+        .where((project) => projectIdsWithSessions.contains(project.id))
+        .toList(growable: false);
+    final selectedProjectId =
+        projectIdsWithSessions.contains(_selectedProjectId)
+        ? _selectedProjectId
+        : null;
     final query = _searchController.text.trim().toLowerCase();
     final filtered = sessions
         .where((session) {
-          if (_selectedProjectId != null &&
-              session.projectId != _selectedProjectId) {
+          if (selectedProjectId != null &&
+              session.projectId != selectedProjectId) {
             return false;
           }
           if (query.isEmpty) {
@@ -217,15 +227,15 @@ class _SessionsScreenState extends State<SessionsScreen> {
       children: [
         _CatalogControls(
           searchController: _searchController,
-          projects: projects,
-          selectedProjectId: _selectedProjectId,
+          projects: filterProjects,
+          selectedProjectId: selectedProjectId,
           onSelectProject: (id) => setState(() => _selectedProjectId = id),
           onCreate: projects.isEmpty ? null : () => _createSession(projects),
         ),
         Expanded(
           child: primary.isEmpty
               ? _NoMatchingSessions(
-                  hasQuery: query.isNotEmpty || _selectedProjectId != null,
+                  hasQuery: query.isNotEmpty || selectedProjectId != null,
                   onClear: () {
                     _searchController.clear();
                     setState(() => _selectedProjectId = null);
