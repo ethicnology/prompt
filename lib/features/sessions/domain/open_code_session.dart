@@ -11,6 +11,9 @@ class OpenCodeSession {
     this.additions,
     this.deletions,
     this.shareUrl,
+    this.modelProviderId,
+    this.modelId,
+    this.agentName,
   });
 
   final String id;
@@ -24,4 +27,7 @@ class OpenCodeSession {
   final int? additions;
   final int? deletions;
   final String? shareUrl;
+  final String? modelProviderId;
+  final String? modelId;
+  final String? agentName;
 }

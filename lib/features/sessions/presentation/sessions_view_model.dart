@@ -101,6 +101,9 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
           additions: session.additions,
           deletions: session.deletions,
           shareUrl: session.shareUrl,
+          modelProviderId: session.modelProviderId,
+          modelId: session.modelId,
+          agentName: session.agentName,
         ),
       );
     }

@@ -78,13 +78,20 @@ class _ConversationScreenState extends State<ConversationScreen> {
   StreamSubscription<String>? _queueErrorSubscription;
   StreamSubscription<String>? _transcriptErrorSubscription;
   bool _showJumpToLatest = false;
-  PromptExecutionOptions _executionOptions = const PromptExecutionOptions();
+  late final ValueNotifier<PromptExecutionOptions> _executionOptions;
   OpenCodeSlashCommand? _selectedCommand;
   String? _voiceDraftPrefix;
 
   @override
   void initState() {
     super.initState();
+    _executionOptions = ValueNotifier(
+      PromptExecutionOptions(
+        modelProviderId: widget.session.modelProviderId,
+        modelId: widget.session.modelId,
+        agentName: widget.session.agentName,
+      ),
+    );
     _transcriptController.addListener(_updateJumpToLatestVisibility);
     widget.viewModel.open(widget.profile, widget.session);
     widget.capabilitiesViewModel?.load(widget.profile);
@@ -116,6 +123,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     widget.voiceViewModel?.state.removeListener(_applyVoiceState);
     unawaited(widget.voiceViewModel?.cancel());
     _composerController.dispose();
+    _executionOptions.dispose();
     _transcriptController
       ..removeListener(_updateJumpToLatestVisibility)
       ..dispose();
@@ -133,7 +141,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final queued = command == null
         ? await widget.viewModel.enqueuePrompt(
             text,
-            executionOptions: _executionOptions,
+            executionOptions: _executionOptions.value,
           )
         : await widget.viewModel.enqueueCommand(
             command.name,
@@ -194,9 +202,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
   ) {
     return PromptExecutionOptions(
       modelProviderId:
-          command.model?.providerId ?? _executionOptions.modelProviderId,
-      modelId: command.model?.modelId ?? _executionOptions.modelId,
-      agentName: command.agentName ?? _executionOptions.agentName,
+          command.model?.providerId ?? _executionOptions.value.modelProviderId,
+      modelId: command.model?.modelId ?? _executionOptions.value.modelId,
+      agentName: command.agentName ?? _executionOptions.value.agentName,
     );
   }
 
@@ -248,46 +256,54 @@ class _ConversationScreenState extends State<ConversationScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
             title: const Text('Prompt execution'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<OpenCodeModel?>(
-                  initialValue: model,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Model'),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Default')),
-                    ...capabilities.models
-                        .where((candidate) => candidate.isProviderConnected)
-                        .map(
-                          (candidate) => DropdownMenuItem(
-                            value: candidate,
-                            child: Text(
-                              candidate.name,
-                              overflow: TextOverflow.ellipsis,
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<OpenCodeModel?>(
+                    initialValue: model,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Model'),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Default'),
+                      ),
+                      ...capabilities.models
+                          .where((candidate) => candidate.isProviderConnected)
+                          .map(
+                            (candidate) => DropdownMenuItem(
+                              value: candidate,
+                              child: Text(
+                                candidate.name,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           ),
-                        ),
-                  ],
-                  onChanged: (value) => setDialogState(() => model = value),
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<OpenCodeAgent?>(
-                  initialValue: agent,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Agent'),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Default')),
-                    ...capabilities.agents.map(
-                      (candidate) => DropdownMenuItem(
-                        value: candidate,
-                        child: Text(candidate.name),
+                    ],
+                    onChanged: (value) => setDialogState(() => model = value),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<OpenCodeAgent?>(
+                    initialValue: agent,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Agent'),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Default'),
                       ),
-                    ),
-                  ],
-                  onChanged: (value) => setDialogState(() => agent = value),
-                ),
-              ],
+                      ...capabilities.agents.map(
+                        (candidate) => DropdownMenuItem(
+                          value: candidate,
+                          child: Text(candidate.name),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) => setDialogState(() => agent = value),
+                  ),
+                ],
+              ),
             ),
             actions: [
               TextButton(
@@ -310,14 +326,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
       },
     );
     if (selected != null && mounted) {
-      setState(() => _executionOptions = selected);
+      _executionOptions.value = selected;
     }
   }
 
   OpenCodeModel? _selectedModel(List<OpenCodeModel> models) {
     for (final model in models) {
-      if (model.providerId == _executionOptions.modelProviderId &&
-          model.id == _executionOptions.modelId) {
+      if (model.providerId == _executionOptions.value.modelProviderId &&
+          model.id == _executionOptions.value.modelId) {
         return model;
       }
     }
@@ -326,7 +342,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   OpenCodeAgent? _selectedAgent(List<OpenCodeAgent> agents) {
     for (final agent in agents) {
-      if (agent.name == _executionOptions.agentName) {
+      if (agent.name == _executionOptions.value.agentName) {
         return agent;
       }
     }
@@ -482,13 +498,73 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _artifactsPanel() => ValueListenableBuilder<SessionArtifactsState>(
-    valueListenable: widget.viewModel.artifacts,
-    builder: (context, state, _) => SessionArtifactsPanel(
-      state: state,
-      onRefresh: widget.viewModel.reloadArtifacts,
-    ),
+  Widget _artifactsPanel() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _executionPanel(),
+      const SizedBox(height: 8),
+      ValueListenableBuilder<SessionArtifactsState>(
+        valueListenable: widget.viewModel.artifacts,
+        builder: (context, state, _) => SessionArtifactsPanel(
+          state: state,
+          onRefresh: widget.viewModel.reloadArtifacts,
+        ),
+      ),
+    ],
   );
+
+  Widget _executionPanel() {
+    final capabilitiesViewModel = widget.capabilitiesViewModel;
+    if (capabilitiesViewModel == null) {
+      return const _ExecutionPanel(
+        modelName: 'Unavailable',
+        agentName: 'Unavailable',
+      );
+    }
+    return ValueListenableBuilder<PromptExecutionOptions>(
+      valueListenable: _executionOptions,
+      builder: (context, options, _) =>
+          ValueListenableBuilder<CapabilitiesUiState>(
+            valueListenable: capabilitiesViewModel,
+            builder: (context, state, _) {
+              final capabilities = state is CapabilitiesReady
+                  ? state.capabilities
+                  : null;
+              final selectedModel = capabilities == null
+                  ? null
+                  : _selectedModel(capabilities.models);
+              final selectedAgent = capabilities == null
+                  ? null
+                  : _selectedAgent(capabilities.agents);
+              final configuredModel = options.modelId;
+              final modelName =
+                  selectedModel?.name ??
+                  (configuredModel == null
+                      ? 'OpenCode default'
+                      : '${options.modelProviderId}/$configuredModel');
+              final agentName =
+                  selectedAgent?.name ??
+                  options.agentName ??
+                  'OpenCode default';
+              return _ExecutionPanel(
+                modelName: modelName,
+                agentName: agentName,
+                loading:
+                    state is CapabilitiesIdle || state is CapabilitiesLoading,
+                failure: state is CapabilitiesError
+                    ? state.failure.message
+                    : null,
+                onSelect: capabilities == null
+                    ? null
+                    : () => _selectExecutionOptions(capabilities),
+                onRetry: state is CapabilitiesError
+                    ? capabilitiesViewModel.retry
+                    : null,
+              );
+            },
+          ),
+    );
+  }
 
   Future<void> _showArtifacts() => showModalBottomSheet<void>(
     context: context,
@@ -505,6 +581,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
             builder: (context, state, _) => ListView(
               controller: scrollController,
               children: [
+                _executionPanel(),
+                const SizedBox(height: 8),
                 SessionArtifactsPanel(
                   state: state,
                   onRefresh: widget.viewModel.reloadArtifacts,
@@ -576,20 +654,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ],
         ),
         actions: [
-          if (widget.capabilitiesViewModel case final capabilitiesViewModel?)
-            ValueListenableBuilder<CapabilitiesUiState>(
-              valueListenable: capabilitiesViewModel,
-              builder: (context, state, _) {
-                if (state is! CapabilitiesReady) {
-                  return const SizedBox.shrink();
-                }
-                return IconButton(
-                  onPressed: () => _selectExecutionOptions(state.capabilities),
-                  icon: const Icon(Icons.tune_rounded),
-                  tooltip: 'Choose model and agent',
-                );
-              },
-            ),
           IconButton(
             onPressed: _showArtifacts,
             icon: const Icon(Icons.assignment_outlined),
@@ -717,16 +781,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           capabilitiesState is CapabilitiesReady
                           ? capabilitiesState.capabilities
                           : null;
-                      final model = capabilities == null
-                          ? null
-                          : _selectedModel(capabilities.models);
-                      final agent = capabilities == null
-                          ? null
-                          : _selectedAgent(capabilities.agents);
-                      final executionLabel = capabilities == null
-                          ? null
-                          : 'Model: ${model?.name ?? 'Default'} · '
-                                'Agent: ${agent?.name ?? 'Default'}';
                       return Composer(
                         controller: _composerController,
                         command: _selectedCommand,
@@ -746,15 +800,88 @@ class _ConversationScreenState extends State<ConversationScreen> {
                             widget.voiceViewModel?.finishSegmentFromUserAction,
                         onVoiceStop:
                             widget.voiceViewModel?.stopModeFromUserAction,
-                        executionLabel: executionLabel,
-                        onSelectExecution: capabilities == null
-                            ? null
-                            : () => _selectExecutionOptions(capabilities),
                       );
                     },
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ExecutionPanel extends StatelessWidget {
+  const _ExecutionPanel({
+    required this.modelName,
+    required this.agentName,
+    this.loading = false,
+    this.failure,
+    this.onSelect,
+    this.onRetry,
+  });
+
+  final String modelName;
+  final String agentName;
+  final bool loading;
+  final String? failure;
+  final VoidCallback? onSelect;
+  final Future<void> Function()? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              child: Text(
+                'Execution',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.memory_rounded),
+              title: const Text('Model'),
+              subtitle: Text(modelName),
+              trailing: loading
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : onSelect == null
+                  ? null
+                  : const Icon(Icons.chevron_right_rounded),
+              onTap: onSelect,
+            ),
+            ListTile(
+              leading: const Icon(Icons.smart_toy_outlined),
+              title: const Text('Agent'),
+              subtitle: Text(agentName),
+              trailing: onSelect == null
+                  ? null
+                  : const Icon(Icons.chevron_right_rounded),
+              onTap: onSelect,
+            ),
+            if (failure case final failure?)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(failure)),
+                    TextButton(
+                      onPressed: onRetry == null
+                          ? null
+                          : () => unawaited(onRetry!()),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

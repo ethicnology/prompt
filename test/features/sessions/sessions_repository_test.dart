@@ -69,6 +69,22 @@ void main() {
     expect(sessions.map((session) => session.id), ['alpha-only', 'older']);
   });
 
+  test('maps the session model and agent reported by OpenCode', () async {
+    final record = OpenCodeSessionRecord.fromJson({
+      'id': 'session-1',
+      'projectID': 'project-1',
+      'directory': '/workspace/project',
+      'title': 'Configured session',
+      'agent': 'build',
+      'model': {'providerID': 'anthropic', 'id': 'claude-sonnet-4-6'},
+      'time': {'created': 1000, 'updated': 2000},
+    });
+
+    expect(record.modelProviderId, 'anthropic');
+    expect(record.modelId, 'claude-sonnet-4-6');
+    expect(record.agentName, 'build');
+  });
+
   test('keeps the sessions that loaded when one project fails', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/project') {

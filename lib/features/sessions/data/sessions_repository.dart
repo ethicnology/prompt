@@ -329,6 +329,9 @@ class SessionsRepository {
       additions: record.additions,
       deletions: record.deletions,
       shareUrl: _safeShareUrl(record.shareUrl),
+      modelProviderId: record.modelProviderId,
+      modelId: record.modelId,
+      agentName: record.agentName,
     );
   }
 }

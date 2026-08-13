@@ -241,6 +241,9 @@ class OpenCodeSessionRecord {
     this.additions,
     this.deletions,
     this.shareUrl,
+    this.modelProviderId,
+    this.modelId,
+    this.agentName,
   });
 
   factory OpenCodeSessionRecord.fromJson(Map<String, dynamic> json) {
@@ -267,6 +270,8 @@ class OpenCodeSessionRecord {
     final summaryMap = summary is Map<String, dynamic> ? summary : null;
     final share = json['share'];
     final shareMap = share is Map<String, dynamic> ? share : null;
+    final model = json['model'];
+    final modelMap = model is Map<String, dynamic> ? model : null;
     return OpenCodeSessionRecord(
       id: id,
       projectId: projectId,
@@ -279,6 +284,9 @@ class OpenCodeSessionRecord {
       additions: summaryMap?['additions'] as int?,
       deletions: summaryMap?['deletions'] as int?,
       shareUrl: shareMap?['url'] as String?,
+      modelProviderId: modelMap?['providerID'] as String?,
+      modelId: modelMap?['id'] as String?,
+      agentName: json['agent'] as String?,
     );
   }
 
@@ -293,4 +301,7 @@ class OpenCodeSessionRecord {
   final int? additions;
   final int? deletions;
   final String? shareUrl;
+  final String? modelProviderId;
+  final String? modelId;
+  final String? agentName;
 }

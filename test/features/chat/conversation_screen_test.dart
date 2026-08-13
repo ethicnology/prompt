@@ -21,6 +21,8 @@ import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
 import 'package:prompt/features/capabilities/data/capabilities_repository.dart';
 import 'package:prompt/features/capabilities/data/opencode_capabilities_service.dart';
 import 'package:prompt/features/capabilities/domain/open_code_capabilities.dart';
+import 'package:prompt/features/capabilities/domain/open_code_agent.dart';
+import 'package:prompt/features/capabilities/domain/open_code_model.dart';
 import 'package:prompt/features/capabilities/domain/open_code_slash_command.dart';
 import 'package:prompt/features/capabilities/presentation/capabilities_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
@@ -796,6 +798,90 @@ void main() {
     expect(find.text('Review diff'), findsOneWidget);
     expect(find.text('lib/example.dart'), findsOneWidget);
     expect(find.byType(SelectableText), findsWidgets);
+  });
+
+  testWidgets('shows and changes model and agent in session artifacts', (
+    tester,
+  ) async {
+    viewModel.artifacts.value = const SessionArtifactsReady(
+      todos: [],
+      diffs: [],
+    );
+    final capabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    capabilities.value = CapabilitiesReady(
+      const OpenCodeCapabilities(
+        models: [
+          OpenCodeModel(
+            providerId: 'anthropic',
+            id: 'claude-sonnet',
+            name: 'Claude Sonnet',
+            isProviderConnected: true,
+          ),
+        ],
+        agents: [
+          OpenCodeAgent(
+            name: 'build',
+            mode: OpenCodeAgentMode.primary,
+            isBuiltIn: true,
+          ),
+        ],
+        commands: [],
+      ),
+    );
+    await pumpScreen(tester, capabilitiesViewModel: capabilities);
+    capabilities.value = const CapabilitiesReady(
+      OpenCodeCapabilities(
+        models: [
+          OpenCodeModel(
+            providerId: 'anthropic',
+            id: 'claude-sonnet',
+            name: 'Claude Sonnet',
+            isProviderConnected: true,
+          ),
+        ],
+        agents: [
+          OpenCodeAgent(
+            name: 'build',
+            mode: OpenCodeAgentMode.primary,
+            isBuiltIn: true,
+          ),
+        ],
+        commands: [],
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Session artifacts'));
+    await tester.pumpAndSettle();
+    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('OpenCode default'), findsNWidgets(2));
+
+    await tester.tap(find.text('Model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Default').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Claude Sonnet').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Default').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('build').last);
+    await tester.ensureVisible(find.text('Apply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Claude Sonnet'), findsOneWidget);
+    expect(find.text('build'), findsOneWidget);
+    capabilities.dispose();
   });
 
   testWidgets('opens artifacts in a scrollable sheet on a narrow layout', (
