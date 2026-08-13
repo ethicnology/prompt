@@ -28,7 +28,7 @@ extension ConnectionFailureMessage on ConnectionFailure {
       ConnectionFailure.unauthorized =>
         'The server rejected these credentials.',
       ConnectionFailure.unavailable =>
-        'Prompt cannot reach this server. Check WireGuard and the address.',
+        'Prompt cannot reach this server. Check WireGuard or Tailscale and the address.',
       ConnectionFailure.unexpectedResponse =>
         'The server responded, but is not ready for Prompt.',
       ConnectionFailure.secureStorageUnavailable =>

@@ -5,7 +5,7 @@ extension WorkspaceFailureMessage on WorkspaceFailure {
     WorkspaceFailure.unauthorized =>
       'The server rejected the saved credentials.',
     WorkspaceFailure.unavailable =>
-      'Prompt cannot reach the server. Check WireGuard and try again.',
+      'Prompt cannot reach the server. Check WireGuard or Tailscale and try again.',
     WorkspaceFailure.unexpectedResponse =>
       'The server returned workspace data Prompt could not read.',
   };

@@ -23,7 +23,7 @@ extension ChatFailureMessage on ChatFailure {
     return switch (this) {
       ChatFailure.unauthorized => 'The server rejected the saved credentials.',
       ChatFailure.unavailable =>
-        'Prompt cannot reach the server. Check WireGuard and try again.',
+        'Prompt cannot reach the server. Check WireGuard or Tailscale and try again.',
       ChatFailure.unexpectedResponse =>
         'The server returned a conversation Prompt could not read.',
     };

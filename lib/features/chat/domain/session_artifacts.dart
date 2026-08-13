@@ -70,7 +70,7 @@ extension SessionArtifactsFailureMessage on SessionArtifactsFailure {
       SessionArtifactsFailure.unauthorized =>
         'The server rejected the saved credentials.',
       SessionArtifactsFailure.unavailable =>
-        'Prompt cannot reach the server. Check WireGuard and try again.',
+        'Prompt cannot reach the server. Check WireGuard or Tailscale and try again.',
       SessionArtifactsFailure.unexpectedResponse =>
         'The server returned session artifacts Prompt could not read.',
     };

@@ -32,7 +32,7 @@ extension SessionsFailureMessage on SessionsFailure {
       SessionsFailure.unauthorized =>
         'The server rejected the saved credentials.',
       SessionsFailure.unavailable =>
-        'Prompt cannot reach the server. Check WireGuard and try again.',
+        'Prompt cannot reach the server. Check WireGuard or Tailscale and try again.',
       SessionsFailure.unexpectedResponse =>
         'The server returned sessions Prompt could not read.',
     };

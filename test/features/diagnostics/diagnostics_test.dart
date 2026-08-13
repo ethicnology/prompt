@@ -216,6 +216,47 @@ void main() {
     expect(find.text('private-formatter'), findsNothing);
     viewModel.dispose();
   });
+
+  testWidgets('refreshes server settings with pull to refresh', (tester) async {
+    var calls = 0;
+    final viewModel = DiagnosticsViewModel(
+      repositoryFor(
+        MockClient((request) async {
+          calls++;
+          return switch (request.url.path) {
+            '/global/health' => http.Response(
+              jsonEncode({'healthy': true, 'version': '1.2.3'}),
+              200,
+            ),
+            '/mcp' => http.Response('{}', 200),
+            '/lsp' || '/formatter' => http.Response('[]', 200),
+            _ => http.Response('', 404),
+          };
+        }),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DiagnosticsScreen(
+          profile: profile,
+          viewModel: viewModel,
+          localNotificationService: LocalNotificationService(
+            const _UnavailableNotifications(),
+          ),
+          onReconnect: () async => true,
+          onDisconnect: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+    await tester.drag(find.byType(ListView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+
+    expect(calls, 8);
+    viewModel.dispose();
+  });
 }
 
 class _PasswordStore implements CredentialsStore {

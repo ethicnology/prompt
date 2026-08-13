@@ -54,55 +54,50 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Server settings'),
-        actions: [
-          IconButton(
-            onPressed: widget.viewModel.refresh,
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh diagnostics',
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Server settings')),
       body: ValueListenableBuilder<DiagnosticsUiState>(
         valueListenable: widget.viewModel,
-        builder: (context, state, _) => ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _ConnectionCard(
-              profile: widget.profile,
-              reconnecting: _reconnecting,
-              onReconnect: _reconnecting ? null : _reconnect,
-              onDisconnect: widget.onDisconnect,
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.notifications_outlined),
-                title: const Text('Notifications'),
-                subtitle: const Text('Opt in to generic session alerts'),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => NotificationSettingsScreen(
-                      service: widget.localNotificationService,
+        builder: (context, state, _) => RefreshIndicator(
+          onRefresh: widget.viewModel.refresh,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            children: [
+              _ConnectionCard(
+                profile: widget.profile,
+                reconnecting: _reconnecting,
+                onReconnect: _reconnecting ? null : _reconnect,
+                onDisconnect: widget.onDisconnect,
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.notifications_outlined),
+                  title: const Text('Notifications'),
+                  subtitle: const Text('Opt in to generic session alerts'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => NotificationSettingsScreen(
+                        service: widget.localNotificationService,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            switch (state) {
-              DiagnosticsIdle() ||
-              DiagnosticsLoading() => const _LoadingDiagnostics(),
-              DiagnosticsReady(:final snapshot) => _DiagnosticsSummary(
-                snapshot: snapshot,
-              ),
-              DiagnosticsError() => _DiagnosticsUnavailable(
-                onRetry: widget.viewModel.refresh,
-              ),
-            },
-          ],
+              const SizedBox(height: 16),
+              switch (state) {
+                DiagnosticsIdle() ||
+                DiagnosticsLoading() => const _LoadingDiagnostics(),
+                DiagnosticsReady(:final snapshot) => _DiagnosticsSummary(
+                  snapshot: snapshot,
+                ),
+                DiagnosticsError() => _DiagnosticsUnavailable(
+                  onRetry: widget.viewModel.refresh,
+                ),
+              },
+            ],
+          ),
         ),
       ),
     );

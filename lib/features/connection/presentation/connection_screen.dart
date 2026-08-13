@@ -77,7 +77,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       return 'Use a complete private server address.';
     }
     if (origin.scheme == 'http' && kIsWeb) {
-      return 'Web browsers require HTTPS, even through WireGuard.';
+      return 'Web browsers require HTTPS, even through WireGuard or Tailscale.';
     }
     if (!ConnectionOriginPolicy.supports(origin)) {
       return 'HTTP is only permitted for a private WireGuard or Tailscale address.';
@@ -132,7 +132,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'Connect to your OpenCode server through WireGuard.',
+                            'Connect to your OpenCode server through WireGuard or Tailscale.',
                             style: theme.textTheme.bodyLarge,
                             textAlign: TextAlign.center,
                           ),
