@@ -3,8 +3,8 @@ import 'dart:math';
 
 import '../../../core/async/result.dart';
 import '../../../data/local/prompt_database.dart' as db;
-import '../../connection/domain/server_profile.dart';
-import '../../sessions/domain/open_code_session.dart';
+import '../../connection/connection.dart';
+import '../../sessions/sessions.dart';
 import '../domain/queue_failure.dart';
 import '../domain/prompt_execution_options.dart';
 import '../domain/queued_prompt.dart';

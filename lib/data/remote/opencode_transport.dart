@@ -1,8 +1,7 @@
 import 'package:http/http.dart' as http;
 
-import '../../core/network/connection_origin_policy.dart';
 import '../../core/network/opencode_authorization.dart';
-import '../../features/connection/domain/server_profile.dart';
+import '../../features/connection/connection.dart';
 
 class InvalidOpenCodeOrigin implements Exception {
   const InvalidOpenCodeOrigin();

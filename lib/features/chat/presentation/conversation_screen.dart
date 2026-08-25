@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../connection/domain/server_profile.dart';
+import '../../../core/ui/ui.dart';
+import '../../connection/connection.dart';
 import '../../capabilities/capabilities.dart';
 import '../../queue/queue.dart';
-import '../../sessions/domain/open_code_session.dart';
-import '../../sessions/domain/session_load_result.dart';
+import '../../sessions/sessions.dart';
 import '../../voice/voice.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
@@ -73,7 +73,8 @@ class ConversationScreen extends StatefulWidget {
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
-class _ConversationScreenState extends State<ConversationScreen> {
+class _ConversationScreenState extends State<ConversationScreen>
+    with WidgetsBindingObserver {
   final _composerController = TextEditingController();
   final _transcriptController = ScrollController();
   StreamSubscription<String>? _queueErrorSubscription;
@@ -86,6 +87,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _executionOptions = ValueNotifier(
       PromptExecutionOptions(
         modelProviderId: widget.session.modelProviderId,
@@ -119,6 +121,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _queueErrorSubscription?.cancel();
     _transcriptErrorSubscription?.cancel();
     widget.voiceViewModel?.state.removeListener(_applyVoiceState);
@@ -130,6 +133,19 @@ class _ConversationScreenState extends State<ConversationScreen> {
       ..dispose();
     widget.viewModel.leaveSession(widget.session);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    } else if (state == AppLifecycleState.resumed && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   Future<void> _submitComposer() async {
@@ -201,7 +217,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (state is VoiceIdle || state is VoiceUnavailable) {
       _voiceDraftPrefix = null;
     }
-    setState(() {});
   }
 
   PromptExecutionOptions _commandExecutionOptions(
@@ -486,6 +501,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
         ),
+        if (_showJumpToLatest)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 8,
+            child: Center(child: _jumpButton()),
+          ),
         Positioned(right: 16, bottom: 16, child: _composerActionColumn()),
       ],
     );
@@ -496,15 +518,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
     Widget buildActions(List<OpenCodeSlashCommand> commands) => Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_showJumpToLatest) ...[
-          FloatingActionButton.small(
-            heroTag: 'scroll-to-latest',
-            onPressed: _jumpToLatest,
-            tooltip: 'Scroll to latest message',
-            child: const Icon(Icons.south),
-          ),
-          const SizedBox(height: 8),
-        ],
         if (widget.voiceViewModel case final voiceViewModel?)
           ValueListenableBuilder<VoiceUiState>(
             valueListenable: voiceViewModel.state,
@@ -536,12 +549,38 @@ class _ConversationScreenState extends State<ConversationScreen> {
           ),
         ),
         if (commands.isNotEmpty)
-          FloatingActionButton.small(
-            heroTag: 'choose-slash-command',
-            onPressed: () => _selectCommand(commands),
-            tooltip: 'Choose slash command',
-            child: const Icon(Icons.code_rounded),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: FloatingActionButton.small(
+              heroTag: 'choose-slash-command',
+              onPressed: () => _selectCommand(commands),
+              tooltip: 'Choose slash command',
+              child: const Icon(Icons.code_rounded),
+            ),
           ),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _composerController,
+          builder: (context, value, _) =>
+              ValueListenableBuilder<List<PromptAttachment>>(
+                valueListenable: widget.viewModel.attachments,
+                builder: (context, selected, _) {
+                  final enabled =
+                      value.text.trim().isNotEmpty ||
+                      _selectedCommand != null ||
+                      selected.isNotEmpty;
+                  return FloatingActionButton.small(
+                    heroTag: 'queue-prompt',
+                    onPressed: enabled
+                        ? () => unawaited(_submitComposer())
+                        : null,
+                    tooltip: _selectedCommand == null
+                        ? 'Queue this prompt'
+                        : 'Queue command',
+                    child: const Icon(Icons.send),
+                  );
+                },
+              ),
+        ),
       ],
     );
     if (capabilitiesViewModel == null) {
@@ -555,7 +594,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
-  Widget _artifactsPanel() => Column(
+  Widget _jumpButton() => FloatingActionButton.small(
+    heroTag: 'scroll-to-latest',
+    onPressed: _jumpToLatest,
+    tooltip: 'Scroll to latest message',
+    child: const Icon(Icons.south),
+  );
+
+  Widget _artifactsPanel({bool lazy = false}) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       _executionPanel(),
@@ -565,6 +611,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
         builder: (context, state, _) => SessionArtifactsPanel(
           state: state,
           onRefresh: widget.viewModel.reloadArtifacts,
+          lazy: lazy,
         ),
       ),
     ],
@@ -640,9 +687,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
               children: [
                 _executionPanel(),
                 const SizedBox(height: 8),
-                SessionArtifactsPanel(
-                  state: state,
-                  onRefresh: widget.viewModel.reloadArtifacts,
+                SizedBox(
+                  height: 560,
+                  child: SessionArtifactsPanel(
+                    state: state,
+                    onRefresh: widget.viewModel.reloadArtifacts,
+                    lazy: true,
+                  ),
                 ),
               ],
             ),
@@ -739,11 +790,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
             },
           ),
           Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
+            child: PromptAdaptiveBuilder(
+              builder: (context, sizeClass) {
                 // A context panel only becomes persistent once it can retain
                 // a readable transcript width. Phones keep a one-column flow.
-                if (constraints.maxWidth < 900) {
+                if (!sizeClass.isDesktop) {
                   return _transcriptPanel();
                 }
                 return Row(
@@ -754,7 +805,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       width: 320,
                       child: SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                        child: _artifactsPanel(),
+                        child: SizedBox(
+                          height: 560,
+                          child: _artifactsPanel(lazy: true),
+                        ),
                       ),
                     ),
                   ],
@@ -851,59 +905,57 @@ class _ExecutionPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+    return PromptPanel(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Text(
+              'Execution',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.memory_rounded),
+            title: const Text('Model'),
+            subtitle: Text(modelName),
+            trailing: loading
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : onSelect == null
+                ? null
+                : const Icon(Icons.chevron_right_rounded),
+            onTap: onSelect,
+          ),
+          ListTile(
+            leading: const Icon(Icons.smart_toy_outlined),
+            title: const Text('Agent'),
+            subtitle: Text(agentName),
+            trailing: onSelect == null
+                ? null
+                : const Icon(Icons.chevron_right_rounded),
+            onTap: onSelect,
+          ),
+          if (failure case final failure?)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-              child: Text(
-                'Execution',
-                style: Theme.of(context).textTheme.titleMedium,
+              padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+              child: Row(
+                children: [
+                  Expanded(child: Text(failure)),
+                  TextButton(
+                    onPressed: onRetry == null
+                        ? null
+                        : () => unawaited(onRetry!()),
+                    child: const Text('Retry'),
+                  ),
+                ],
               ),
             ),
-            ListTile(
-              leading: const Icon(Icons.memory_rounded),
-              title: const Text('Model'),
-              subtitle: Text(modelName),
-              trailing: loading
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : onSelect == null
-                  ? null
-                  : const Icon(Icons.chevron_right_rounded),
-              onTap: onSelect,
-            ),
-            ListTile(
-              leading: const Icon(Icons.smart_toy_outlined),
-              title: const Text('Agent'),
-              subtitle: Text(agentName),
-              trailing: onSelect == null
-                  ? null
-                  : const Icon(Icons.chevron_right_rounded),
-              onTap: onSelect,
-            ),
-            if (failure case final failure?)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(failure)),
-                    TextButton(
-                      onPressed: onRetry == null
-                          ? null
-                          : () => unawaited(onRetry!()),
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
   }

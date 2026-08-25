@@ -311,6 +311,61 @@ void main() {
     expect(messages.single.role, ChatMessageRole.assistant);
   });
 
+  test('removes a message immediately when SSE reports its removal', () async {
+    await viewModel.open(profile, session);
+    await _settleLive();
+
+    eventClient.emit('message.updated', {
+      'info': {'id': 'msg-1', 'sessionID': session.id, 'role': 'assistant'},
+    });
+    eventClient.emit('message.part.updated', {
+      'part': {
+        'id': 'part-1',
+        'messageID': 'msg-1',
+        'sessionID': session.id,
+        'type': 'text',
+        'text': 'Transient',
+      },
+    });
+    await _settleLive();
+    eventClient.emit('message.removed', {
+      'sessionID': session.id,
+      'messageID': 'msg-1',
+    });
+    await _settleLive();
+
+    expect((viewModel.messages.value as ConversationReady).messages, isEmpty);
+  });
+
+  test('removes a part immediately without a REST reload', () async {
+    backend.restMessages = [
+      {
+        'info': {
+          'id': 'msg-1',
+          'role': 'assistant',
+          'time': {'created': 1000},
+        },
+        'parts': [
+          {'id': 'part-1', 'type': 'text', 'text': 'Loaded'},
+        ],
+      },
+    ];
+    await viewModel.open(profile, session);
+    await _settleLive();
+
+    eventClient.emit('message.part.removed', {
+      'sessionID': session.id,
+      'messageID': 'msg-1',
+      'partID': 'part-1',
+    });
+    await _settleLive();
+
+    expect(
+      (viewModel.messages.value as ConversationReady).messages.single.details,
+      isEmpty,
+    );
+  });
+
   test('a live update for a new message is added alongside the REST history '
       'instead of discarding it', () async {
     backend.sessionStatusType = 'idle';
@@ -399,6 +454,60 @@ void main() {
       final messages = (viewModel.messages.value as ConversationReady).messages;
       final detail = messages.single.details.whereType<ChatToolDetail>().single;
       expect(detail.output, 'the loaded tool output');
+    },
+  );
+
+  test(
+    'keeps a structured subagent payload when a live status omits it',
+    () async {
+      backend.sessionStatusType = 'idle';
+      backend.restMessages = [
+        {
+          'info': {
+            'id': 'msg-0',
+            'role': 'assistant',
+            'time': {'created': 1000},
+          },
+          'parts': [
+            {
+              'id': 'part-task',
+              'type': 'tool',
+              'tool': 'task',
+              'state': {
+                'status': 'completed',
+                'input': {
+                  'description': 'Review changes',
+                  'prompt': 'Inspect the diff',
+                  'subagent_type': 'reviewer',
+                },
+                'output':
+                    '<task state="completed"><task_result>Looks good</task_result></task>',
+              },
+            },
+          ],
+        },
+      ];
+
+      await viewModel.open(profile, session);
+      await _settleLive();
+
+      eventClient.emit('message.part.updated', {
+        'part': {
+          'id': 'part-task',
+          'messageID': 'msg-0',
+          'sessionID': session.id,
+          'type': 'tool',
+          'tool': 'task',
+          'state': {'status': 'completed'},
+        },
+      });
+      await _settleLive();
+
+      final messages = (viewModel.messages.value as ConversationReady).messages;
+      final detail = messages.single.details.whereType<ChatToolDetail>().single;
+      final task = detail.presentation as ChatTaskPresentation;
+      expect(task.description, 'Review changes');
+      expect(task.result, 'Looks good');
     },
   );
 

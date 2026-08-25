@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -63,6 +64,37 @@ void main() {
     expect(messages.last.text, 'Here is an explanation.');
   });
 
+  test(
+    'a newer concurrent load cannot be overwritten by an older response',
+    () async {
+      final firstResponse = Completer<http.Response>();
+      final secondResponse = Completer<http.Response>();
+      var requestCount = 0;
+      final client = MockClient((_) {
+        requestCount++;
+        return requestCount == 1 ? firstResponse.future : secondResponse.future;
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final olderLoad = repository.load(profile, session);
+      final newerLoad = repository.load(profile, session);
+      await _waitFor(() => requestCount == 2);
+
+      secondResponse.complete(_messageResponse('newer'));
+      await newerLoad;
+      firstResponse.complete(_messageResponse('older'));
+      await olderLoad;
+
+      expect(
+        repository.conversationUpdates.value.messages.single.text,
+        'newer',
+      );
+    },
+  );
+
   test('maps rejected requests to an authorization failure', () async {
     final client = MockClient((_) async => http.Response('', 401));
     final repository = ChatRepository(
@@ -75,6 +107,509 @@ void main() {
     expect(result, isA<ChatLoadFailed>());
     expect((result as ChatLoadFailed).failure, ChatFailure.unauthorized);
   });
+
+  test('maps structured tool payloads before generic bodies are bounded', () async {
+    final client = MockClient((request) async {
+      return http.Response(
+        jsonEncode([
+          {
+            'info': {
+              'id': 'assistant-1',
+              'role': 'assistant',
+              'time': {'created': 2000},
+            },
+            'parts': [
+              {
+                'id': 'todo-1',
+                'type': 'tool',
+                'tool': 'todowrite',
+                'state': {
+                  'status': 'completed',
+                  'input': {
+                    'todos': [
+                      {
+                        'content': '**Ship** it',
+                        'status': 'completed',
+                        'priority': 'high',
+                      },
+                    ],
+                  },
+                  'output':
+                      '[{"content":"ignored","status":"pending","priority":"low"}]',
+                },
+              },
+              {
+                'id': 'task-1',
+                'type': 'tool',
+                'tool': 'task',
+                'state': {
+                  'status': 'completed',
+                  'input': {
+                    'description': 'Review changes',
+                    'prompt': '**Check** the diff',
+                    'subagent_type': 'reviewer',
+                    'background': true,
+                  },
+                  'output':
+                      '<task id="x" state="completed"><summary>Done</summary>'
+                      '<task_result>**Looks good**\n\n```dart\n**literal**\n```</task_result></task>',
+                },
+              },
+            ],
+          },
+        ]),
+        200,
+      );
+    });
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.load(profile, session);
+    final details = (result as ChatLoaded).messages.single.details;
+    final todos = details.first as ChatToolDetail;
+    final task = details.last as ChatToolDetail;
+    expect(
+      (todos.presentation as ChatTodoPresentation).items.single.content,
+      '**Ship** it',
+    );
+    expect(
+      (task.presentation as ChatTaskPresentation).description,
+      'Review changes',
+    );
+    expect(
+      (task.presentation as ChatTaskPresentation).result,
+      contains('**Looks good**'),
+    );
+    expect(
+      (task.presentation as ChatTaskPresentation).result,
+      isNot(contains('<task_result>')),
+    );
+    expect(
+      (task.presentation as ChatTaskPresentation).result,
+      contains('**literal**'),
+    );
+  });
+
+  test(
+    'normalizes every generic OpenCode tool family without raw payloads',
+    () async {
+      final parts = <Map<String, dynamic>>[
+        {
+          'id': 'shell',
+          'type': 'tool',
+          'tool': 'shell',
+          'state': {
+            'status': 'completed',
+            'input': {'command': 'pwd', 'workdir': '/workspace'},
+            'output': '/workspace',
+            'metadata': {'exit': 0},
+          },
+        },
+        {
+          'id': 'bash',
+          'type': 'tool',
+          'tool': 'bash',
+          'state': {
+            'status': 'completed',
+            'input': {'command': 'true'},
+            'output': '(no output)',
+            'metadata': {'exit': 0},
+          },
+        },
+        {
+          'id': 'read',
+          'type': 'tool',
+          'tool': 'read',
+          'state': {
+            'status': 'completed',
+            'input': {'filePath': '/workspace'},
+            'output':
+                '<path>/workspace</path>\n<type>directory</type>\n'
+                '<entries>a.dart\nb.dart</entries>',
+          },
+        },
+        {
+          'id': 'glob',
+          'type': 'tool',
+          'tool': 'glob',
+          'state': {
+            'status': 'completed',
+            'input': {'pattern': '*.dart', 'path': 'lib'},
+            'output': '/workspace/lib/a.dart\n/workspace/lib/b.dart',
+            'metadata': {'count': 2},
+          },
+        },
+        {
+          'id': 'grep',
+          'type': 'tool',
+          'tool': 'grep',
+          'state': {
+            'status': 'completed',
+            'input': {'pattern': 'TODO', 'path': 'lib'},
+            'output': 'Found 1 matches\nlib/a.dart:\n  Line 2: TODO',
+            'metadata': {'matches': 1},
+          },
+        },
+        {
+          'id': 'edit',
+          'type': 'tool',
+          'tool': 'edit',
+          'state': {
+            'status': 'completed',
+            'input': {
+              'filePath': 'lib/a.dart',
+              'oldString': 'a',
+              'newString': 'b',
+            },
+            'output': 'Edit applied',
+            'metadata': {'diff': '-a\n+b'},
+          },
+        },
+        {
+          'id': 'write',
+          'type': 'tool',
+          'tool': 'write',
+          'state': {
+            'status': 'completed',
+            'input': {'filePath': 'lib/new.dart', 'content': 'void main() {}'},
+            'output': 'Wrote file successfully.',
+          },
+        },
+        {
+          'id': 'apply_patch',
+          'type': 'tool',
+          'tool': 'apply_patch',
+          'state': {
+            'status': 'completed',
+            'input': {'patchText': 'raw patch input'},
+            'metadata': {
+              'files': [
+                {'patch': '@@ -1 +1 @@\n-old\n+new'},
+              ],
+            },
+          },
+        },
+        {
+          'id': 'question',
+          'type': 'tool',
+          'tool': 'question',
+          'state': {
+            'status': 'completed',
+            'input': {
+              'questions': [
+                {
+                  'question': 'Continue?',
+                  'header': 'Choice',
+                  'options': [
+                    {'label': 'Yes', 'description': 'Continue now'},
+                  ],
+                },
+              ],
+            },
+            'metadata': {
+              'answers': [
+                ['Yes'],
+              ],
+            },
+          },
+        },
+        {
+          'id': 'webfetch',
+          'type': 'tool',
+          'tool': 'webfetch',
+          'state': {
+            'status': 'completed',
+            'input': {'url': 'https://example.com', 'format': 'markdown'},
+            'output': '# Example',
+          },
+        },
+        {
+          'id': 'websearch',
+          'type': 'tool',
+          'tool': 'websearch',
+          'state': {
+            'status': 'completed',
+            'input': {'query': 'Flutter'},
+            'output': 'Flutter result',
+            'metadata': {'provider': 'exa'},
+          },
+        },
+        {
+          'id': 'skill',
+          'type': 'tool',
+          'tool': 'skill',
+          'state': {
+            'status': 'completed',
+            'input': {'name': 'mobile'},
+            'output':
+                '<skill_content name="mobile"># Instructions</skill_content>',
+          },
+        },
+        {
+          'id': 'lsp',
+          'type': 'tool',
+          'tool': 'lsp',
+          'state': {
+            'status': 'completed',
+            'input': {
+              'operation': 'documentSymbol',
+              'filePath': 'lib/a.dart',
+              'line': 1,
+              'character': 1,
+            },
+            'output': '[{"name":"Widget","kind":5}]',
+          },
+        },
+        {
+          'id': 'plan_exit',
+          'type': 'tool',
+          'tool': 'plan_exit',
+          'state': {
+            'status': 'completed',
+            'input': <String, dynamic>{},
+            'output': 'Plan approved',
+          },
+        },
+        {
+          'id': 'execute',
+          'type': 'tool',
+          'tool': 'execute',
+          'state': {
+            'status': 'completed',
+            'input': {'code': 'return 1'},
+            'output': '{"value":1}',
+          },
+        },
+        {
+          'id': 'invalid',
+          'type': 'tool',
+          'tool': 'invalid',
+          'state': {
+            'status': 'error',
+            'input': {'tool': 'broken', 'error': 'Missing argument'},
+          },
+        },
+        {
+          'id': 'plugin',
+          'type': 'tool',
+          'tool': 'custom_plugin',
+          'state': {
+            'status': 'completed',
+            'input': {
+              'query': 'safe query',
+              'token': 'must-not-leak',
+              'attachment': 'data:text/plain;base64,c2VjcmV0',
+            },
+            'output': 'Plugin result',
+          },
+        },
+      ];
+      final client = MockClient(
+        (_) async => http.Response(
+          jsonEncode([
+            {
+              'info': {
+                'id': 'assistant-1',
+                'role': 'assistant',
+                'time': {'created': 2000},
+              },
+              'parts': parts,
+            },
+          ]),
+          200,
+        ),
+      );
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.load(profile, session);
+      final details = (result as ChatLoaded).messages.single.details
+          .whereType<ChatToolDetail>();
+      final presentations = {
+        for (final detail in details)
+          detail.tool: detail.presentation as ChatGenericToolPresentation,
+      };
+      String text(String tool) =>
+          presentations[tool]!.blocks.map((block) => block.text).join('\n');
+
+      expect(presentations.keys, hasLength(parts.length));
+      expect(presentations['shell']!.title, r'$ pwd');
+      expect(presentations['shell']!.subtitle, contains('exit: 0'));
+      expect(presentations['bash']!.blocks, isEmpty);
+      expect(text('read'), 'a.dart\nb.dart');
+      expect(text('read'), isNot(contains('<entries>')));
+      expect(text('edit'), '-a\n+b');
+      expect(text('write'), 'void main() {}');
+      expect(text('apply_patch'), contains('@@ -1 +1 @@'));
+      expect(text('question'), contains('Continue?\n  Yes'));
+      expect(text('skill'), '# Instructions');
+      expect(text('skill'), isNot(contains('<skill_content')));
+      expect(text('lsp'), 'Name: Widget\nKind: 5');
+      expect(presentations['execute']!.blocks.first.label, 'Code');
+      expect(presentations['execute']!.blocks.first.text, 'return 1');
+      expect(presentations['execute']!.blocks.last.label, 'Result');
+      expect(presentations['execute']!.blocks.last.text, 'Value: 1');
+      expect(text('invalid'), 'Missing argument');
+      expect(text('custom_plugin'), contains('Query: safe query'));
+      expect(text('custom_plugin'), contains('Token: [redacted]'));
+      expect(text('custom_plugin'), isNot(contains('must-not-leak')));
+      expect(text('custom_plugin'), isNot(contains('data:text')));
+    },
+  );
+
+  test('falls back to the output todo list when input is absent', () async {
+    final client = MockClient(
+      (_) async => http.Response(
+        jsonEncode([
+          {
+            'info': {
+              'id': 'assistant-1',
+              'role': 'assistant',
+              'time': {'created': 2000},
+            },
+            'parts': [
+              {
+                'id': 'todo-1',
+                'type': 'tool',
+                'tool': 'todowrite',
+                'state': {
+                  'status': 'completed',
+                  'output': jsonEncode([
+                    {
+                      'content': 'Fallback',
+                      'status': 'pending',
+                      'priority': 'medium',
+                    },
+                  ]),
+                },
+              },
+            ],
+          },
+        ]),
+        200,
+      ),
+    );
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+    final result = await repository.load(profile, session);
+    final detail =
+        (result as ChatLoaded).messages.single.details.single as ChatToolDetail;
+    expect(
+      (detail.presentation as ChatTodoPresentation).items.single.content,
+      'Fallback',
+    );
+  });
+
+  test('uses the nested task state and hides background boilerplate', () async {
+    final client = MockClient(
+      (_) async => http.Response(
+        jsonEncode([
+          {
+            'info': {
+              'id': 'assistant-1',
+              'role': 'assistant',
+              'time': {'created': 2000},
+            },
+            'parts': [
+              {
+                'id': 'task-1',
+                'type': 'tool',
+                'tool': 'task',
+                'state': {
+                  // The task tool itself has returned successfully, while the
+                  // background subagent represented by its output is running.
+                  'status': 'completed',
+                  'input': {
+                    'description': 'Inspect code',
+                    'prompt': 'Review it',
+                    'subagent_type': 'reviewer',
+                    'background': true,
+                  },
+                  'output':
+                      '<task id="child" state="running">'
+                      '<summary>Background task started</summary>'
+                      '<task_result>Do not poll this task.</task_result>'
+                      '</task>',
+                },
+              },
+            ],
+          },
+        ]),
+        200,
+      ),
+    );
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.load(profile, session);
+    final detail =
+        (result as ChatLoaded).messages.single.details.single as ChatToolDetail;
+    final task = detail.presentation as ChatTaskPresentation;
+
+    expect(task.status, ChatTaskStatus.running);
+    expect(task.result, isNull);
+    expect(task.summary, 'Background task started');
+  });
+
+  test(
+    'keeps the generic tool fallback for an invalid TodoWrite schema',
+    () async {
+      final client = MockClient(
+        (_) async => http.Response(
+          jsonEncode([
+            {
+              'info': {
+                'id': 'assistant-1',
+                'role': 'assistant',
+                'time': {'created': 2000},
+              },
+              'parts': [
+                {
+                  'id': 'todo-1',
+                  'type': 'tool',
+                  'tool': 'todowrite',
+                  'state': {
+                    'status': 'completed',
+                    'input': {
+                      'todos': [
+                        {
+                          'content': 'Unknown state',
+                          'status': 'unexpected',
+                          'priority': 'high',
+                        },
+                      ],
+                    },
+                    'output': 'not JSON',
+                  },
+                },
+              ],
+            },
+          ]),
+          200,
+        ),
+      );
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.load(profile, session);
+      final detail =
+          (result as ChatLoaded).messages.single.details.single
+              as ChatToolDetail;
+
+      expect(detail.presentation, isNull);
+      expect(detail.input, contains('unexpected'));
+    },
+  );
 
   group('loadArtifacts', () {
     test('maps the official todo and snapshot diff schemas', () async {
@@ -485,6 +1020,28 @@ void main() {
       );
     });
   });
+}
+
+http.Response _messageResponse(String text) => http.Response(
+  jsonEncode([
+    {
+      'info': {
+        'id': text,
+        'role': 'assistant',
+        'time': {'created': 2000},
+      },
+      'parts': [
+        {'type': 'text', 'text': text},
+      ],
+    },
+  ]),
+  200,
+);
+
+Future<void> _waitFor(bool Function() condition) async {
+  while (!condition()) {
+    await Future<void>.delayed(Duration.zero);
+  }
 }
 
 class _PasswordStore implements CredentialsStore {

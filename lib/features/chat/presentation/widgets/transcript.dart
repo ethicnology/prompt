@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../../app/prompt_theme.dart';
+import '../../../../core/ui/ui.dart';
 import '../../domain/chat_message.dart';
 import '../basic_markdown_text.dart';
 
@@ -58,6 +58,7 @@ class Transcript extends StatelessWidget {
                     child: _MessageBubble(
                       key: ValueKey(message.id),
                       message: message,
+                      showRevert: index == 0,
                       onRevert: () => onRevert(message),
                     ),
                   );
@@ -75,11 +76,13 @@ class Transcript extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
+    required this.showRevert,
     required this.onRevert,
     super.key,
   });
 
   final ChatMessage message;
+  final bool showRevert;
   final VoidCallback onRevert;
 
   @override
@@ -88,8 +91,11 @@ class _MessageBubble extends StatelessWidget {
     final theme = Theme.of(context);
     final tokens = _tokens(theme);
     final background = userMessage
-        ? theme.colorScheme.primaryContainer
+        ? tokens.userMessageBackground
         : Colors.transparent;
+    final foreground = userMessage
+        ? tokens.userMessageForeground
+        : theme.colorScheme.onSurface;
 
     return Align(
       alignment: userMessage ? Alignment.centerRight : Alignment.centerLeft,
@@ -100,9 +106,7 @@ class _MessageBubble extends StatelessWidget {
             color: background,
             borderRadius: BorderRadius.circular(userMessage ? 18 : 0),
             border: userMessage
-                ? Border.all(
-                    color: theme.colorScheme.primary.withValues(alpha: 0.28),
-                  )
+                ? Border.all(color: tokens.userMessageBorder)
                 : null,
           ),
           child: Padding(
@@ -110,62 +114,56 @@ class _MessageBubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      userMessage
-                          ? Icons.person_outline_rounded
-                          : Icons.auto_awesome_outlined,
-                      size: 15,
-                      color: userMessage
-                          ? theme.colorScheme.primary
-                          : tokens.subtle,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      userMessage ? 'You' : 'OpenCode',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: userMessage
-                            ? theme.colorScheme.primary
-                            : tokens.subtle,
+                if (!userMessage)
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.auto_awesome_outlined,
+                        size: 15,
+                        color: tokens.subtle,
                       ),
-                    ),
-                    const Spacer(),
-                    if (message.text.trim().isNotEmpty)
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: message.text));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Message copied')),
-                          );
-                        },
-                        icon: const Icon(Icons.content_copy_outlined, size: 17),
-                        tooltip: 'Copy message',
+                      const SizedBox(width: 6),
+                      Text(
+                        'OpenCode',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: tokens.subtle,
+                        ),
                       ),
-                  ],
-                ),
+                    ],
+                  ),
                 if (message.details.isNotEmpty) ...[
-                  const SizedBox(height: 10),
+                  if (!userMessage) const SizedBox(height: 10),
                   for (final detail in message.details)
                     _MessageDetailCard(detail: detail),
                 ],
                 if (message.text.trim().isNotEmpty) ...[
-                  const SizedBox(height: 10),
+                  if (!userMessage || message.details.isNotEmpty)
+                    const SizedBox(height: 10),
                   BasicMarkdownText(
                     text: message.text,
-                    style: theme.textTheme.bodyLarge,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: foreground,
+                    ),
+                    onBlockTap: (text) {
+                      Clipboard.setData(ClipboardData(text: text));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Text copied')),
+                      );
+                    },
                   ),
                 ],
-                // Revert restores the session to just before a prompt, so it
-                // only makes sense on the user message that started the turn.
-                if (userMessage && message.id.isNotEmpty)
+                // Once OpenCode has produced a visible response, the prompt is
+                // treated and this transcript action no longer needs space.
+                if (showRevert && userMessage && message.id.isNotEmpty)
                   Align(
                     alignment: Alignment.centerRight,
                     child: Tooltip(
                       message: 'Revert to this message',
                       child: TextButton.icon(
                         onPressed: onRevert,
+                        style: TextButton.styleFrom(
+                          foregroundColor: foreground,
+                        ),
                         icon: const Icon(Icons.undo_rounded, size: 17),
                         label: const Text('Revert'),
                       ),
@@ -187,9 +185,63 @@ class _MessageDetailCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (detail is ChatToolDetail) {
+      final toolDetail = detail as ChatToolDetail;
+      if (toolDetail.presentation case final ChatTodoPresentation todos) {
+        return _TodoDetailCard(items: todos.items);
+      }
+      if (toolDetail.presentation case final ChatTaskPresentation task) {
+        return _TaskDetailCard(task: task);
+      }
+      if (toolDetail.presentation
+          case final ChatGenericToolPresentation generic) {
+        return _GenericToolDetailCard(
+          presentation: generic,
+          status: toolDetail.status,
+        );
+      }
+      if (toolDetail.tool == 'task') {
+        return _TaskDetailCard(
+          task: ChatTaskPresentation(
+            status: switch (toolDetail.status) {
+              'running' => ChatTaskStatus.running,
+              'completed' => ChatTaskStatus.completed,
+              'error' => ChatTaskStatus.error,
+              _ => ChatTaskStatus.pending,
+            },
+            description: toolDetail.input,
+            result: toolDetail.output,
+            error: toolDetail.error,
+          ),
+        );
+      }
+    }
     final theme = Theme.of(context);
     final tokens = _tokens(theme);
     return switch (detail) {
+      ChatReasoningDetail(:final text) when _isSingleLine(text) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.psychology_outlined, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: BasicMarkdownText(
+                    text: text.trim(),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
       ChatReasoningDetail(:final text) => Padding(
         padding: const EdgeInsets.only(top: 6),
         child: ExpansionTile(
@@ -207,7 +259,10 @@ class _MessageDetailCard extends StatelessWidget {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: SelectableText(text, style: theme.textTheme.bodySmall),
+              child: BasicMarkdownText(
+                text: text,
+                style: theme.textTheme.bodySmall,
+              ),
             ),
           ],
         ),
@@ -217,23 +272,148 @@ class _MessageDetailCard extends StatelessWidget {
   }
 }
 
-class _ToolDetailCard extends StatelessWidget {
-  const _ToolDetailCard({required this.detail});
+class _TodoDetailCard extends StatelessWidget {
+  const _TodoDetailCard({required this.items});
 
-  final ChatToolDetail detail;
+  final List<ChatTodoItem> items;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final tokens = _tokens(theme);
-    final status = _toolStatus(detail.status);
-    final isTask = detail.tool == 'task';
-    final title = isTask ? 'Subagent task' : _toolLabel(detail.tool);
-    final body = [
-      detail.output,
-      detail.error,
-    ].whereType<String>().where((value) => value.isNotEmpty).join('\n\n');
+    final logicalLines = ChatTodoPresentation(items).logicalLineCount;
+    final rows = [
+      for (final item in items)
+        Padding(
+          padding: const EdgeInsets.only(top: 7),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(_todoIcon(item.status), size: 17),
+              const SizedBox(width: 7),
+              Expanded(
+                child: BasicMarkdownText(
+                  text: '${_priorityLabel(item.priority)} · ${item.content}',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Todos', style: theme.textTheme.titleSmall),
+        ...rows,
+      ],
+    );
+    if (logicalLines <= 1) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: Padding(padding: const EdgeInsets.all(10), child: content),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        collapsedBackgroundColor: tokens.panelRaised,
+        backgroundColor: tokens.panelRaised,
+        leading: const Icon(Icons.checklist_rounded),
+        title: const Text('Todos'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: rows,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
+class _TaskDetailCard extends StatelessWidget {
+  const _TaskDetailCard({required this.task});
+
+  final ChatTaskPresentation task;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tokens = _tokens(theme);
+    final details = <({String title, String text})>[
+      if (task.prompt case final value? when value.isNotEmpty)
+        (title: 'Prompt', text: value),
+      if (task.result case final value? when value.isNotEmpty)
+        (title: 'Result', text: value),
+      if (task.error case final value? when value.isNotEmpty)
+        (title: 'Error', text: value),
+    ];
+    final title = task.description ?? task.subagentType ?? 'Subagent task';
+    final subtitle = [
+      if (task.subagentType case final type? when type.isNotEmpty) type,
+      if (task.background) 'Background',
+    ].join(' · ');
+    final icon = switch (task.status) {
+      ChatTaskStatus.pending => Icons.hourglass_top_rounded,
+      ChatTaskStatus.running => Icons.sync_rounded,
+      ChatTaskStatus.completed => Icons.check_circle_outline_rounded,
+      ChatTaskStatus.error => Icons.error_outline_rounded,
+    };
+    final color = switch (task.status) {
+      ChatTaskStatus.completed => tokens.success,
+      ChatTaskStatus.error => tokens.danger,
+      _ => tokens.warning,
+    };
+    final content = details;
+    final logicalLines = task.logicalLineCount;
+    final header = ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+      leading: Icon(icon, size: 18, color: color),
+      title: Text(title),
+      subtitle: subtitle.isEmpty ? null : Text(subtitle),
+    );
+    if (logicalLines == 0) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: header,
+        ),
+      );
+    }
+    if (logicalLines == 1) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              header,
+              for (final section in content)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: BasicMarkdownText(
+                    text: section.text,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: ExpansionTile(
@@ -244,36 +424,177 @@ class _ToolDetailCard extends StatelessWidget {
         collapsedShape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
         ),
-        leading: Icon(status.icon, size: 18, color: status.color(tokens)),
+        leading: Icon(icon, size: 18, color: color),
         title: Text(title),
-        subtitle: Text(
-          [
-            status.label,
-            detail.input,
-          ].whereType<String>().where((value) => value.isNotEmpty).join(' · '),
+        subtitle: subtitle.isEmpty ? null : Text(subtitle),
+        children: [
+          for (final section in content)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(section.title, style: theme.textTheme.labelLarge),
+                  const SizedBox(height: 4),
+                  BasicMarkdownText(
+                    text: section.text,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+IconData _todoIcon(ChatTodoStatus status) => switch (status) {
+  ChatTodoStatus.pending => Icons.radio_button_unchecked,
+  ChatTodoStatus.inProgress => Icons.timelapse_rounded,
+  ChatTodoStatus.completed => Icons.check_circle_outline_rounded,
+  ChatTodoStatus.cancelled => Icons.cancel_outlined,
+};
+
+String _priorityLabel(ChatTodoPriority priority) => switch (priority) {
+  ChatTodoPriority.high => 'High',
+  ChatTodoPriority.medium => 'Medium',
+  ChatTodoPriority.low => 'Low',
+};
+
+class _ToolDetailCard extends StatelessWidget {
+  const _ToolDetailCard({required this.detail});
+
+  final ChatToolDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final isTask = detail.tool == 'task';
+    final title = isTask ? 'Subagent task' : _toolLabel(detail.tool);
+    final body = [
+      detail.output,
+      detail.error,
+    ].whereType<String>().where((value) => value.isNotEmpty).join('\n\n');
+    return _GenericToolDetailCard(
+      status: detail.status,
+      presentation: ChatGenericToolPresentation(
+        title: title,
+        blocks: body.isEmpty
+            ? const []
+            : [ChatToolBlock(kind: ChatToolBlockKind.markdown, text: body)],
+      ),
+    );
+  }
+}
+
+class _GenericToolDetailCard extends StatelessWidget {
+  const _GenericToolDetailCard({
+    required this.presentation,
+    required this.status,
+  });
+
+  final ChatGenericToolPresentation presentation;
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tokens = _tokens(theme);
+    final body = presentation.blocks;
+    final lines = presentation.logicalLineCount;
+    final statusPresentation = _toolStatus(status);
+    final header = ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+      leading: Icon(
+        statusPresentation.icon,
+        size: 18,
+        color: statusPresentation.color(tokens),
+      ),
+      title: Text(
+        presentation.title,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: presentation.subtitle == null
+          ? null
+          : Text(presentation.subtitle!),
+    );
+    if (lines == 0) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: header,
+        ),
+      );
+    }
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final block in body)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (block.label case final label?) ...[
+                  Text(label, style: theme.textTheme.labelLarge),
+                  const SizedBox(height: 4),
+                ],
+                if ((block.kind == ChatToolBlockKind.code ||
+                        block.kind == ChatToolBlockKind.diff) &&
+                    !block.text.trimLeft().startsWith('```'))
+                  SelectableText(
+                    block.text,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                    ),
+                  )
+                else
+                  BasicMarkdownText(
+                    text: block.text,
+                    style: theme.textTheme.bodySmall,
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (lines == 1) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Card(
+          margin: EdgeInsets.zero,
+          color: tokens.panelRaised,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [header, content],
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+        collapsedBackgroundColor: tokens.panelRaised,
+        backgroundColor: tokens.panelRaised,
+        leading: Icon(
+          statusPresentation.icon,
+          size: 18,
+          color: statusPresentation.color(tokens),
+        ),
+        title: Text(
+          presentation.title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
-        children: [
-          if (body.isNotEmpty)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                body,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
-                ),
-              ),
-            )
-          else
-            const SizedBox(height: 4),
-        ],
+        subtitle: presentation.subtitle == null
+            ? null
+            : Text(presentation.subtitle!),
+        children: [content],
       ),
     );
   }
@@ -284,22 +605,22 @@ class _ToolDetailCard extends StatelessWidget {
 ) => switch (status) {
   'pending' => (
     icon: Icons.hourglass_top_rounded,
-    label: 'Queued',
+    label: '',
     color: (tokens) => tokens.warning,
   ),
   'running' => (
     icon: Icons.sync_rounded,
-    label: 'Running',
+    label: '',
     color: (tokens) => tokens.warning,
   ),
   'completed' => (
     icon: Icons.check_circle_outline_rounded,
-    label: 'Completed',
+    label: '',
     color: (tokens) => tokens.success,
   ),
   _ => (
     icon: Icons.error_outline_rounded,
-    label: 'Failed',
+    label: '',
     color: (tokens) => tokens.danger,
   ),
 };
@@ -309,6 +630,9 @@ String _toolLabel(String tool) => tool
     .where((segment) => segment.isNotEmpty)
     .map((segment) => '${segment[0].toUpperCase()}${segment.substring(1)}')
     .join(' ');
+
+bool _isSingleLine(String text) =>
+    text.trim().split('\n').where((line) => line.trim().isNotEmpty).length <= 1;
 
 PromptTokens _tokens(ThemeData theme) =>
     theme.extension<PromptTokens>() ??
@@ -321,4 +645,7 @@ PromptTokens _tokens(ThemeData theme) =>
       danger: Color(0xffb42318),
       diffAdd: Color(0xffdcf8e9),
       diffDelete: Color(0xffffe5e4),
+      userMessageBackground: Color(0xffd7f7ed),
+      userMessageForeground: Color(0xff123a30),
+      userMessageBorder: Color(0xff64bba2),
     );

@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:prompt/core/async/reconnect_backoff.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
+import 'package:prompt/data/local/prompt_database.dart' as db;
 import 'package:prompt/data/local/prompt_database.dart' show PromptDatabase;
 import 'package:prompt/data/remote/opencode_event_service.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
@@ -235,6 +236,102 @@ class _RecordingTimerFactory {
   }
 }
 
+class _DelayedPauseDao implements QueuePromptsDao {
+  _DelayedPauseDao(this._delegate, this.pauseGate);
+
+  final QueuePromptsDao _delegate;
+  final Completer<void> pauseGate;
+  final List<String> operations = <String>[];
+
+  @override
+  Future<db.QueuedPrompt> enqueue({
+    required String id,
+    required String serverProfileId,
+    required String sessionId,
+    required String directory,
+    required String promptText,
+    QueuedOperationType operationType = QueuedOperationType.prompt,
+    String? commandName,
+    List<QueuedAttachment> attachments = const [],
+    PromptExecutionOptions executionOptions = const PromptExecutionOptions(),
+    required DateTime now,
+  }) => _delegate.enqueue(
+    id: id,
+    serverProfileId: serverProfileId,
+    sessionId: sessionId,
+    directory: directory,
+    promptText: promptText,
+    operationType: operationType,
+    commandName: commandName,
+    attachments: attachments,
+    executionOptions: executionOptions,
+    now: now,
+  );
+  @override
+  Future<db.QueuedPrompt> editText({
+    required String id,
+    required String promptText,
+    required DateTime now,
+  }) => _delegate.editText(id: id, promptText: promptText, now: now);
+  @override
+  Future<db.QueuedPrompt> remove(String id) => _delegate.remove(id);
+  @override
+  Stream<List<db.QueuedPrompt>> watchQueue({
+    required String serverProfileId,
+    required String sessionId,
+  }) => _delegate.watchQueue(
+    serverProfileId: serverProfileId,
+    sessionId: sessionId,
+  );
+  @override
+  Future<List<db.QueuedPrompt>> reorder({
+    required String serverProfileId,
+    required String sessionId,
+    required List<String> orderedIds,
+  }) => _delegate.reorder(
+    serverProfileId: serverProfileId,
+    sessionId: sessionId,
+    orderedIds: orderedIds,
+  );
+  @override
+  Future<db.QueuedPrompt> markSending(String id, {required DateTime now}) =>
+      _delegate.markSending(id, now: now);
+  @override
+  Future<db.QueuedPrompt> markAcknowledged(
+    String id, {
+    required DateTime now,
+  }) => _delegate.markAcknowledged(id, now: now);
+  @override
+  Future<db.QueuedPrompt> markFailed(
+    String id, {
+    String? reason,
+    required DateTime now,
+  }) => _delegate.markFailed(id, reason: reason, now: now);
+  @override
+  Future<db.QueuedPrompt> markPaused(
+    String id, {
+    required String reason,
+    required DateTime now,
+  }) async {
+    operations.add('pause-start');
+    await pauseGate.future;
+    operations.add('pause-done');
+    return _delegate.markPaused(id, reason: reason, now: now);
+  }
+
+  @override
+  Future<db.QueuedPrompt> markQueued(String id, {required DateTime now}) async {
+    operations.add('queued');
+    return _delegate.markQueued(id, now: now);
+  }
+
+  @override
+  Future<db.QueuedPrompt> markSubmissionUnknown(
+    String id, {
+    required DateTime now,
+  }) => _delegate.markSubmissionUnknown(id, now: now);
+}
+
 void main() {
   final profile = ServerProfile(
     origin: Uri.parse('http://10.80.0.1:4096'),
@@ -454,6 +551,47 @@ void main() {
   });
 
   group('permission/question blocking', () {
+    test('orders a delayed pause before an unblock can resume it', () async {
+      final pauseGate = Completer<void>();
+      final delayedDao = _DelayedPauseDao(
+        DriftQueuePromptsDao(database),
+        pauseGate,
+      );
+      queueRepository = QueuePromptsRepository(
+        delayedDao,
+        idGenerator: () => 'prompt-delayed',
+      );
+      await coordinator.dispose();
+      coordinator = QueueSendCoordinator(
+        queueRepository: queueRepository,
+        chatRepository: chatRepository,
+        eventService: eventService,
+        credentialsStore: const _StaticPasswordStore(),
+      );
+      backend.sessionStatusType = 'busy';
+      await coordinator.activate(profile: profile, session: session);
+      await _settle();
+      await enqueue('first');
+      await _settle();
+
+      eventClient.emit('permission.updated', {
+        'id': 'perm_1',
+        'type': 'bash',
+        'sessionID': session.id,
+        'messageID': 'msg_1',
+        'title': 'Run a shell command',
+        'metadata': <String, dynamic>{},
+        'time': {'created': 1700000000000},
+      });
+      await _settle();
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settle();
+      pauseGate.complete();
+      await _settle(ticks: 100);
+
+      expect(delayedDao.operations, ['pause-start', 'pause-done', 'queued']);
+    });
+
     test('a pending permission pauses the queued prompt, blocks dispatch, and '
         'only resumes on an authoritative session.idle event', () async {
       backend.sessionStatusType = 'busy';

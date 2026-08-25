@@ -3,14 +3,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/async/result.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../../queue/queue.dart';
 import '../../sessions/sessions.dart';
 import '../data/chat_repository.dart';
 import '../data/attachment_picker.dart';
 import '../domain/chat_load_result.dart';
 import '../domain/chat_message.dart';
-import '../domain/conversation_message.dart';
 import '../domain/conversation_state.dart';
 import '../domain/pending_approval.dart';
 import '../domain/permission_response.dart';
@@ -188,15 +187,10 @@ class ConversationViewModel {
           queue.value = rows;
         });
 
-    // Rendering the server transcript is the first useful result of opening a
-    // conversation. Start coordination concurrently, but never make it delay
-    // the initial transcript frame.
-    final activation = queueCoordinator.activate(
-      profile: profile,
-      session: session,
-    );
+    // Activate coordination first: it installs the repository's SSE journal
+    // before the REST snapshot begins, so no event can fall between them.
+    await queueCoordinator.activate(profile: profile, session: session);
     await _loadMessages();
-    await activation;
     if (_disposed || _session != session) {
       return;
     }
@@ -247,9 +241,6 @@ class ConversationViewModel {
       }
       final next = remoteConnectionState.value;
       connectionState.value = next;
-      if (next is SseReconciling) {
-        unawaited(_loadMessages());
-      }
     }
 
     _remoteConnectionState = remoteConnectionState;
@@ -353,14 +344,6 @@ class ConversationViewModel {
     switch (result) {
       case ChatLoaded(messages: final loadedMessages):
         messages.value = ConversationReady(loadedMessages);
-        // Reconciles against whatever the live conversation state has
-        // already accumulated for this session (including any event
-        // reduced while this REST load was in flight), rather than
-        // waiting for the next SSE event to reveal it.
-        final liveState = _liveConversationState?.value;
-        if (liveState != null) {
-          _applyLiveConversationState(liveState);
-        }
       case ChatLoadFailed(:final failure):
         // A failed refresh must not discard a readable transcript.
         if (hadTranscript) {
@@ -392,28 +375,11 @@ class ConversationViewModel {
     };
   }
 
-  /// Merges [liveState] — the active session's live conversation, reduced
-  /// from SSE `message.updated`/`message.part.updated` events — onto the
-  /// currently visible transcript.
-  ///
-  /// Rendering is scheduled in small batches by
-  /// [_scheduleLiveConversationRender], rather than once per SSE event.
-  /// `message.removed`/`message.part.removed` are reduced by
-  /// `conversation_state.dart` but intentionally not reflected here; a
-  /// removal is reconciled by the next REST [reload], consistent with this
-  /// app's reconnect-then-REST-reconcile rule for the transcript.
+  /// Displays the already-consolidated repository projection.
   void _applyLiveConversationState(ConversationState liveState) {
-    final current = messages.value;
-    if (current is! ConversationReady) {
-      // Still loading, or the previous load failed; nothing to merge onto
-      // yet. `_loadMessages` reconciles against the coordinator's current
-      // snapshot itself once it reaches `ConversationReady`.
-      return;
-    }
-    final merged = _mergeLiveConversationState(current.messages, liveState);
-    if (!identical(merged, current.messages)) {
-      messages.value = ConversationReady(merged);
-    }
+    messages.value = ConversationReady(
+      _chatRepository.conversationUpdates.value.messages,
+    );
   }
 
   /// Coalesces bursty token/tool events into a visual update every 60ms. The
@@ -766,191 +732,4 @@ void _releaseAttachments(Iterable<PromptAttachment> attachments) {
   for (final attachment in attachments) {
     attachment.release();
   }
-}
-
-/// Merges [liveState] onto [restMessages], preserving [restMessages]'
-/// order and reusing its unchanged entries by reference (so an unaffected
-/// row's [ChatMessage] instance is unchanged, not merely equal) — this
-/// lets a display layer that memoizes per-row widgets on message identity
-/// rebuild only the rows a live update actually changed. A message with no
-/// rendered text yet is skipped entirely; see [_applyLiveConversationState]
-/// for why.
-///
-/// Returns [restMessages] itself, unchanged, if nothing in [liveState]
-/// changes the visible transcript.
-List<ChatMessage> _mergeLiveConversationState(
-  List<ChatMessage> restMessages,
-  ConversationState liveState,
-) {
-  if (liveState.messages.isEmpty) {
-    return restMessages;
-  }
-
-  final byId = <String, ChatMessage>{
-    for (final message in restMessages) message.id: message,
-  };
-  final order = restMessages.map((message) => message.id).toList();
-  var changed = false;
-
-  for (final liveMessage in liveState.orderedMessages) {
-    final role = switch (liveMessage.role) {
-      ConversationRole.user => ChatMessageRole.user,
-      ConversationRole.assistant => ChatMessageRole.assistant,
-      // No `message.updated` observed yet for this id in this session;
-      // nothing displayable.
-      ConversationRole.unknown => null,
-    };
-    if (role == null) {
-      continue;
-    }
-    final text = _renderTextParts(liveMessage.parts) ?? '';
-    final existing = byId[liveMessage.id];
-    // Live tool events carry only a short summary, never the tool's output.
-    // Merging them over the REST detail would blank an already-loaded body.
-    final details = _keepLoadedDetailBodies(
-      _renderLiveDetails(liveMessage.parts),
-      existing?.details ?? const <ChatMessageDetail>[],
-    );
-    // A task/tool may arrive before the assistant writes prose. Keep that
-    // message in the transcript so its live progress is never invisible.
-    if (text.isEmpty && details.isEmpty) {
-      continue;
-    }
-    final mergedText = existing != null && existing.text.startsWith(text)
-        ? existing.text
-        : text;
-    final mergedDetails = details.isEmpty
-        ? existing?.details ?? const []
-        : details;
-    if (existing != null &&
-        existing.role == role &&
-        existing.text == mergedText &&
-        _sameDetails(existing.details, mergedDetails)) {
-      continue;
-    }
-    if (existing == null) {
-      order.add(liveMessage.id);
-    }
-    byId[liveMessage.id] = ChatMessage(
-      id: liveMessage.id,
-      role: role,
-      createdAt: existing?.createdAt ?? DateTime.now(),
-      text: mergedText,
-      details: mergedDetails,
-      error: existing?.error,
-    );
-    changed = true;
-  }
-
-  if (!changed) {
-    return restMessages;
-  }
-  return [for (final id in order) byId[id]!];
-}
-
-List<ChatMessageDetail> _renderLiveDetails(List<MessagePart> parts) {
-  return [
-    for (final part in parts)
-      switch (part) {
-        ReasoningMessagePart(:final id, :final text) => ChatReasoningDetail(
-          id: id,
-          text: text,
-        ),
-        ToolMessagePart(
-          :final id,
-          :final tool,
-          :final status,
-          :final summary,
-          :final error,
-        ) =>
-          ChatToolDetail(
-            id: id,
-            tool: tool,
-            status: status.name,
-            input: summary,
-            error: error,
-          ),
-        _ => null,
-      },
-  ].whereType<ChatMessageDetail>().toList(growable: false);
-}
-
-/// Returns [live] with any tool body already loaded over REST preserved.
-///
-/// `message.part.updated` reports a tool's identity, status, and a short
-/// input summary, but never its output or reasoning body. Without this, a
-/// later live status change would replace a fully loaded tool card with an
-/// empty one.
-List<ChatMessageDetail> _keepLoadedDetailBodies(
-  List<ChatMessageDetail> live,
-  List<ChatMessageDetail> loaded,
-) {
-  if (loaded.isEmpty || live.isEmpty) {
-    return live;
-  }
-  final loadedById = {for (final detail in loaded) detail.id: detail};
-  return [
-    for (final detail in live)
-      if (detail is ChatToolDetail)
-        switch (loadedById[detail.id]) {
-          final ChatToolDetail prior => ChatToolDetail(
-            id: detail.id,
-            tool: detail.tool,
-            status: detail.status,
-            input: detail.input ?? prior.input,
-            output: detail.output ?? prior.output,
-            error: detail.error ?? prior.error,
-          ),
-          _ => detail,
-        }
-      else if (detail is ChatReasoningDetail && detail.text.isEmpty)
-        switch (loadedById[detail.id]) {
-          final ChatReasoningDetail prior => prior,
-          _ => detail,
-        }
-      else
-        detail,
-  ];
-}
-
-bool _sameDetails(List<ChatMessageDetail> left, List<ChatMessageDetail> right) {
-  if (left.length != right.length) {
-    return false;
-  }
-  for (var i = 0; i < left.length; i++) {
-    final a = left[i];
-    final b = right[i];
-    if (a.runtimeType != b.runtimeType || a.id != b.id) {
-      return false;
-    }
-    if (a is ChatReasoningDetail && b is ChatReasoningDetail) {
-      if (a.text != b.text) {
-        return false;
-      }
-    } else if (a is ChatToolDetail && b is ChatToolDetail) {
-      if (a.tool != b.tool ||
-          a.status != b.status ||
-          a.input != b.input ||
-          a.output != b.output ||
-          a.error != b.error) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-/// Concatenates every [TextMessagePart] in [parts], in order. Returns
-/// `null` if [parts] carries no rendered text yet (for example a message
-/// whose only parts so far are a tool call or a step marker), so a caller
-/// never confuses "nothing to show yet" with an intentionally empty
-/// message.
-String? _renderTextParts(List<MessagePart> parts) {
-  final buffer = StringBuffer();
-  for (final part in parts) {
-    if (part is TextMessagePart) {
-      buffer.write(part.text);
-    }
-  }
-  return buffer.isEmpty ? null : buffer.toString();
 }

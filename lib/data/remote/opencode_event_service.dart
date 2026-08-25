@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import '../../features/connection/domain/server_profile.dart';
+import '../../features/connection/connection.dart';
 import 'opencode_transport.dart';
 
 class OpenCodeEventEnvelope {

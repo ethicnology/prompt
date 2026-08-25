@@ -1,13 +1,21 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/link.dart';
 
 /// Renders the small Markdown subset used in conversation text without
 /// interpreting HTML or accepting arbitrary link schemes.
 class BasicMarkdownText extends StatelessWidget {
-  const BasicMarkdownText({required this.text, this.style, super.key});
+  const BasicMarkdownText({
+    required this.text,
+    this.style,
+    this.onBlockTap,
+    super.key,
+  });
 
   final String text;
   final TextStyle? style;
+  final ValueChanged<String>? onBlockTap;
 
   @override
   Widget build(BuildContext context) {
@@ -33,6 +41,7 @@ class BasicMarkdownText extends StatelessWidget {
             style: _headingStyle(theme, level),
             children: _inlineSpans(context, text, _headingStyle(theme, level)),
           ),
+          onTap: onBlockTap == null ? null : () => onBlockTap!(text),
         ),
       ),
       _CodeBlock(:final text) => Semantics(
@@ -44,11 +53,20 @@ class BasicMarkdownText extends StatelessWidget {
           child: SelectableText(
             text,
             style: style?.copyWith(fontFamily: 'monospace'),
+            onTap: onBlockTap == null ? null : () => onBlockTap!(text),
           ),
         ),
       ),
+      _TableBlock(:final headers, :final alignments, :final rows) =>
+        _MarkdownTable(
+          headers: headers,
+          alignments: alignments,
+          rows: rows,
+          style: style,
+        ),
       _TextBlock(:final text) => SelectableText.rich(
         TextSpan(style: style, children: _inlineSpans(context, text, style)),
+        onTap: onBlockTap == null ? null : () => onBlockTap!(text),
       ),
     };
   }
@@ -190,6 +208,100 @@ class _CodeBlock extends _MarkdownBlock {
   final String text;
 }
 
+class _TableBlock extends _MarkdownBlock {
+  const _TableBlock(this.headers, this.alignments, this.rows);
+
+  final List<String> headers;
+  final List<_TableAlignment> alignments;
+  final List<List<String>> rows;
+}
+
+enum _TableAlignment { left, center, right }
+
+class _MarkdownTable extends StatelessWidget {
+  const _MarkdownTable({
+    required this.headers,
+    required this.alignments,
+    required this.rows,
+    this.style,
+  });
+
+  final List<String> headers;
+  final List<_TableAlignment> alignments;
+  final List<List<String>> rows;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final widths = List<double>.generate(headers.length, (column) => 112);
+    for (final row in [headers, ...rows]) {
+      for (var column = 0; column < row.length; column++) {
+        widths[column] = math.min(
+          280,
+          math.max(widths[column], row[column].length * 8.0 + 24),
+        );
+      }
+    }
+    return Semantics(
+      label: 'Markdown table',
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Table(
+          columnWidths: {
+            for (var index = 0; index < widths.length; index++)
+              index: FixedColumnWidth(widths[index]),
+          },
+          border: TableBorder.all(color: theme.colorScheme.outlineVariant),
+          children: [
+            TableRow(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHigh,
+              ),
+              children: [
+                for (var column = 0; column < headers.length; column++)
+                  _tableCell(context, headers[column], column, bold: true),
+              ],
+            ),
+            for (final row in rows)
+              TableRow(
+                children: [
+                  for (var column = 0; column < headers.length; column++)
+                    _tableCell(context, row[column], column),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tableCell(
+    BuildContext context,
+    String text,
+    int column, {
+    bool bold = false,
+  }) {
+    final alignment = switch (alignments[column]) {
+      _TableAlignment.left => TextAlign.left,
+      _TableAlignment.center => TextAlign.center,
+      _TableAlignment.right => TextAlign.right,
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: SelectableText.rich(
+        TextSpan(
+          style: (style ?? Theme.of(context).textTheme.bodyLarge)?.copyWith(
+            fontWeight: bold ? FontWeight.bold : null,
+          ),
+          text: text,
+        ),
+        textAlign: alignment,
+      ),
+    );
+  }
+}
+
 List<_MarkdownBlock> _parseBlocks(String source) {
   final blocks = <_MarkdownBlock>[];
   final lines = source.split('\n');
@@ -203,7 +315,8 @@ List<_MarkdownBlock> _parseBlocks(String source) {
     }
   }
 
-  for (final line in lines) {
+  for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    final line = lines[lineIndex];
     if (line.trimLeft().startsWith('```')) {
       if (code == null) {
         flushText();
@@ -219,7 +332,12 @@ List<_MarkdownBlock> _parseBlocks(String source) {
       continue;
     }
     final heading = RegExp(r'^(#{1,3})\s+(.+)$').firstMatch(line);
-    if (heading != null) {
+    final table = _parseTableAt(lines, lineIndex);
+    if (table != null) {
+      flushText();
+      blocks.add(table.block);
+      lineIndex = table.endIndex;
+    } else if (heading != null) {
       flushText();
       blocks.add(_HeadingBlock(heading.group(2)!, heading.group(1)!.length));
     } else {
@@ -232,6 +350,74 @@ List<_MarkdownBlock> _parseBlocks(String source) {
   }
   flushText();
   return blocks.isEmpty ? const [_TextBlock('')] : blocks;
+}
+
+({int endIndex, _TableBlock block})? _parseTableAt(
+  List<String> lines,
+  int start,
+) {
+  if (start + 1 >= lines.length) return null;
+  final headers = _splitTableRow(lines[start]);
+  final separator = _splitTableRow(lines[start + 1]);
+  if (headers == null ||
+      separator == null ||
+      headers.length != separator.length) {
+    return null;
+  }
+  final alignments = <_TableAlignment>[];
+  for (final cell in separator) {
+    final value = cell.trim();
+    if (!RegExp(r'^:?-{3,}:?$').hasMatch(value)) return null;
+    alignments.add(
+      value.startsWith(':') && value.endsWith(':')
+          ? _TableAlignment.center
+          : value.startsWith(':')
+          ? _TableAlignment.left
+          : value.endsWith(':')
+          ? _TableAlignment.right
+          : _TableAlignment.left,
+    );
+  }
+  final rows = <List<String>>[];
+  var end = start + 1;
+  while (end + 1 < lines.length) {
+    final row = _splitTableRow(lines[end + 1]);
+    if (row == null || row.length != headers.length) break;
+    rows.add(row);
+    end++;
+  }
+  return (endIndex: end, block: _TableBlock(headers, alignments, rows));
+}
+
+List<String>? _splitTableRow(String line) {
+  final trimmed = line.trim();
+  if (!trimmed.contains('|')) return null;
+  final withoutLeading = trimmed.startsWith('|')
+      ? trimmed.substring(1)
+      : trimmed;
+  final content = withoutLeading.endsWith('|')
+      ? withoutLeading.substring(0, withoutLeading.length - 1)
+      : withoutLeading;
+  final cells = <String>[];
+  final cell = StringBuffer();
+  var escaped = false;
+  for (var index = 0; index < content.length; index++) {
+    final character = content[index];
+    if (escaped) {
+      cell.write(character);
+      escaped = false;
+    } else if (character == '\\') {
+      escaped = true;
+    } else if (character == '|') {
+      cells.add(cell.toString().trim());
+      cell.clear();
+    } else {
+      cell.write(character);
+    }
+  }
+  if (escaped) cell.write('\\');
+  cells.add(cell.toString().trim());
+  return cells.isEmpty ? null : cells;
 }
 
 int _nextMarkup(String text, int start) {

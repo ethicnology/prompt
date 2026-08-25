@@ -17,6 +17,8 @@ import 'session_execution_state.dart';
 /// these into a [ConversationState].
 sealed class ConversationEvent {
   const ConversationEvent();
+
+  String get sessionId;
 }
 
 /// A message was created or had its metadata (role, timing, ...) updated.
@@ -29,6 +31,7 @@ final class MessageUpdatedEvent extends ConversationEvent {
     required this.role,
   });
 
+  @override
   final String sessionId;
   final String messageId;
   final ConversationRole role;
@@ -38,6 +41,7 @@ final class MessageUpdatedEvent extends ConversationEvent {
 final class MessageRemovedEvent extends ConversationEvent {
   const MessageRemovedEvent({required this.sessionId, required this.messageId});
 
+  @override
   final String sessionId;
   final String messageId;
 }
@@ -46,6 +50,7 @@ final class MessageRemovedEvent extends ConversationEvent {
 final class MessagePartUpdatedEvent extends ConversationEvent {
   const MessagePartUpdatedEvent({required this.sessionId, required this.part});
 
+  @override
   final String sessionId;
   final MessagePart part;
 }
@@ -58,6 +63,7 @@ final class MessagePartRemovedEvent extends ConversationEvent {
     required this.partId,
   });
 
+  @override
   final String sessionId;
   final String messageId;
   final String partId;
@@ -67,6 +73,7 @@ final class MessagePartRemovedEvent extends ConversationEvent {
 final class SessionStatusEvent extends ConversationEvent {
   const SessionStatusEvent({required this.sessionId, required this.state});
 
+  @override
   final String sessionId;
   final SessionExecutionState state;
 }
@@ -77,6 +84,7 @@ final class SessionStatusEvent extends ConversationEvent {
 final class SessionIdleEvent extends ConversationEvent {
   const SessionIdleEvent({required this.sessionId});
 
+  @override
   final String sessionId;
 }
 
@@ -105,6 +113,7 @@ final class SessionBlockedEvent extends ConversationEvent {
     this.detail,
   });
 
+  @override
   final String sessionId;
   final SessionBlockReason reason;
   final PendingApproval? detail;

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../../core/ui/ui.dart';
 import '../../../capabilities/capabilities.dart';
 import '../../../voice/voice.dart';
 import '../../domain/prompt_attachment.dart';
@@ -34,161 +35,132 @@ class Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final showKeyboardHint =
-        kIsWeb ||
-        switch (defaultTargetPlatform) {
-          TargetPlatform.linux ||
-          TargetPlatform.macOS ||
-          TargetPlatform.windows => true,
-          _ => false,
-        };
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ValueListenableBuilder<List<PromptAttachment>>(
-            valueListenable: attachments,
-            builder: (context, selected, _) {
-              if (selected.isEmpty) {
-                return const SizedBox.shrink();
-              }
-              return Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      for (final attachment in selected)
-                        InputChip(
-                          label: Text(
-                            '${attachment.name} · '
-                            '${_formatBytes(attachment.byteCount)}',
-                          ),
-                          onDeleted: () => onRemoveAttachment(attachment),
-                          deleteButtonTooltipMessage: 'Remove attachment',
-                        ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-          if (voiceState case final voiceState?)
-            ValueListenableBuilder<VoiceUiState>(
-              valueListenable: voiceState,
-              builder: (context, state, _) {
-                final status = switch (state) {
-                  VoiceUnavailable(:final failure) => failure.message,
-                  _ => null,
-                };
-                if (status == null) return const SizedBox.shrink();
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Semantics(
-                    liveRegion: true,
-                    label: 'Voice input status: $status',
-                    child: Text(status),
-                  ),
-                );
-              },
-            ),
-          if (voiceState case final voiceState?)
-            ValueListenableBuilder<VoiceUiState>(
-              valueListenable: voiceState,
-              builder: (context, state, _) {
-                if (state is VoiceIdle || state is VoiceUnavailable) {
+    return PromptAdaptiveBuilder(
+      builder: (context, sizeClass) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ValueListenableBuilder<List<PromptAttachment>>(
+              valueListenable: attachments,
+              builder: (context, selected, _) {
+                if (selected.isEmpty) {
                   return const SizedBox.shrink();
                 }
-                return _VoiceModeBar(
-                  state: state,
-                  onHoldStart: onVoiceHoldStart,
-                  onHoldEnd: onVoiceHoldEnd,
-                  onStop: onVoiceStop,
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        for (final attachment in selected)
+                          InputChip(
+                            label: Text(
+                              '${attachment.name} · '
+                              '${_formatBytes(attachment.byteCount)}',
+                            ),
+                            onDeleted: () => onRemoveAttachment(attachment),
+                            deleteButtonTooltipMessage: 'Remove attachment',
+                          ),
+                      ],
+                    ),
+                  ),
                 );
               },
             ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Semantics(
-                  label: command == null
-                      ? 'Prompt composer'
-                      : 'Arguments for /${command!.name}',
-                  hint: command == null
-                      ? 'Enter a prompt; it joins the send queue'
-                      : 'Enter command arguments; it joins the send queue',
-                  child: CallbackShortcuts(
-                    bindings: {
-                      const SingleActivator(
-                        LogicalKeyboardKey.enter,
-                        control: true,
-                      ): () =>
-                          unawaited(onSubmit()),
-                      const SingleActivator(
-                        LogicalKeyboardKey.enter,
-                        meta: true,
-                      ): () =>
-                          unawaited(onSubmit()),
-                    },
-                    child: Focus(
-                      child: TextField(
-                        controller: controller,
-                        minLines: 1,
-                        maxLines: 6,
-                        textInputAction: TextInputAction.newline,
-                        decoration: InputDecoration(
-                          labelText: command == null
-                              ? null
-                              : '/${command!.name}',
-                          hintText: command == null
-                              ? 'Message this session…'
-                              : command!.description ?? 'Command arguments…',
-                          helperText: showKeyboardHint
-                              ? 'Ctrl/Cmd+Enter to queue'
-                              : null,
-                          border: const OutlineInputBorder(),
+            if (voiceState case final voiceState?)
+              ValueListenableBuilder<VoiceUiState>(
+                valueListenable: voiceState,
+                builder: (context, state, _) {
+                  final status = switch (state) {
+                    VoiceUnavailable(:final failure) => failure.message,
+                    _ => null,
+                  };
+                  if (status == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Semantics(
+                      liveRegion: true,
+                      label: 'Voice input status: $status',
+                      child: Text(status),
+                    ),
+                  );
+                },
+              ),
+            if (voiceState case final voiceState?)
+              ValueListenableBuilder<VoiceUiState>(
+                valueListenable: voiceState,
+                builder: (context, state, _) {
+                  if (state is VoiceIdle || state is VoiceUnavailable) {
+                    return const SizedBox.shrink();
+                  }
+                  return _VoiceModeBar(
+                    state: state,
+                    onHoldStart: onVoiceHoldStart,
+                    onHoldEnd: onVoiceHoldEnd,
+                    onStop: onVoiceStop,
+                  );
+                },
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: Semantics(
+                    label: command == null
+                        ? 'Prompt composer'
+                        : 'Arguments for /${command!.name}',
+                    hint: command == null
+                        ? 'Enter a prompt; it joins the send queue'
+                        : 'Enter command arguments; it joins the send queue',
+                    child: CallbackShortcuts(
+                      bindings: {
+                        const SingleActivator(
+                          LogicalKeyboardKey.enter,
+                          control: true,
+                        ): () =>
+                            unawaited(onSubmit()),
+                        const SingleActivator(
+                          LogicalKeyboardKey.enter,
+                          meta: true,
+                        ): () =>
+                            unawaited(onSubmit()),
+                      },
+                      child: Focus(
+                        child: TextField(
+                          controller: controller,
+                          minLines: 1,
+                          maxLines: 6,
+                          textInputAction: TextInputAction.newline,
+                          decoration: InputDecoration(
+                            labelText: command == null
+                                ? null
+                                : '/${command!.name}',
+                            hintText: command == null
+                                ? 'Message this session…'
+                                : command!.description ?? 'Command arguments…',
+                            helperText: !sizeClass.isPhone
+                                ? 'Ctrl/Cmd+Enter to queue'
+                                : null,
+                            border: const OutlineInputBorder(),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: controller,
-                builder: (context, value, _) =>
-                    ValueListenableBuilder<List<PromptAttachment>>(
-                      valueListenable: attachments,
-                      builder: (context, selected, _) {
-                        final canSubmit =
-                            value.text.trim().isNotEmpty ||
-                            command != null ||
-                            selected.isNotEmpty;
-                        return IconButton.filled(
-                          onPressed: canSubmit
-                              ? () => unawaited(onSubmit())
-                              : null,
-                          icon: const Icon(Icons.send),
-                          tooltip: command == null
-                              ? 'Queue this prompt'
-                              : 'Queue command',
-                        );
-                      },
-                    ),
-              ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _VoiceModeBar extends StatelessWidget {
+class _VoiceModeBar extends StatefulWidget {
   const _VoiceModeBar({
     required this.state,
     required this.onHoldStart,
@@ -202,19 +174,67 @@ class _VoiceModeBar extends StatelessWidget {
   final Future<void> Function()? onStop;
 
   @override
+  State<_VoiceModeBar> createState() => _VoiceModeBarState();
+}
+
+class _VoiceModeBarState extends State<_VoiceModeBar> {
+  final _focusNode = FocusNode(debugLabel: 'push-to-talk');
+  bool _captureHeld = false;
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _beginCapture() async {
+    if (_captureHeld || widget.onHoldStart == null) return;
+    _focusNode.requestFocus();
+    _captureHeld = true;
+    await widget.onHoldStart!();
+  }
+
+  Future<void> _endCapture() async {
+    if (!_captureHeld) return;
+    _captureHeld = false;
+    await widget.onHoldEnd?.call();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    final isPushToTalkKey =
+        event.logicalKey == LogicalKeyboardKey.space ||
+        event.logicalKey == LogicalKeyboardKey.enter;
+    if (!isPushToTalkKey) return KeyEventResult.ignored;
+    if (event is KeyDownEvent) {
+      unawaited(_beginCapture());
+    } else if (event is KeyUpEvent) {
+      unawaited(_endCapture());
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     final recording = state is VoiceRecording;
     final processing = state is VoiceStarting || state is VoiceTranscribing;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final tokens = theme.extension<PromptTokens>();
+    final recordingBackground =
+        tokens?.userMessageBackground ?? colorScheme.primaryContainer;
+    final recordingForeground =
+        tokens?.userMessageForeground ?? colorScheme.onPrimaryContainer;
+    final recordingBorder = tokens?.userMessageBorder ?? colorScheme.primary;
     final title = switch (state) {
       VoiceRecording() => 'Listening',
-      VoiceTranscribing() => 'Finishing transcription',
-      VoiceStarting() => 'Opening microphone',
+      VoiceTranscribing() => 'Finishing this phrase',
+      VoiceStarting() => 'Opening a fresh phrase',
       _ => 'Microphone muted',
     };
     final instruction = switch (state) {
       VoiceRecording() => 'Release to mute',
-      VoiceTranscribing() => 'Stop is closing the voice session',
+      VoiceTranscribing() => 'Transcribing the bounded audio segment',
       VoiceStarting() => 'Wait for vibration before speaking',
       _ => 'Hold to talk',
     };
@@ -225,10 +245,10 @@ class _VoiceModeBar extends StatelessWidget {
         width: double.infinity,
         decoration: BoxDecoration(
           color: recording
-              ? colorScheme.primaryContainer
+              ? recordingBackground
               : colorScheme.surfaceContainerHigh,
           border: Border.all(
-            color: recording ? colorScheme.primary : colorScheme.outlineVariant,
+            color: recording ? recordingBorder : colorScheme.outlineVariant,
             width: recording ? 2 : 1,
           ),
           borderRadius: BorderRadius.circular(24),
@@ -254,13 +274,17 @@ class _VoiceModeBar extends StatelessWidget {
                     children: [
                       Text(
                         title,
-                        style: Theme.of(context).textTheme.titleMedium,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: recording ? recordingForeground : null,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         instruction,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: recording
+                              ? recordingForeground
+                              : colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -279,39 +303,52 @@ class _VoiceModeBar extends StatelessWidget {
                 onTap: processing
                     ? null
                     : recording
-                    ? onHoldEnd == null
+                    ? widget.onHoldEnd == null
                           ? null
-                          : () => unawaited(onHoldEnd!())
-                    : onHoldStart == null
+                          : () => unawaited(widget.onHoldEnd!())
+                    : widget.onHoldStart == null
                     ? null
-                    : () => unawaited(onHoldStart!()),
-                child: Listener(
-                  onPointerDown: processing || onHoldStart == null
-                      ? null
-                      : (_) => unawaited(onHoldStart!()),
-                  onPointerUp: onHoldEnd == null
-                      ? null
-                      : (_) => unawaited(onHoldEnd!()),
-                  onPointerCancel: onHoldEnd == null
-                      ? null
-                      : (_) => unawaited(onHoldEnd!()),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 140),
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: recording
-                          ? colorScheme.primary
-                          : colorScheme.primaryContainer,
-                      border: Border.all(color: colorScheme.primary, width: 2),
-                    ),
-                    child: Icon(
-                      recording ? Icons.mic_rounded : Icons.mic_off_rounded,
-                      size: 34,
-                      color: recording
-                          ? colorScheme.onPrimary
-                          : colorScheme.onPrimaryContainer,
+                    : () => unawaited(_beginCapture()),
+                child: Focus(
+                  focusNode: _focusNode,
+                  canRequestFocus: true,
+                  onFocusChange: (hasFocus) {
+                    if (!hasFocus) unawaited(_endCapture());
+                  },
+                  onKeyEvent: _handleKeyEvent,
+                  child: Listener(
+                    onPointerDown: processing || widget.onHoldStart == null
+                        ? null
+                        : (_) => unawaited(_beginCapture()),
+                    onPointerUp: widget.onHoldEnd == null
+                        ? null
+                        : (_) => unawaited(_endCapture()),
+                    onPointerCancel: widget.onHoldEnd == null
+                        ? null
+                        : (_) => unawaited(_endCapture()),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 140),
+                      width: 72,
+                      height: 72,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: recording
+                            ? recordingForeground
+                            : colorScheme.primaryContainer,
+                        border: Border.all(
+                          color: recording
+                              ? recordingForeground
+                              : colorScheme.primary,
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        recording ? Icons.mic_rounded : Icons.mic_off_rounded,
+                        size: 34,
+                        color: recording
+                            ? recordingBackground
+                            : colorScheme.onPrimaryContainer,
+                      ),
                     ),
                   ),
                 ),
@@ -321,13 +358,24 @@ class _VoiceModeBar extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton.filledTonal(
-                    onPressed: onStop == null
+                    onPressed: widget.onStop == null
                         ? null
-                        : () => unawaited(onStop!()),
+                        : () => unawaited(_stopVoiceMode()),
+                    style: recording
+                        ? IconButton.styleFrom(
+                            backgroundColor: recordingForeground,
+                            foregroundColor: recordingBackground,
+                          )
+                        : null,
                     icon: const Icon(Icons.stop_rounded),
                     tooltip: 'Stop voice mode',
                   ),
-                  Text('Stop', style: Theme.of(context).textTheme.labelSmall),
+                  Text(
+                    'Stop',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: recording ? recordingForeground : null,
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -335,6 +383,11 @@ class _VoiceModeBar extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _stopVoiceMode() async {
+    await _endCapture();
+    await widget.onStop?.call();
   }
 }
 

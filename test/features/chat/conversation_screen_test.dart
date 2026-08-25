@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:prompt/app/prompt_theme.dart';
+import 'package:prompt/core/ui/ui.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
@@ -36,6 +40,7 @@ import 'package:prompt/features/voice/data/voice_engine.dart';
 import 'package:prompt/features/voice/data/voice_model_picker.dart';
 import 'package:prompt/features/voice/data/voice_repository.dart';
 import 'package:prompt/features/voice/domain/voice_language.dart';
+import 'package:prompt/features/voice/domain/voice_model.dart';
 import 'package:prompt/features/voice/presentation/voice_view_model.dart';
 import 'package:url_launcher/link.dart';
 
@@ -52,6 +57,29 @@ class _StaticPasswordStore implements CredentialsStore {
   Future<void> savePassword(String profileId, String? password) async {}
 }
 
+double _contrastRatio(Color first, Color second) {
+  final lighter = math.max(first.computeLuminance(), second.computeLuminance());
+  final darker = math.min(first.computeLuminance(), second.computeLuminance());
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+TextSpan? _findStyledSpan(
+  InlineSpan span, {
+  required String text,
+  required FontWeight weight,
+}) {
+  if (span case final TextSpan textSpan) {
+    if (textSpan.text == text && textSpan.style?.fontWeight == weight) {
+      return textSpan;
+    }
+    for (final child in textSpan.children ?? const <InlineSpan>[]) {
+      final match = _findStyledSpan(child, text: text, weight: weight);
+      if (match != null) return match;
+    }
+  }
+  return null;
+}
+
 class _CancelledAttachmentPicker implements AttachmentPicker {
   @override
   Future<AttachmentPickResult> pick() async => const AttachmentPickCancelled();
@@ -59,7 +87,17 @@ class _CancelledAttachmentPicker implements AttachmentPicker {
 
 class _VoiceModelPicker implements VoiceModelPicker {
   @override
-  Future<String?> pickModelFromUserAction() async => '/model.bin';
+  Future<VoiceModel?> pickModelFromUserAction(VoiceLanguage language) async =>
+      VoiceModel(
+        language: language,
+        encoderPath: '/encoder.int8.onnx',
+        decoderPath: '/decoder.onnx',
+        joinerPath: '/joiner.int8.onnx',
+        tokensPath: '/tokens.txt',
+        modelType: language == VoiceLanguage.french
+            ? 'zipformer'
+            : 'zipformer2',
+      );
 }
 
 class _VoiceEngine implements VoiceEngine {
@@ -72,10 +110,20 @@ class _VoiceEngine implements VoiceEngine {
   requestMicrophonePermission() async => const Ok(null);
 
   @override
+  Future<Result<void, VoiceEngineFailure>> prepareModel(
+    VoiceModel model,
+  ) async => const Ok(null);
+
+  @override
   Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
-    required String modelPath,
-    required VoiceLanguage language,
-  }) async => Ok(capture);
+    required VoiceModel model,
+  }) async {
+    return Ok(capture);
+  }
+
+  @override
+  Future<Result<String, VoiceEngineFailure>> finalizeMode() async =>
+      Ok(capture.transcript);
 
   @override
   Future<void> releaseModel() async {}
@@ -89,14 +137,6 @@ class _VoiceCapture implements VoiceCapture {
 
   @override
   Stream<String> get partialTranscripts => partials.stream;
-
-  @override
-  Future<Result<void, VoiceEngineFailure>> pauseMicrophone() async =>
-      const Ok(null);
-
-  @override
-  Future<Result<void, VoiceEngineFailure>> resumeMicrophone() async =>
-      const Ok(null);
 
   @override
   Future<void> release() async {
@@ -310,6 +350,7 @@ void main() {
     WidgetTester tester, {
     CapabilitiesViewModel? capabilitiesViewModel,
     VoiceViewModel? voiceViewModel,
+    ThemeData? theme,
   }) async {
     // Default to a settled, empty transcript unless a test seeds its own:
     // the loading state renders an indeterminate `CircularProgressIndicator`,
@@ -319,6 +360,7 @@ void main() {
     }
     await tester.pumpWidget(
       MaterialApp(
+        theme: theme,
         home: ConversationScreen(
           profile: profile,
           session: session,
@@ -397,13 +439,43 @@ void main() {
     expect(find.byTooltip('Scroll to latest message'), findsNothing);
   });
 
+  testWidgets('centers the latest-message action above the composer', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady(
+      List.generate(
+        24,
+        (index) => ChatMessage(
+          id: 'message-$index',
+          role: ChatMessageRole.assistant,
+          text: 'Transcript item $index ' * 8,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+        ),
+      ),
+    );
+    await pumpScreen(tester);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 500));
+    await tester.pump();
+
+    final jump = find.byTooltip('Scroll to latest message');
+    expect(jump, findsOneWidget);
+    expect(tester.getCenter(jump).dx, closeTo(400, 2));
+    expect(
+      tester.getCenter(jump).dx,
+      lessThan(tester.getCenter(find.byTooltip('Add attachment')).dx),
+    );
+  });
+
   testWidgets('streams voice transcription into the composer', (tester) async {
     final capture = _VoiceCapture('Bonjour le monde');
+    final voiceEngine = _VoiceEngine(capture);
     final voiceViewModel = VoiceViewModel(
-      VoiceRepository(_VoiceEngine(capture), _VoiceModelPicker()),
+      VoiceRepository(voiceEngine, _VoiceModelPicker()),
     );
-    await voiceViewModel.selectModelFromUserAction();
-    await pumpScreen(tester, voiceViewModel: voiceViewModel);
+    await voiceViewModel.selectModelFromUserAction(VoiceLanguage.french);
+    final darkTheme = promptDarkTheme();
+    final inputColors = darkTheme.extension<PromptTokens>()!;
+    await pumpScreen(tester, voiceViewModel: voiceViewModel, theme: darkTheme);
 
     expect(find.byTooltip('Start voice mode'), findsOneWidget);
     final voiceRect = tester.getRect(find.byTooltip('Start voice mode'));
@@ -416,7 +488,8 @@ void main() {
     );
     final inputRect = tester.getRect(find.byType(TextField));
     final sendRect = tester.getRect(find.byTooltip('Queue this prompt'));
-    expect(inputRect.right, lessThanOrEqualTo(sendRect.left));
+    expect(inputRect.right, closeTo(784, 2));
+    expect(sendRect.top, lessThan(inputRect.top));
 
     await tester.enterText(find.byType(TextField), 'Existing draft');
     await tester.tap(find.byTooltip('Start voice mode'));
@@ -430,29 +503,91 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Listening'), findsOneWidget);
+    expect(
+      _contrastRatio(
+        inputColors.userMessageForeground,
+        inputColors.userMessageBackground,
+      ),
+      greaterThanOrEqualTo(4.5),
+    );
+    expect(
+      tester.widget<Text>(find.text('Listening')).style?.color,
+      inputColors.userMessageForeground,
+    );
+    expect(
+      tester.widget<Text>(find.text('Release to mute')).style?.color,
+      inputColors.userMessageForeground,
+    );
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.mic_rounded)).color,
+      inputColors.userMessageBackground,
+    );
+    expect(
+      tester.widget<Text>(find.text('Stop')).style?.color,
+      inputColors.userMessageForeground,
+    );
     capture.partials.add('Bonjour');
     await tester.pump();
 
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      'Existing draft\nBonjour',
+      'Existing draft\nbonjour',
     );
 
     await hold.up();
-    await tester.pump();
-    expect(find.text('Hold to talk'), findsOneWidget);
-    capture.partials.add('Bonjour le monde');
-    await tester.pump();
+    await tester.runAsync(() async {
+      while (voiceViewModel.state.value is VoiceTranscribing) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+    });
+    await tester.pumpAndSettle();
 
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      'Existing draft\nBonjour le monde',
+      'Existing draft\nbonjour le monde',
     );
     expect(find.text('Hold to talk'), findsOneWidget);
     await tester.tap(find.byTooltip('Stop voice mode'));
     await tester.pump();
     expect(find.text('Hold to talk'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('push to talk supports a held keyboard key and ignores repeats', (
+    tester,
+  ) async {
+    final capture = _VoiceCapture('done');
+    final voiceViewModel = VoiceViewModel(
+      VoiceRepository(_VoiceEngine(capture), _VoiceModelPicker()),
+    );
+    await voiceViewModel.selectModelFromUserAction(VoiceLanguage.french);
+    await pumpScreen(tester, voiceViewModel: voiceViewModel);
+    await tester.tap(find.byTooltip('Start voice mode'));
+    await tester.pump();
+
+    final pushToTalkFocus = tester.widget<Focus>(
+      find
+          .ancestor(
+            of: find.byIcon(Icons.mic_off_rounded),
+            matching: find.byType(Focus),
+          )
+          .first,
+    );
+    pushToTalkFocus.focusNode!.requestFocus();
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.space);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.space);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Listening'), findsOneWidget);
+
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.space);
+    await tester.runAsync(() async {
+      while (voiceViewModel.state.value is VoiceTranscribing) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+    });
+    expect(capture.partials.isClosed, isTrue);
     await tester.pump();
   });
 
@@ -700,6 +835,74 @@ void main() {
     expect(find.text('Hi there'), findsOneWidget);
   });
 
+  testWidgets('keeps a compact selectable user message legible in dark theme', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'm1',
+        role: ChatMessageRole.user,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: 'Hi there',
+      ),
+    ]);
+    final theme = promptDarkTheme();
+    final tokens = theme.extension<PromptTokens>()!;
+
+    await pumpScreen(tester, theme: theme);
+
+    expect(
+      _contrastRatio(
+        tokens.userMessageForeground,
+        tokens.userMessageBackground,
+      ),
+      greaterThanOrEqualTo(4.5),
+    );
+    expect(find.text('You'), findsNothing);
+    expect(find.byIcon(Icons.person_outline_rounded), findsNothing);
+    expect(find.byIcon(Icons.content_copy_outlined), findsNothing);
+    final messageText = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText() == 'Hi there',
+      ),
+    );
+    expect(messageText.textSpan?.style?.color, tokens.userMessageForeground);
+    expect(messageText.onTap, isNotNull);
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.tap(find.text('Hi there'));
+    await tester.pump();
+    expect(find.text('Text copied'), findsOneWidget);
+    expect(copiedText, 'Hi there');
+    final revertButton = tester.widget<TextButton>(
+      find.ancestor(
+        of: find.byIcon(Icons.undo_rounded),
+        matching: find.byType(TextButton),
+      ),
+    );
+    expect(
+      revertButton.style?.foregroundColor?.resolve({}),
+      tokens.userMessageForeground,
+    );
+  });
+
   testWidgets('renders a live subagent tool before assistant prose', (
     tester,
   ) async {
@@ -717,7 +920,420 @@ void main() {
     await pumpScreen(tester);
 
     expect(find.text('Subagent task'), findsOneWidget);
-    expect(find.text('Running'), findsOneWidget);
+    expect(find.byIcon(Icons.sync_rounded), findsOneWidget);
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets('offers expansion only when a task has details', (tester) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'task-1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool-1',
+            tool: 'task',
+            status: 'completed',
+            output: '**Detailed result**\n\n```text\n**copy literally**\n```',
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.byType(ExpansionTile), findsOneWidget);
+    await tester.tap(find.text('Subagent task'));
+    await tester.pumpAndSettle();
+
+    final renderedResult = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText().trim() == 'Detailed result',
+      ),
+    );
+    expect(
+      _findStyledSpan(
+        renderedResult.textSpan!,
+        text: 'Detailed result',
+        weight: FontWeight.bold,
+      ),
+      isNotNull,
+    );
+    expect(find.text('**Detailed result**'), findsNothing);
+    expect(find.text('**copy literally**'), findsOneWidget);
+    expect(find.bySemanticsLabel('Code block'), findsOneWidget);
+  });
+
+  testWidgets('renders TodoWrite as a structured list without raw JSON', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'todo-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'todo-tool',
+            tool: 'todowrite',
+            status: 'completed',
+            input:
+                '{"todos":[{"content":"**Ship** it","status":"completed","priority":"high"}]}',
+            output:
+                '[{"content":"**Ship** it","status":"completed","priority":"high"}]',
+            presentation: ChatTodoPresentation([
+              ChatTodoItem(
+                content: '**Ship** it',
+                status: ChatTodoStatus.completed,
+                priority: ChatTodoPriority.high,
+              ),
+              ChatTodoItem(
+                content: 'Check tests',
+                status: ChatTodoStatus.inProgress,
+                priority: ChatTodoPriority.medium,
+              ),
+            ]),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Todos'), findsOneWidget);
+    expect(find.byType(ExpansionTile), findsOneWidget);
+    await tester.tap(find.text('Todos'));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.check_circle_outline_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.timelapse_rounded), findsOneWidget);
+    expect(
+      find.textContaining('High · Ship it', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.textContaining('{"todos"'), findsNothing);
+    expect(find.textContaining('[{"content"'), findsNothing);
+    expect(find.byType(ExpansionTile), findsOneWidget);
+  });
+
+  testWidgets('renders one TodoWrite line directly without a chevron', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'todo-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'todo-tool',
+            tool: 'todowrite',
+            status: 'running',
+            presentation: ChatTodoPresentation([
+              ChatTodoItem(
+                content: '**Review** changes',
+                status: ChatTodoStatus.inProgress,
+                priority: ChatTodoPriority.high,
+              ),
+            ]),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Todos'), findsOneWidget);
+    expect(
+      find.textContaining('High · Review changes', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets('collapses one TodoWrite item when its content is multiline', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'todo-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'todo-tool',
+            tool: 'todowrite',
+            status: 'running',
+            presentation: ChatTodoPresentation([
+              ChatTodoItem(
+                content: 'First line\nSecond line',
+                status: ChatTodoStatus.inProgress,
+                priority: ChatTodoPriority.medium,
+              ),
+            ]),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.byType(ExpansionTile), findsOneWidget);
+  });
+
+  testWidgets('renders one generic tool line directly', (tester) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool',
+            tool: 'shell',
+            status: 'completed',
+            presentation: ChatGenericToolPresentation(
+              title: r'$ pwd',
+              blocks: [
+                ChatToolBlock(
+                  kind: ChatToolBlockKind.plain,
+                  text: '/workspace',
+                  label: 'Output',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('/workspace'), findsOneWidget);
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets('counts a one-line fenced code block as one direct line', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool',
+            tool: 'execute',
+            status: 'completed',
+            presentation: ChatGenericToolPresentation(
+              title: 'Execute',
+              blocks: [
+                ChatToolBlock(
+                  kind: ChatToolBlockKind.code,
+                  text: '```sh\necho ok\n```',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('echo ok'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics && widget.properties.label == 'Code block',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets('collapses a generic tool result with multiple logical lines', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool',
+            tool: 'glob',
+            status: 'completed',
+            presentation: ChatGenericToolPresentation(
+              title: 'Glob *.dart',
+              blocks: [
+                ChatToolBlock(
+                  kind: ChatToolBlockKind.plain,
+                  text: 'lib/a.dart\nlib/b.dart',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.byType(ExpansionTile), findsOneWidget);
+    expect(find.text('lib/a.dart\nlib/b.dart'), findsNothing);
+    await tester.tap(find.text('Glob *.dart'));
+    await tester.pumpAndSettle();
+    expect(find.text('lib/a.dart\nlib/b.dart'), findsOneWidget);
+  });
+
+  testWidgets('keeps a generic header static when it has no useful line', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool',
+            tool: 'plan_exit',
+            status: 'completed',
+            presentation: ChatGenericToolPresentation(title: 'Plan'),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Plan'), findsOneWidget);
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets(
+    'renders a structured subagent task without JSON, XML, or status labels',
+    (tester) async {
+      viewModel.messages.value = ConversationReady([
+        ChatMessage(
+          id: 'task-message',
+          role: ChatMessageRole.assistant,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+          text: '',
+          details: const [
+            ChatToolDetail(
+              id: 'task-tool',
+              tool: 'task',
+              status: 'completed',
+              input: '{"description":"Review changes"}',
+              output:
+                  '<task state="completed"><task_result>done</task_result></task>',
+              presentation: ChatTaskPresentation(
+                status: ChatTaskStatus.completed,
+                description: 'Review changes',
+                subagentType: 'reviewer',
+                background: true,
+                prompt: '**Check** this\n\n```text\n**copy literally**\n```',
+                result: '**Looks good**',
+                summary: 'Background task completed',
+              ),
+            ),
+          ],
+        ),
+      ]);
+      await pumpScreen(tester);
+
+      expect(find.text('Review changes'), findsOneWidget);
+      expect(find.text('reviewer · Background'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_outline_rounded), findsOneWidget);
+      expect(find.text('Completed'), findsNothing);
+      expect(find.text('Running'), findsNothing);
+      expect(find.textContaining('{"description"'), findsNothing);
+      expect(find.textContaining('<task'), findsNothing);
+      expect(find.text('Background task completed'), findsNothing);
+      expect(find.byType(ExpansionTile), findsOneWidget);
+
+      await tester.tap(find.text('Review changes'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Prompt'), findsOneWidget);
+      expect(find.text('Result'), findsOneWidget);
+      expect(find.text('**copy literally**'), findsOneWidget);
+      expect(find.bySemanticsLabel('Code block'), findsOneWidget);
+      expect(
+        find.textContaining('Looks good', findRichText: true),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('does not expand a subagent task with no prompt or result', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'task-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'task-tool',
+            tool: 'task',
+            status: 'running',
+            presentation: ChatTaskPresentation(
+              status: ChatTaskStatus.running,
+              description: 'Inspect code',
+              subagentType: 'reviewer',
+              summary: 'Background task started',
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Inspect code'), findsOneWidget);
+    expect(find.byIcon(Icons.sync_rounded), findsOneWidget);
+    expect(find.text('Running'), findsNothing);
+    expect(find.text('Background task started'), findsNothing);
+    expect(find.byType(ExpansionTile), findsNothing);
+  });
+
+  testWidgets('renders a one-line subagent result directly', (tester) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'task-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'task-tool',
+            tool: 'task',
+            status: 'completed',
+            presentation: ChatTaskPresentation(
+              status: ChatTaskStatus.completed,
+              description: 'Review changes',
+              result: '**Looks good**',
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(
+      find.textContaining('Looks good', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.byType(ExpansionTile), findsNothing);
   });
 
   testWidgets('revert requires confirmation for its specific message ID', (
@@ -757,6 +1373,28 @@ void main() {
     expect(find.byTooltip('Revert to this message'), findsNothing);
   });
 
+  testWidgets('hides revert after a user message has been processed', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'user-1',
+        role: ChatMessageRole.user,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: 'Do the work',
+      ),
+      ChatMessage(
+        id: 'assistant-1',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1),
+        text: 'Done',
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.byTooltip('Revert to this message'), findsNothing);
+  });
+
   testWidgets('renders basic Markdown without interpreting HTML', (
     tester,
   ) async {
@@ -787,6 +1425,102 @@ void main() {
       findsOneWidget,
     );
     expect(find.bySemanticsLabel('Code block'), findsOneWidget);
+  });
+
+  testWidgets('renders GFM tables with cells and horizontal scrolling', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'table',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text:
+            '| Name | Count | Note |\n'
+            '| :--- | ---: | :---: |\n'
+            '| Alice | 12 | a \\| b |\n'
+            '| Bob | 345 | |',
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    expect(find.text('Name'), findsOneWidget);
+    expect(find.text('345'), findsOneWidget);
+    expect(find.text('a | b'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics && widget.properties.label == 'Markdown table',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SingleChildScrollView &&
+            widget.scrollDirection == Axis.horizontal,
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('uses a card for one-line reasoning and an expansion for prose', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'reasoning',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatReasoningDetail(id: 'short', text: '**One thought**\n'),
+          ChatReasoningDetail(id: 'long', text: 'Line one\nLine two'),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+
+    final renderedReasoning = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText() == 'One thought',
+      ),
+    );
+    expect(
+      _findStyledSpan(
+        renderedReasoning.textSpan!,
+        text: 'One thought',
+        weight: FontWeight.bold,
+      ),
+      isNotNull,
+    );
+    expect(find.text('**One thought**'), findsNothing);
+    expect(find.byType(ExpansionTile), findsOneWidget);
+  });
+
+  testWidgets('lifecycle pause removes composer focus without layout errors', (
+    tester,
+  ) async {
+    await pumpScreen(tester);
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isTrue,
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -951,15 +1685,17 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('does not show the desktop queue shortcut hint on Android', (
+  testWidgets('shows the queue shortcut hint by width, not platform', (
     tester,
   ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-    await pumpScreen(tester);
-
-    expect(find.text('Ctrl/Cmd+Enter to queue'), findsNothing);
-    debugDefaultTargetPlatformOverride = null;
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    try {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      await pumpScreen(tester);
+      expect(find.text('Ctrl/Cmd+Enter to queue'), findsOneWidget);
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
   });
 
   testWidgets('moves artifacts into a side panel on wide layouts', (

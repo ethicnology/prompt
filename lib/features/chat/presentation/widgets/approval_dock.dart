@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../../app/prompt_theme.dart';
+import '../../../../core/ui/ui.dart';
 import '../../domain/pending_approval.dart';
 import '../../domain/permission_response.dart';
 

@@ -3,9 +3,9 @@
 ///
 /// This is deliberately a use case, not a repository: it composes
 /// [QueuePromptsRepository] (the durable queue), [ChatRepository]
-/// (`sendPrompt`/`abortSession`/`sessionStatus`), [OpenCodeEventService]
-/// (the live SSE feed), and the pure conversation reducer. No individual
-/// repository owns this coordination on its own.
+/// (conversation truth and `sendPrompt`/`abortSession`/`sessionStatus`), and
+/// [OpenCodeEventService] (the live SSE feed). Conversation reduction remains
+/// exclusively inside [ChatRepository].
 ///
 /// Rules this type enforces:
 /// - Exactly one session is coordinated at a time ("one active session
@@ -69,16 +69,9 @@ import '../../../core/async/reconnect_backoff.dart';
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_event_service.dart';
-import '../../chat/data/chat_repository.dart';
-import '../../chat/domain/chat_load_result.dart';
-import '../../chat/domain/conversation_event.dart';
-import '../../chat/domain/conversation_state.dart';
-import '../../chat/domain/pending_approval.dart';
-import '../../chat/domain/permission_response.dart';
-import '../../chat/domain/session_block_reason.dart';
-import '../../chat/domain/session_execution_state.dart';
-import '../../connection/domain/server_profile.dart';
-import '../../sessions/domain/open_code_session.dart';
+import '../../chat/chat.dart';
+import '../../connection/connection.dart';
+import '../../sessions/sessions.dart';
 import '../domain/queue_approval_failure.dart';
 import '../domain/queue_failure.dart';
 import '../domain/queue_send_now_failure.dart';
@@ -130,14 +123,9 @@ class QueueSendCoordinator {
   StreamSubscription<OpenCodeEventEnvelope>? _sseSubscription;
 
   List<QueuedPrompt> _queue = const <QueuedPrompt>[];
-  ConversationState _conversationState = const ConversationState();
 
   /// Backs [conversationStateUpdates]. Never read from outside this class;
   /// external callers only ever get the read-only [ValueListenable] view.
-  final ValueNotifier<ConversationState> _liveConversationState = ValueNotifier(
-    const ConversationState(),
-  );
-
   /// Read-only, session-scoped view of the active session's live
   /// conversation, reduced from `message.updated`, `message.part.updated`,
   /// and the other conversation SSE events since it was [activate]d. Carries
@@ -153,10 +141,12 @@ class QueueSendCoordinator {
   /// token-level part updates between two rebuilds still yields a single
   /// rebuild carrying the final text, not one per token.
   ValueListenable<ConversationState> get conversationStateUpdates =>
-      _liveConversationState;
+      _chatRepository.conversationStateUpdates;
 
   bool _dispatchInProgress = false;
   String? _pendingSendNowPromptId;
+  Future<void> _blockTransitionTail = Future<void>.value();
+  final Set<String> _blockPausedPromptIds = <String>{};
 
   /// Bumped by every [activate] and [deactivate] call. Any pending
   /// continuation that captured an earlier value is stale and must not
@@ -208,7 +198,8 @@ class QueueSendCoordinator {
     if (session == null) {
       return null;
     }
-    return _conversationState.sessionStates[session.id];
+    return _chatRepository.conversationStateUpdates.value.sessionStates[session
+        .id];
   }
 
   /// Why the active session's queue is currently blocked awaiting a human
@@ -221,7 +212,8 @@ class QueueSendCoordinator {
     if (session == null) {
       return null;
     }
-    return _conversationState.sessionBlocks[session.id];
+    return _chatRepository.conversationStateUpdates.value.sessionBlocks[session
+        .id];
   }
 
   /// Full detail of the active session's pending permission or question,
@@ -239,7 +231,10 @@ class QueueSendCoordinator {
     if (session == null) {
       return null;
     }
-    return _conversationState.pendingApprovals[session.id];
+    return _chatRepository
+        .conversationStateUpdates
+        .value
+        .pendingApprovals[session.id];
   }
 
   /// Activates queue coordination for [session] on [profile], tearing down
@@ -267,6 +262,7 @@ class QueueSendCoordinator {
     final token = _activationToken;
     _profile = profile;
     _session = session;
+    _chatRepository.activateConversation(session);
 
     final initialQueue = await _queueRepository
         .watchQueue(profile: profile, session: session)
@@ -315,7 +311,11 @@ class QueueSendCoordinator {
           // block was first observed.
           final blockReason = currentSessionBlockReason;
           if (blockReason != null) {
-            unawaited(_pauseQueuedPromptsForBlock(blockReason, token));
+            unawaited(
+              _serializeBlockTransition(
+                () => _pauseQueuedPromptsForBlock(blockReason, token),
+              ),
+            );
           }
           _maybeDispatch();
         });
@@ -351,10 +351,11 @@ class QueueSendCoordinator {
     _profile = null;
     _session = null;
     _queue = const <QueuedPrompt>[];
-    _updateConversationState(const ConversationState());
+    _chatRepository.deactivateConversation();
     _setConnectionState(const SseSuspended());
     _dispatchInProgress = false;
     _pendingSendNowPromptId = null;
+    _blockPausedPromptIds.clear();
   }
 
   /// Called by the app's lifecycle owner when the app becomes inactive
@@ -468,6 +469,10 @@ class QueueSendCoordinator {
     // dispatch stays blocked (`_maybeDispatch` checks `connectionState`),
     // until a fresh authoritative status is fetched.
     _setConnectionState(const SseReconciling());
+    // The repository owns the REST/SSE merge. The SSE subscription is already
+    // live, so events emitted while this snapshot is in flight are journaled
+    // and replayed only after the snapshot boundary.
+    await _chatRepository.load(profile, session);
     final statusResult = await _chatRepository.sessionStatus(profile, session);
     if (_isStale(token) ||
         !_appForeground ||
@@ -511,21 +516,15 @@ class QueueSendCoordinator {
     if (_isStale(token)) {
       return;
     }
-    final event = mapConversationEvent(
-      envelope,
-      sessionId: session.id,
-      directory: session.directory,
-    );
-    if (event == null) {
-      // Unrelated event (other session/directory, unmodeled type, or
-      // malformed payload): ignored, never gates the queue.
-      return;
-    }
-    final previousState = _conversationState;
-    final nextState = reduceConversationEvent(_conversationState, event);
-    _updateConversationState(nextState);
+    final previousState = _chatRepository.conversationStateUpdates.value;
+    _chatRepository.applyEnvelope(envelope, session);
+    final nextState = _chatRepository.conversationStateUpdates.value;
+    if (identical(previousState, nextState)) return;
     unawaited(
-      _handleBlockTransition(session.id, previousState, nextState, token),
+      _serializeBlockTransition(
+        () =>
+            _handleBlockTransition(session.id, previousState, nextState, token),
+      ),
     );
     _maybeDispatch();
   }
@@ -732,9 +731,7 @@ class QueueSendCoordinator {
     if (result is Err<void, ChatFailure>) {
       return const Err(QueueApprovalFailure.requestFailed);
     }
-    _updateConversationState(
-      clearPendingApproval(_conversationState, session.id),
-    );
+    _chatRepository.clearApproval(session.id);
     return const Ok(null);
   }
 
@@ -746,7 +743,6 @@ class QueueSendCoordinator {
     }
     await deactivate();
     _disposed = true;
-    _liveConversationState.dispose();
     _connectionState.dispose();
   }
 
@@ -760,19 +756,24 @@ class QueueSendCoordinator {
     String sessionId,
     SessionExecutionState state,
   ) async {
-    final previousState = _conversationState;
-    final nextState = reduceConversationEvent(
-      _conversationState,
-      SessionStatusEvent(sessionId: sessionId, state: state),
-    );
-    _updateConversationState(nextState);
+    final previousState = _chatRepository.conversationStateUpdates.value;
+    _chatRepository.applySessionState(sessionId, state);
+    final nextState = _chatRepository.conversationStateUpdates.value;
     _notifyGenerationFinished(sessionId, previousState, nextState);
-    await _handleBlockTransition(
-      sessionId,
-      previousState,
-      nextState,
-      _activationToken,
+    await _serializeBlockTransition(
+      () => _handleBlockTransition(
+        sessionId,
+        previousState,
+        nextState,
+        _activationToken,
+      ),
     );
+  }
+
+  Future<void> _serializeBlockTransition(Future<void> Function() operation) {
+    final next = _blockTransitionTail.then((_) => operation());
+    _blockTransitionTail = next;
+    return next;
   }
 
   /// Reports a busy-to-idle transition once, so a caller can raise a generic
@@ -794,11 +795,6 @@ class QueueSendCoordinator {
     }
   }
 
-  void _updateConversationState(ConversationState next) {
-    _conversationState = next;
-    _liveConversationState.value = next;
-  }
-
   Future<void> _reconcilePendingApprovals(
     ServerProfile profile,
     OpenCodeSession session,
@@ -815,19 +811,9 @@ class QueueSendCoordinator {
           await _resumeBlockedPrompts(token);
           return;
         }
-        final reason = approval is PendingQuestionApproval
-            ? SessionBlockReason.question
-            : SessionBlockReason.permission;
-        final previous = _conversationState;
-        final next = reduceConversationEvent(
-          previous,
-          SessionBlockedEvent(
-            sessionId: session.id,
-            reason: reason,
-            detail: approval,
-          ),
-        );
-        _updateConversationState(next);
+        final previous = _chatRepository.conversationStateUpdates.value;
+        _chatRepository.applyBlocked(session.id, approval);
+        final next = _chatRepository.conversationStateUpdates.value;
         await _handleBlockTransition(session.id, previous, next, token);
       case Err<List<PendingApproval>, ChatFailure>():
         // Fail closed: persisted permission/question pauses remain paused.
@@ -879,17 +865,25 @@ class QueueSendCoordinator {
       }
       if (prompt.state == QueuedPromptState.queued) {
         await _queueRepository.markPaused(prompt.id, reason: pauseReason);
+        _blockPausedPromptIds.add(prompt.id);
       }
     }
   }
 
   Future<void> _resumeBlockedPrompts(int token) async {
-    for (final prompt in List<QueuedPrompt>.of(_queue)) {
+    for (final promptId in List<String>.of(_blockPausedPromptIds)) {
       if (_isStale(token)) {
         return;
       }
+      await _queueRepository.markQueued(promptId);
+      _blockPausedPromptIds.remove(promptId);
+    }
+    // A queue refresh may have arrived before the serialized pause operation
+    // recorded its id. Preserve the existing safeguard for those rows.
+    for (final prompt in List<QueuedPrompt>.of(_queue)) {
       if (prompt.state == QueuedPromptState.paused &&
-          _isBlockPauseReason(prompt.pauseReason)) {
+          _isBlockPauseReason(prompt.pauseReason) &&
+          !_blockPausedPromptIds.contains(prompt.id)) {
         await _queueRepository.markQueued(prompt.id);
       }
     }

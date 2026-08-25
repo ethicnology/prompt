@@ -7,11 +7,16 @@ class SessionArtifactsPanel extends StatelessWidget {
   const SessionArtifactsPanel({
     required this.state,
     required this.onRefresh,
+    this.lazy = false,
     super.key,
   });
 
   final SessionArtifactsState state;
   final Future<void> Function({String? messageId}) onRefresh;
+
+  /// Set this only when the parent gives the panel a finite height. The
+  /// default keeps the panel composable in an outer scroll view.
+  final bool lazy;
 
   @override
   Widget build(BuildContext context) {
@@ -50,46 +55,116 @@ class SessionArtifactsPanel extends StatelessWidget {
                   TextButton(onPressed: onRefresh, child: const Text('Retry')),
                 ],
               ),
-              SessionArtifactsReady(:final todos, :final diffs) => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Todos (${todos.length}) · Changed files (${diffs.length})',
-                          style: Theme.of(context).textTheme.labelLarge,
+              SessionArtifactsReady(:final todos, :final diffs) =>
+                lazy
+                    ? Expanded(
+                        child: _LazyArtifactList(
+                          todos: todos,
+                          diffs: diffs,
+                          onRefresh: onRefresh,
                         ),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Todos (${todos.length}) · Changed files (${diffs.length})',
+                                  style: Theme.of(context).textTheme.labelLarge,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: onRefresh,
+                                tooltip: 'Refresh session artifacts',
+                                icon: const Icon(Icons.refresh_rounded),
+                              ),
+                            ],
+                          ),
+                          if (todos.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'No todos reported for this session.',
+                              ),
+                            )
+                          else
+                            for (final todo in todos) _TodoRow(todo: todo),
+                          if (diffs.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'No changed files reported for this session.',
+                              ),
+                            )
+                          else
+                            for (final diff in diffs) _DiffRow(diff: diff),
+                        ],
                       ),
-                      IconButton(
-                        onPressed: onRefresh,
-                        tooltip: 'Refresh session artifacts',
-                        icon: const Icon(Icons.refresh_rounded),
-                      ),
-                    ],
-                  ),
-                  if (todos.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text('No todos reported for this session.'),
-                    )
-                  else
-                    for (final todo in todos) _TodoRow(todo: todo),
-                  if (diffs.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        'No changed files reported for this session.',
-                      ),
-                    )
-                  else
-                    for (final diff in diffs) _DiffRow(diff: diff),
-                ],
-              ),
             },
           ],
         ),
       ),
+    );
+  }
+}
+
+class _LazyArtifactList extends StatelessWidget {
+  const _LazyArtifactList({
+    required this.todos,
+    required this.diffs,
+    required this.onRefresh,
+  });
+
+  final List<SessionTodo> todos;
+  final List<SessionFileDiff> diffs;
+  final Future<void> Function({String? messageId}) onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final itemCount =
+        1 +
+        (todos.isEmpty ? 1 : todos.length) +
+        (diffs.isEmpty ? 1 : diffs.length);
+    return ListView.builder(
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Todos (${todos.length}) · Changed files (${diffs.length})',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              IconButton(
+                onPressed: onRefresh,
+                tooltip: 'Refresh session artifacts',
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          );
+        }
+        if (todos.isEmpty && index == 1) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('No todos reported for this session.'),
+          );
+        }
+        final todoOffset = todos.isEmpty ? 2 : 1;
+        if (index < todoOffset + todos.length) {
+          return _TodoRow(todo: todos[index - todoOffset]);
+        }
+        if (diffs.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('No changed files reported for this session.'),
+          );
+        }
+        return _DiffRow(diff: diffs[index - todos.length - 1]);
+      },
     );
   }
 }
