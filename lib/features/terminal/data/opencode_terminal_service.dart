@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/remote_terminal.dart';
 
 class OpenCodeTerminalService {

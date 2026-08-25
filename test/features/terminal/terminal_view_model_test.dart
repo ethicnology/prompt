@@ -11,14 +11,17 @@ import 'package:prompt/features/terminal/presentation/terminal_view_model.dart';
 void main() {
   test('keeps only the newest 100 KiB of streaming terminal output', () async {
     final repository = _Repository();
-    final viewModel = TerminalViewModel(repository);
+    final viewModel = TerminalViewModel(
+      repository,
+      publishInterval: Duration.zero,
+    );
     final profile = ServerProfile(origin: Uri.parse('http://10.80.0.1:4096'));
     await viewModel.load(profile, '/work');
     await viewModel.connect(profile, 'pty');
     repository.controller.add(
       List.filled(TerminalViewModel.maxOutputBytes + 20, 65),
     );
-    await Future<void>.delayed(Duration.zero);
+    await _settleStream();
     final state = viewModel.value as TerminalReady;
     expect(state.output.codeUnits.length, TerminalViewModel.maxOutputBytes);
     await viewModel.deactivate();
@@ -30,13 +33,16 @@ void main() {
     'renders UTF-8 terminal output without corrupting non-ASCII text',
     () async {
       final repository = _Repository();
-      final viewModel = TerminalViewModel(repository);
+      final viewModel = TerminalViewModel(
+        repository,
+        publishInterval: Duration.zero,
+      );
       final profile = ServerProfile(origin: Uri.parse('http://10.80.0.1:4096'));
       await viewModel.load(profile, '/work');
       await viewModel.connect(profile, 'pty');
 
       repository.controller.add(utf8.encode('cafe \u00e9 \ud83d\ude80'));
-      await Future<void>.delayed(Duration.zero);
+      await _settleStream();
 
       expect(
         (viewModel.value as TerminalReady).output,
@@ -46,6 +52,75 @@ void main() {
       viewModel.dispose();
     },
   );
+
+  test('publishes several chunks once and keeps their order', () async {
+    final repository = _Repository();
+    final viewModel = TerminalViewModel(
+      repository,
+      publishInterval: Duration.zero,
+    );
+    final profile = ServerProfile(origin: Uri.parse('http://10.80.0.1:4096'));
+    await viewModel.load(profile, '/work');
+    await viewModel.connect(profile, 'pty');
+    var publications = 0;
+    viewModel.addListener(() => publications++);
+
+    repository.controller
+      ..add(utf8.encode('one '))
+      ..add(utf8.encode('two'));
+    await _settleStream();
+
+    expect(publications, 1);
+    expect((viewModel.value as TerminalReady).output, 'one two');
+    viewModel.dispose();
+  });
+
+  test('preserves a UTF-8 sequence split across chunks', () async {
+    final repository = _Repository();
+    final viewModel = TerminalViewModel(
+      repository,
+      publishInterval: Duration.zero,
+    );
+    final profile = ServerProfile(origin: Uri.parse('http://10.80.0.1:4096'));
+    await viewModel.load(profile, '/work');
+    await viewModel.connect(profile, 'pty');
+    repository.controller.add([0xf0, 0x9f]);
+    repository.controller.add([0x9a, 0x80]);
+    await _settleStream();
+
+    expect((viewModel.value as TerminalReady).output, '🚀');
+    viewModel.dispose();
+  });
+
+  test(
+    'flushes immediately when disconnected and never calls back after dispose',
+    () async {
+      final repository = _Repository();
+      final viewModel = TerminalViewModel(
+        repository,
+        publishInterval: const Duration(hours: 1),
+      );
+      final profile = ServerProfile(origin: Uri.parse('http://10.80.0.1:4096'));
+      await viewModel.load(profile, '/work');
+      await viewModel.connect(profile, 'pty');
+      var publications = 0;
+      viewModel.addListener(() => publications++);
+      repository.controller.add(utf8.encode('pending'));
+      await Future<void>.delayed(Duration.zero);
+      await viewModel.deactivate();
+      expect((viewModel.value as TerminalReady).output, 'pending');
+      expect(publications, 1);
+      viewModel.dispose();
+      repository.controller.add(utf8.encode('late'));
+      await Future<void>.delayed(Duration.zero);
+      expect(publications, 1);
+    },
+  );
+}
+
+Future<void> _settleStream() async {
+  await Future<void>.delayed(Duration.zero);
+  await Future<void>.delayed(Duration.zero);
 }
 
 class _Repository implements TerminalRepository {

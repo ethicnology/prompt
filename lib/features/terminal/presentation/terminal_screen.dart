@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/remote_terminal.dart';
 import 'terminal_view_model.dart';
 
@@ -220,6 +220,9 @@ class _Ready extends StatelessWidget {
             reverse: true,
             padding: const EdgeInsets.all(12),
             child: SelectableText(
+              // Keep one selectable semantic text surface. The view model's
+              // bounded buffer addresses streaming pressure; lazy output
+              // would risk changing selection and accessibility semantics.
               state.connecting
                   ? 'Connecting...'
                   : state.output.isEmpty

@@ -8,7 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/remote_terminal.dart';
 import 'opencode_terminal_service.dart';
 
