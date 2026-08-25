@@ -1,26 +1,81 @@
 import '../../../core/async/result.dart';
 import '../domain/voice_failure.dart';
 import '../domain/voice_language.dart';
+import '../domain/voice_model.dart';
 import 'voice_engine.dart';
+import 'voice_model_installer.dart';
 import 'voice_model_picker.dart';
 
 /// Owns the current memory-only capture. It never persists, logs, returns, or
 /// transmits audio or transcripts. Every exit path releases the capture.
 class VoiceRepository {
-  VoiceRepository(this._engine, this._modelPicker);
+  VoiceRepository(this._engine, this._modelPicker, [this._modelInstaller]);
 
   final VoiceEngine _engine;
   final VoiceModelPicker _modelPicker;
+  final VoiceModelInstaller? _modelInstaller;
   VoiceCapture? _activeCapture;
-  String? _modelPath;
+  final Map<VoiceLanguage, VoiceModel> _models = {};
 
-  bool get hasSelectedModel => _modelPath != null;
+  bool hasSelectedModel(VoiceLanguage language) =>
+      _models.containsKey(language);
 
-  Future<bool> selectModelFromUserAction() async {
-    final modelPath = await _modelPicker.pickModelFromUserAction();
-    if (modelPath == null) return false;
+  Future<Set<VoiceLanguage>> restoreInstalledModels() async {
+    final installer = _modelInstaller;
+    if (installer == null) return _models.keys.toSet();
+    for (final language in VoiceLanguage.values) {
+      try {
+        final model = await installer.installedModel(language);
+        if (model != null) _models[language] = model;
+      } on Object {
+        // A corrupt or inaccessible installation is treated as absent. The
+        // next explicit install will replace it through the typed boundary.
+      }
+    }
+    return _models.keys.toSet();
+  }
+
+  Future<Result<VoiceModel, VoiceFailure>> installModelFromUserAction(
+    VoiceLanguage language, {
+    required VoiceModelInstallProgress onProgress,
+  }) async {
+    final installer = _modelInstaller;
+    if (installer == null) return const Err(VoiceModelInstallUnavailable());
     await release(releaseModel: true);
-    _modelPath = modelPath;
+    try {
+      final model = await installer.install(language, onProgress: onProgress);
+      _models[language] = model;
+      return Ok(model);
+    } on VoiceModelHttpException {
+      return const Err(VoiceModelHttpFailed());
+    } on VoiceModelNetworkException {
+      return const Err(VoiceModelNetworkFailed());
+    } on VoiceModelSizeException {
+      return const Err(VoiceModelSizeMismatch());
+    } on VoiceModelChecksumException {
+      return const Err(VoiceModelChecksumMismatch());
+    } on VoiceModelStorageException {
+      return const Err(VoiceModelStorageFailed());
+    } on VoiceModelCancelledException {
+      return const Err(VoiceModelInstallCancelled());
+    } on VoiceModelUnavailableException {
+      return const Err(VoiceModelInstallUnavailable());
+    } on Object {
+      return const Err(VoiceModelInstallUnexpected());
+    }
+  }
+
+  Future<void> removeModel(VoiceLanguage language) async {
+    await release(releaseModel: true);
+    await _modelInstaller?.remove(language);
+    _models.remove(language);
+  }
+
+  Future<bool> selectModelFromUserAction(VoiceLanguage language) async {
+    final model = await _modelPicker.pickModelFromUserAction(language);
+    if (model == null) return false;
+    await release(releaseModel: true);
+    _models[language] = model;
     return true;
   }
 
@@ -28,18 +83,30 @@ class VoiceRepository {
     VoiceLanguage language,
   ) async {
     await release();
-    final modelPath = _modelPath;
-    if (modelPath == null) {
+    final model = _models[language];
+    if (model == null) {
       return const Err(VoiceEngineUnavailable());
     }
     final permission = await _engine.requestMicrophonePermission();
     if (permission case Err<void, VoiceEngineFailure>(:final failure)) {
       return Err(_mapFailure(failure));
     }
-    final capture = await _engine.startCapture(
-      modelPath: modelPath,
-      language: language,
-    );
+    final prepared = await _engine.prepareModel(model);
+    return switch (prepared) {
+      Ok() => const Ok(null),
+      Err(:final failure) => Err(_mapFailure(failure)),
+    };
+  }
+
+  Future<Result<void, VoiceFailure>> startSegment(
+    VoiceLanguage language,
+  ) async {
+    await release();
+    final model = _models[language];
+    if (model == null) {
+      return const Err(VoiceEngineUnavailable());
+    }
+    final capture = await _engine.startCapture(model: model);
     return switch (capture) {
       Ok<VoiceCapture, VoiceEngineFailure>(:final value) => () {
         _activeCapture = value;
@@ -48,26 +115,6 @@ class VoiceRepository {
       Err<VoiceCapture, VoiceEngineFailure>(:final failure) => Err(
         _mapFailure(failure),
       ),
-    };
-  }
-
-  Future<Result<void, VoiceFailure>> resumeMicrophone() async {
-    final capture = _activeCapture;
-    if (capture == null) return const Err(VoiceCaptureFailed());
-    final result = await capture.resumeMicrophone();
-    return switch (result) {
-      Ok() => const Ok(null),
-      Err(:final failure) => Err(_mapFailure(failure)),
-    };
-  }
-
-  Future<Result<void, VoiceFailure>> pauseMicrophone() async {
-    final capture = _activeCapture;
-    if (capture == null) return const Err(VoiceCaptureFailed());
-    final result = await capture.pauseMicrophone();
-    return switch (result) {
-      Ok() => const Ok(null),
-      Err(:final failure) => Err(_mapFailure(failure)),
     };
   }
 
@@ -93,6 +140,14 @@ class VoiceRepository {
     } finally {
       await capture.release();
     }
+  }
+
+  Future<Result<String, VoiceFailure>> finalizeMode() async {
+    final result = await _engine.finalizeMode();
+    return switch (result) {
+      Ok(:final value) => Ok(value),
+      Err(:final failure) => Err(_mapFailure(failure)),
+    };
   }
 
   Stream<String> get partialTranscripts =>

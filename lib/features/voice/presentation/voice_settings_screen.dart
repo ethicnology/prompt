@@ -1,102 +1,194 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
+import '../domain/voice_language.dart';
+import '../domain/voice_failure.dart';
 import 'voice_view_model.dart';
 
-/// Global local-model configuration. Recording is available only from a
-/// conversation's visible composer control.
 class VoiceSettingsScreen extends StatelessWidget {
   const VoiceSettingsScreen({required this.viewModel, super.key});
 
   final VoiceViewModel viewModel;
 
   @override
-  Widget build(BuildContext context) {
-    return PopScope<void>(
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) unawaited(viewModel.cancel());
-      },
-      child: Scaffold(
-        appBar: AppBar(title: const Text('Voice input')),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text(
-              'Local voice transcription',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Audio and any future transcript stay in memory only. Prompt does not use remote speech-to-text.',
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Dictation language',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.translate_rounded),
-              title: Text('French + English'),
-              subtitle: Text(
-                'Whisper detects the spoken language automatically.',
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Download a local multilingual Whisper model, then select its '
-              'file. The conversation composer will show Voice input once a '
-              'model is selected. Tiny finishes fastest, Base balances French '
-              'accuracy and latency, and Small can take noticeably longer to '
-              'finish on a phone. Audio and transcripts stay in memory only.',
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () => _openModelDownload(
-                'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
-              ),
-              icon: const Icon(Icons.download_outlined),
-              label: const Text('Download Tiny multilingual model (fast)'),
-            ),
-            OutlinedButton.icon(
-              onPressed: () => _openModelDownload(
-                'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
-              ),
-              icon: const Icon(Icons.download_outlined),
-              label: const Text(
-                'Download Base multilingual model (French, recommended)',
-              ),
-            ),
-            OutlinedButton.icon(
-              onPressed: () => _openModelDownload(
-                'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
-              ),
-              icon: const Icon(Icons.download_outlined),
-              label: const Text(
-                'Download Small multilingual model (French, more accurate)',
-              ),
-            ),
-            const SizedBox(height: 8),
-            ValueListenableBuilder<bool>(
-              valueListenable: viewModel.hasSelectedModel,
-              builder: (context, hasSelectedModel, _) => FilledButton.tonal(
-                onPressed: viewModel.selectModelFromUserAction,
-                child: Text(
-                  hasSelectedModel
-                      ? 'Change local Whisper model file'
-                      : 'Choose local Whisper model file',
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Voice input')),
+    body: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(
+          'Recognition language',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        ValueListenableBuilder<VoiceLanguage>(
+          valueListenable: viewModel.language,
+          builder: (context, language, _) =>
+              DropdownButtonFormField<VoiceLanguage>(
+                initialValue: language,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: 'Language',
                 ),
+                items: [
+                  for (final option in VoiceLanguage.values)
+                    DropdownMenuItem(value: option, child: Text(option.label)),
+                ],
+                onChanged: (value) {
+                  if (value != null) viewModel.selectLanguage(value);
+                },
               ),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          'Local Sherpa models',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Install downloads, verifies, stores, and selects all four required '
+          'files in one action. French needs about 123 MiB; English needs about '
+          '69 MiB. Models remain installed across app updates. Installing '
+          'explicitly contacts Hugging Face to download the selected model.',
+        ),
+        const SizedBox(height: 12),
+        ValueListenableBuilder<Set<VoiceLanguage>>(
+          valueListenable: viewModel.selectedModelLanguages,
+          builder: (context, selected, _) =>
+              ValueListenableBuilder<Map<VoiceLanguage, double>>(
+                valueListenable: viewModel.modelInstallProgress,
+                builder: (context, progress, _) =>
+                    ValueListenableBuilder<
+                      Map<VoiceLanguage, VoiceModelInstallFailure>
+                    >(
+                      valueListenable: viewModel.modelInstallFailures,
+                      builder: (context, failures, _) => Column(
+                        children: [
+                          _ModelCard(
+                            language: VoiceLanguage.french,
+                            selected: selected.contains(VoiceLanguage.french),
+                            progress: progress[VoiceLanguage.french],
+                            failure: failures[VoiceLanguage.french],
+                            onInstall: () =>
+                                viewModel.installModelFromUserAction(
+                                  VoiceLanguage.french,
+                                ),
+                            onRemove: () => viewModel.removeModelFromUserAction(
+                              VoiceLanguage.french,
+                            ),
+                            onSelectExisting: () =>
+                                viewModel.selectModelFromUserAction(
+                                  VoiceLanguage.french,
+                                ),
+                          ),
+                          const SizedBox(height: 12),
+                          _ModelCard(
+                            language: VoiceLanguage.english,
+                            selected: selected.contains(VoiceLanguage.english),
+                            progress: progress[VoiceLanguage.english],
+                            failure: failures[VoiceLanguage.english],
+                            onInstall: () =>
+                                viewModel.installModelFromUserAction(
+                                  VoiceLanguage.english,
+                                ),
+                            onRemove: () => viewModel.removeModelFromUserAction(
+                              VoiceLanguage.english,
+                            ),
+                            onSelectExisting: () =>
+                                viewModel.selectModelFromUserAction(
+                                  VoiceLanguage.english,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+              ),
+        ),
+        const SizedBox(height: 20),
+        const Text(
+          'Models and transcripts remain local. Audio stays in memory and is '
+          'released after each segment, cancellation, or lifecycle pause. '
+          'Removing a model deletes its private files.',
+        ),
+      ],
+    ),
+  );
+}
+
+class _ModelCard extends StatelessWidget {
+  const _ModelCard({
+    required this.language,
+    required this.selected,
+    required this.progress,
+    required this.failure,
+    required this.onInstall,
+    required this.onRemove,
+    required this.onSelectExisting,
+  });
+
+  final VoiceLanguage language;
+  final bool selected;
+  final double? progress;
+  final VoiceModelInstallFailure? failure;
+  final VoidCallback onInstall;
+  final VoidCallback onRemove;
+  final VoidCallback onSelectExisting;
+
+  @override
+  Widget build(BuildContext context) {
+    final installing = progress != null;
+    final status = installing
+        ? 'Installing ${(progress! * 100).round()}%'
+        : selected
+        ? 'Installed'
+        : failure != null
+        ? failure!.message
+        : 'Not installed';
+    return Card.outlined(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${language.label} INT8',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                Text(status),
+              ],
+            ),
+            if (installing) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: progress),
+            ],
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: installing ? null : onInstall,
+              icon: const Icon(Icons.download_outlined),
+              label: Text(
+                '${selected ? 'Reinstall' : 'Install'} ${language.label} model',
+              ),
+            ),
+            if (selected) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: installing ? null : onRemove,
+                icon: const Icon(Icons.delete_outline),
+                label: Text('Remove ${language.label} model'),
+              ),
+            ],
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: installing ? null : onSelectExisting,
+              child: Text('Choose existing ${language.label} model files'),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Future<void> _openModelDownload(String url) {
-    return launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 }

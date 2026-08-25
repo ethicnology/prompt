@@ -1,5 +1,5 @@
 import '../../../core/async/result.dart';
-import '../domain/voice_language.dart';
+import '../domain/voice_model.dart';
 
 enum VoiceEngineFailure {
   permissionDenied,
@@ -15,16 +15,12 @@ enum VoiceEngineFailure {
 abstract interface class VoiceCapture {
   Stream<String> get partialTranscripts;
 
-  Future<Result<void, VoiceEngineFailure>> resumeMicrophone();
-
-  Future<Result<void, VoiceEngineFailure>> pauseMicrophone();
-
   Future<Result<String, VoiceEngineFailure>> stop();
 
   Future<void> release();
 }
 
-/// Platform boundary for local capture and Whisper transcription.
+/// Platform boundary for local capture and Sherpa transcription.
 ///
 /// `requestMicrophonePermission` is intentionally separate and may only be
 /// called from a direct user action in a view model. No implementation sends
@@ -32,11 +28,15 @@ abstract interface class VoiceCapture {
 abstract interface class VoiceEngine {
   Future<Result<void, VoiceEngineFailure>> requestMicrophonePermission();
 
+  Future<Result<void, VoiceEngineFailure>> prepareModel(VoiceModel model);
+
   Future<Result<VoiceCapture, VoiceEngineFailure>> startCapture({
-    required String modelPath,
-    required VoiceLanguage language,
+    required VoiceModel model,
   });
 
-  /// Releases a model retained between short dictation segments.
+  /// Re-decodes every completed segment as one memory-only utterance.
+  Future<Result<String, VoiceEngineFailure>> finalizeMode();
+
+  /// Releases the model retained between short dictation segments.
   Future<void> releaseModel();
 }

@@ -62,9 +62,12 @@ dependencies:
   # BSD-3-Clause, maintained recorder with Android/iOS PCM stream support.
   # It is used only by the Android/iOS voice implementation.
   record: ^7.1.1
-  # MIT-licensed on-device Whisper.cpp adapter. Imported only by the native
-  # Android/iOS implementation; web and Linux retain unavailable stubs.
-  whisper_ggml: ^2.6.0
+  # Apache-2.0 local streaming ASR. Prompt uses quantized French and English
+  # Zipformer models in a dedicated isolate on Android and Linux.
+  sherpa_onnx: ^1.13.5
+  # Official Flutter asset for Cupertino IconData constants retained by the
+  # Web compiler; the release build tree-shakes it to the required glyphs.
+  cupertino_icons: ^1.0.9
 
 dev_dependencies:
   flutter_test:

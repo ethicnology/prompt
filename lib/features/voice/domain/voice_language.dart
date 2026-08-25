@@ -1,5 +1,6 @@
 enum VoiceLanguage {
-  frenchAndEnglish('auto', 'French + English');
+  french('fr', 'French'),
+  english('en', 'English');
 
   const VoiceLanguage(this.code, this.label);
 
