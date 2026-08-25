@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../data/diagnostics_repository.dart';
 import '../domain/diagnostics_load_result.dart';
 import '../domain/diagnostics_snapshot.dart';

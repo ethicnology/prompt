@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/async/result.dart';
-import '../../connection/domain/server_profile.dart';
-import '../../sessions/domain/open_code_project.dart';
+import '../../connection/connection.dart';
+import '../../sessions/sessions.dart';
 import '../data/workspace_repository.dart';
 import '../domain/workspace_entry.dart';
 import '../domain/workspace_failure.dart';

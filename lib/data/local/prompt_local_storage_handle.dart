@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import '../../features/connection/data/server_profile_store.dart';
-import '../../features/queue/data/queue_prompts_dao.dart';
+import '../../features/connection/connection.dart';
+import '../../features/queue/queue.dart';
 
 /// A resolved local-storage backend for the current platform, bundling the
 /// stores the composition root wires into repositories together with how

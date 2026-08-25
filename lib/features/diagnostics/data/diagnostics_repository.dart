@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/diagnostics_load_result.dart';
 import 'opencode_diagnostics_service.dart';
 

@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../data/capabilities_repository.dart';
 import '../domain/capabilities_load_result.dart';
 import '../domain/open_code_capabilities.dart';

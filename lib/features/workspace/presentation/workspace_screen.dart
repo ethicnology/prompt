@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../../connection/domain/server_profile.dart';
-import '../../sessions/domain/open_code_project.dart';
+import '../../../core/ui/ui.dart';
+import '../../connection/connection.dart';
+import '../../sessions/sessions.dart';
 import '../domain/workspace_entry.dart';
 import '../domain/workspace_failure.dart';
 import 'workspace_view_model.dart';
@@ -198,6 +199,7 @@ class _WorkspaceContentState extends State<_WorkspaceContent> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final sizeClass = promptSizeClassForWidth(constraints.maxWidth);
         final browser = _WorkspaceBrowser(
           entries: widget.state.snapshot.entries,
           search: widget.state.search,
@@ -211,7 +213,10 @@ class _WorkspaceContentState extends State<_WorkspaceContent> {
           onOpen: widget.onOpen,
         );
         final details = _WorkspaceDetails(state: widget.state);
-        if (constraints.maxWidth >= 760) {
+        final showSplitView =
+            sizeClass.isDesktop ||
+            sizeClass.isTablet && constraints.maxWidth >= 760;
+        if (showSplitView) {
           return Row(
             children: [
               SizedBox(width: 300, child: browser),
@@ -424,49 +429,83 @@ class _WorkspaceDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final content = state.content;
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text('VCS', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 4),
-        Semantics(
-          label: 'Current branch ${state.snapshot.vcs.branch}',
-          child: Text(state.snapshot.vcs.branch),
-        ),
-        const SizedBox(height: 20),
-        Text('Changed files', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (state.snapshot.status.isEmpty)
-          const Text('No tracked file changes.'),
-        for (final entry in state.snapshot.status)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Text(entry.status.name),
-            title: Text(
-              entry.path,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+    final status = state.snapshot.status;
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('VCS', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Semantics(
+                  label: 'Current branch ${state.snapshot.vcs.branch}',
+                  child: Text(state.snapshot.vcs.branch),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Changed files',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                if (status.isEmpty) const Text('No tracked file changes.'),
+              ],
             ),
-            trailing: Text('+${entry.added} -${entry.removed}'),
           ),
-        const SizedBox(height: 20),
-        Text('File content', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (state.isLoadingContent) const LinearProgressIndicator(),
-        if (state.contentFailure != null) Text(state.contentFailure!.message),
-        if (content?.isText == true)
-          SelectableText(
-            content!.value!,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+        ),
+        if (status.isNotEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            sliver: SliverList.builder(
+              itemCount: status.length,
+              itemBuilder: (context, index) {
+                final entry = status[index];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Text(entry.status.name),
+                  title: Text(
+                    entry.path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Text('+${entry.added} -${entry.removed}'),
+                );
+              },
+            ),
           ),
-        if (content?.isText == false)
-          const Text('Binary file. Preview is unavailable.'),
-        if (content == null &&
-            !state.isLoadingContent &&
-            state.contentFailure == null)
-          const Text('Select a file to view its read-only content.'),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'File content',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                if (state.isLoadingContent) const LinearProgressIndicator(),
+                if (state.contentFailure != null)
+                  Text(state.contentFailure!.message),
+                if (content?.isText == true)
+                  SelectableText(
+                    content!.value!,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                  ),
+                if (content?.isText == false)
+                  const Text('Binary file. Preview is unavailable.'),
+                if (content == null &&
+                    !state.isLoadingContent &&
+                    state.contentFailure == null)
+                  const Text('Select a file to view its read-only content.'),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }

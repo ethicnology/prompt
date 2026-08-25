@@ -1,0 +1,320 @@
+import 'dart:async';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+
+import '../core/async/result.dart';
+import '../core/platform/local_notification_service.dart';
+import '../core/security/credentials_store.dart';
+import '../core/security/secure_credentials_service.dart';
+import '../data/local/prompt_local_storage.dart';
+import '../data/remote/opencode_event_service.dart';
+import '../data/remote/opencode_transport.dart';
+import '../features/capabilities/capabilities.dart';
+import '../features/chat/chat.dart';
+import '../features/chat/data/attachment_picker.dart';
+import '../features/chat/data/opencode_chat_service.dart';
+import '../features/connection/connection.dart';
+import '../features/connection/data/connection_repository.dart';
+import '../features/connection/data/opencode_health_service.dart';
+import '../features/diagnostics/diagnostics.dart';
+import '../features/diagnostics/data/opencode_diagnostics_service.dart';
+import '../features/capabilities/data/opencode_capabilities_service.dart';
+import '../features/queue/queue.dart';
+import '../features/sessions/sessions.dart';
+import '../features/settings/data/theme_preference_store.dart';
+import '../features/settings/presentation/theme_view_model.dart';
+import '../features/terminal/terminal.dart';
+import '../features/terminal/data/opencode_terminal_service.dart';
+import '../features/voice/voice.dart';
+import '../features/workspace/workspace.dart';
+import '../features/workspace/data/opencode_workspace_service.dart';
+
+/// Owns application-wide objects and their release order.
+///
+/// The optional factories are composition seams: tests can provide fake
+/// transport, credentials, storage, and platform-facing services without a
+/// service locator.
+class AppDependencies {
+  AppDependencies._({
+    required this.connectionViewModel,
+    required this.sessionsViewModel,
+    required this.conversationViewModel,
+    required this.capabilitiesViewModel,
+    required this.workspaceViewModel,
+    required this.terminalViewModel,
+    required this.diagnosticsViewModel,
+    required this.voiceViewModel,
+    required this.themeViewModel,
+    required this.localNotificationService,
+    required this.credentialsStore,
+    required this.transport,
+    required this.httpClient,
+    required this.openStorage,
+    required this.chatRepository,
+  });
+
+  factory AppDependencies.create({
+    ThemePreferenceStore? themePreferenceStore,
+    CredentialsStore? credentialsStore,
+    OpenCodeTransport? transport,
+    http.Client? httpClient,
+    Future<PromptLocalStorageHandle> Function()? openStorage,
+    AttachmentPicker? attachmentPicker,
+    VoiceEngine? voiceEngine,
+    VoiceModelPicker? voiceModelPicker,
+    VoiceModelInstaller? voiceModelInstaller,
+    LocalNotificationService? localNotificationService,
+  }) {
+    final client = httpClient ?? http.Client();
+    final resolvedTransport = transport ?? OpenCodeTransport(client);
+    final credentials =
+        credentialsStore ??
+        SecureCredentialsService(const FlutterSecureStorage());
+    final storage = openStorage ?? _openDefaultStorage;
+    final notifications =
+        localNotificationService ?? LocalNotificationService.platform();
+    final chatRepository = ChatRepository(
+      OpenCodeChatService(resolvedTransport),
+      credentials,
+    );
+    final sessionsRepository = SessionsRepository(
+      OpenCodeSessionsService(resolvedTransport),
+      credentials,
+    );
+
+    late AppDependencies dependencies;
+    dependencies = AppDependencies._(
+      connectionViewModel: ConnectionViewModel(
+        ConnectionRepository(
+          OpenCodeHealthService(resolvedTransport),
+          credentials,
+          LazyServerProfileStore(
+            () async => (await dependencies.ensureStorage()).serverProfiles,
+          ),
+        ),
+      ),
+      sessionsViewModel: SessionsViewModel(sessionsRepository),
+      conversationViewModel: ConversationViewModel(
+        chatRepository: chatRepository,
+        sessionsRepository: sessionsRepository,
+        queueRepositoryProvider: () async => QueuePromptsRepository(
+          (await dependencies.ensureStorage()).queuedPrompts,
+        ),
+        queueCoordinatorProvider: () => dependencies.ensureQueueCoordinator(),
+        attachmentPicker: attachmentPicker ?? FilePickerAttachmentPicker(),
+      ),
+      capabilitiesViewModel: CapabilitiesViewModel(
+        CapabilitiesRepository(
+          OpenCodeCapabilitiesService(resolvedTransport),
+          credentials,
+        ),
+      ),
+      workspaceViewModel: WorkspaceViewModel(
+        OpenCodeWorkspaceRepository(
+          OpenCodeWorkspaceService(resolvedTransport),
+          credentials,
+        ),
+      ),
+      terminalViewModel: TerminalViewModel(
+        OpenCodeTerminalRepository(
+          OpenCodeTerminalService(resolvedTransport),
+          credentials,
+        ),
+      ),
+      diagnosticsViewModel: DiagnosticsViewModel(
+        DiagnosticsRepository(
+          OpenCodeDiagnosticsService(resolvedTransport),
+          credentials,
+        ),
+      ),
+      voiceViewModel: VoiceViewModel(
+        VoiceRepository(
+          voiceEngine ?? createVoiceEngine(),
+          voiceModelPicker ?? const FilePickerVoiceModelPicker(),
+          voiceModelInstaller ?? createVoiceModelInstaller(),
+        ),
+      ),
+      themeViewModel: ThemeViewModel(
+        themePreferenceStore ?? SharedPreferencesThemePreferenceStore(),
+      ),
+      localNotificationService: notifications,
+      credentialsStore: credentials,
+      transport: resolvedTransport,
+      httpClient: client,
+      openStorage: storage,
+      chatRepository: chatRepository,
+    );
+    return dependencies;
+  }
+
+  final ConnectionViewModel connectionViewModel;
+  final SessionsViewModel sessionsViewModel;
+  final ConversationViewModel conversationViewModel;
+  final CapabilitiesViewModel capabilitiesViewModel;
+  final WorkspaceViewModel workspaceViewModel;
+  final TerminalViewModel terminalViewModel;
+  final DiagnosticsViewModel diagnosticsViewModel;
+  final VoiceViewModel voiceViewModel;
+  final ThemeViewModel themeViewModel;
+  final LocalNotificationService localNotificationService;
+  final CredentialsStore credentialsStore;
+  final OpenCodeTransport transport;
+  final http.Client httpClient;
+  final Future<PromptLocalStorageHandle> Function() openStorage;
+  final ChatRepository chatRepository;
+
+  PromptLocalStorageHandle? _storage;
+  Future<PromptLocalStorageHandle>? _storageFuture;
+  QueueSendCoordinator? _queueCoordinator;
+  Future<QueueSendCoordinator>? _queueCoordinatorFuture;
+  bool _disposed = false;
+
+  Future<PromptLocalStorageHandle> ensureStorage() async {
+    if (_disposed) {
+      throw StateError('AppDependencies was already disposed.');
+    }
+    final storage = _storage;
+    if (storage != null) {
+      return storage;
+    }
+    final pending = _storageFuture;
+    if (pending != null) {
+      return pending;
+    }
+    late Future<PromptLocalStorageHandle> current;
+    current = () async {
+      try {
+        final opened = await openStorage();
+        if (_disposed) {
+          await opened.close();
+          throw StateError(
+            'AppDependencies was disposed while opening storage.',
+          );
+        }
+        _storage = opened;
+        return opened;
+      } finally {
+        if (identical(_storageFuture, current)) {
+          _storageFuture = null;
+        }
+      }
+    }();
+    _storageFuture = current;
+    return current;
+  }
+
+  Future<QueueSendCoordinator> ensureQueueCoordinator() async {
+    if (_disposed) {
+      throw StateError('AppDependencies was already disposed.');
+    }
+    final coordinator = _queueCoordinator;
+    if (coordinator != null) {
+      return coordinator;
+    }
+    final pending = _queueCoordinatorFuture;
+    if (pending != null) {
+      return pending;
+    }
+    late Future<QueueSendCoordinator> current;
+    current = () async {
+      try {
+        final created = await _createCoordinator(
+          storage: ensureStorage,
+          chatRepository: chatRepository,
+          transport: transport,
+          credentials: credentialsStore,
+          localNotificationService: localNotificationService,
+        );
+        if (_disposed) {
+          await created.dispose();
+          throw StateError(
+            'AppDependencies was disposed while creating the queue coordinator.',
+          );
+        }
+        _queueCoordinator = created;
+        return created;
+      } finally {
+        if (identical(_queueCoordinatorFuture, current)) {
+          _queueCoordinatorFuture = null;
+        }
+      }
+    }();
+    _queueCoordinatorFuture = current;
+    return current;
+  }
+
+  QueueSendCoordinator? get queueCoordinator => _queueCoordinator;
+
+  Future<void> dispose() async {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
+    // Consumers first, then lazy resources, and the transport last.
+    connectionViewModel.dispose();
+    sessionsViewModel.dispose();
+    await conversationViewModel.dispose();
+    capabilitiesViewModel.dispose();
+    workspaceViewModel.dispose();
+    terminalViewModel.dispose();
+    diagnosticsViewModel.dispose();
+    await voiceViewModel.dispose();
+    themeViewModel.dispose();
+    final pendingCoordinator = _queueCoordinatorFuture;
+    if (pendingCoordinator != null) {
+      try {
+        await pendingCoordinator;
+      } on Object {
+        // Preserve the original initialization failure during disposal.
+      }
+    }
+    await _queueCoordinator?.dispose();
+    final pendingStorage = _storageFuture;
+    if (pendingStorage != null) {
+      try {
+        await pendingStorage;
+      } on Object {
+        // Preserve the original initialization failure during disposal.
+      }
+    }
+    final storage = _storage;
+    if (storage != null) {
+      await storage.close();
+    }
+    httpClient.close();
+  }
+
+  static Future<PromptLocalStorageHandle> _openDefaultStorage() async {
+    final result = await openPromptLocalStorage();
+    return switch (result) {
+      Ok(:final value) => value,
+      Err(:final failure) => throw LocalStorageUnavailableException(failure),
+    };
+  }
+
+  static Future<QueueSendCoordinator> _createCoordinator({
+    required Future<PromptLocalStorageHandle> Function() storage,
+    required ChatRepository? chatRepository,
+    required OpenCodeTransport transport,
+    required CredentialsStore credentials,
+    required LocalNotificationService localNotificationService,
+  }) async {
+    final repository =
+        chatRepository ??
+        ChatRepository(OpenCodeChatService(transport), credentials);
+    return QueueSendCoordinator(
+      queueRepository: QueuePromptsRepository((await storage()).queuedPrompts),
+      chatRepository: repository,
+      eventService: OpenCodeEventService(transport),
+      credentialsStore: credentials,
+      onGenerationFinished: ({required bool failed}) {
+        unawaited(
+          failed
+              ? localNotificationService.showSessionFailed()
+              : localNotificationService.showSessionCompleted(),
+        );
+      },
+    );
+  }
+}

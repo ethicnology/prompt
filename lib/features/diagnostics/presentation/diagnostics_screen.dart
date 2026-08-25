@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/ui/ui.dart';
 import '../../../core/platform/local_notification_service.dart';
-import '../../settings/presentation/notification_settings_screen.dart';
-import '../../settings/presentation/theme_view_model.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../settings/settings.dart';
+import '../../connection/connection.dart';
 import '../domain/diagnostics_snapshot.dart';
 import 'diagnostics_view_model.dart';
 
@@ -58,95 +58,105 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Server settings')),
-      body: ValueListenableBuilder<DiagnosticsUiState>(
-        valueListenable: widget.viewModel,
-        builder: (context, state, _) => RefreshIndicator(
-          onRefresh: widget.viewModel.refresh,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            children: [
-              _ConnectionCard(
-                profile: widget.profile,
-                reconnecting: _reconnecting,
-                onReconnect: _reconnecting ? null : _reconnect,
-                onDisconnect: widget.onDisconnect,
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.notifications_outlined),
-                  title: const Text('Notifications'),
-                  subtitle: const Text('Opt in to generic session alerts'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => NotificationSettingsScreen(
-                        service: widget.localNotificationService,
+      body: PromptAdaptiveBuilder(
+        builder: (context, sizeClass) {
+          return ValueListenableBuilder<DiagnosticsUiState>(
+            valueListenable: widget.viewModel,
+            builder: (context, state, _) => RefreshIndicator(
+              onRefresh: widget.viewModel.refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: promptPagePadding(sizeClass),
+                children: [
+                  _ConnectionCard(
+                    profile: widget.profile,
+                    reconnecting: _reconnecting,
+                    onReconnect: _reconnecting ? null : _reconnect,
+                    onDisconnect: widget.onDisconnect,
+                  ),
+                  const SizedBox(height: 16),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.notifications_outlined),
+                      title: const Text('Notifications'),
+                      subtitle: const Text('Opt in to generic session alerts'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => NotificationSettingsScreen(
+                            service: widget.localNotificationService,
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Appearance',
-                        style: Theme.of(context).textTheme.titleMedium,
+                  const SizedBox(height: 16),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Appearance',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Choose how Prompt displays its interface.',
+                          ),
+                          const SizedBox(height: 12),
+                          ValueListenableBuilder<ThemeMode>(
+                            valueListenable: widget.themeViewModel,
+                            builder: (context, selected, _) =>
+                                SegmentedButton<ThemeMode>(
+                                  segments: const [
+                                    ButtonSegment(
+                                      value: ThemeMode.system,
+                                      icon: Icon(
+                                        Icons.brightness_auto_outlined,
+                                      ),
+                                      label: Text('System'),
+                                    ),
+                                    ButtonSegment(
+                                      value: ThemeMode.light,
+                                      icon: Icon(Icons.light_mode_outlined),
+                                      label: Text('Light'),
+                                    ),
+                                    ButtonSegment(
+                                      value: ThemeMode.dark,
+                                      icon: Icon(Icons.dark_mode_outlined),
+                                      label: Text('Dark'),
+                                    ),
+                                  ],
+                                  selected: {selected},
+                                  onSelectionChanged: (selection) {
+                                    widget.themeViewModel.select(
+                                      selection.single,
+                                    );
+                                  },
+                                ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 4),
-                      const Text('Choose how Prompt displays its interface.'),
-                      const SizedBox(height: 12),
-                      ValueListenableBuilder<ThemeMode>(
-                        valueListenable: widget.themeViewModel,
-                        builder: (context, selected, _) =>
-                            SegmentedButton<ThemeMode>(
-                              segments: const [
-                                ButtonSegment(
-                                  value: ThemeMode.system,
-                                  icon: Icon(Icons.brightness_auto_outlined),
-                                  label: Text('System'),
-                                ),
-                                ButtonSegment(
-                                  value: ThemeMode.light,
-                                  icon: Icon(Icons.light_mode_outlined),
-                                  label: Text('Light'),
-                                ),
-                                ButtonSegment(
-                                  value: ThemeMode.dark,
-                                  icon: Icon(Icons.dark_mode_outlined),
-                                  label: Text('Dark'),
-                                ),
-                              ],
-                              selected: {selected},
-                              onSelectionChanged: (selection) {
-                                widget.themeViewModel.select(selection.single);
-                              },
-                            ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 16),
+                  switch (state) {
+                    DiagnosticsIdle() ||
+                    DiagnosticsLoading() => const _LoadingDiagnostics(),
+                    DiagnosticsReady(:final snapshot) => _DiagnosticsSummary(
+                      snapshot: snapshot,
+                    ),
+                    DiagnosticsError() => _DiagnosticsUnavailable(
+                      onRetry: widget.viewModel.refresh,
+                    ),
+                  },
+                ],
               ),
-              const SizedBox(height: 16),
-              switch (state) {
-                DiagnosticsIdle() ||
-                DiagnosticsLoading() => const _LoadingDiagnostics(),
-                DiagnosticsReady(:final snapshot) => _DiagnosticsSummary(
-                  snapshot: snapshot,
-                ),
-                DiagnosticsError() => _DiagnosticsUnavailable(
-                  onRetry: widget.viewModel.refresh,
-                ),
-              },
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -263,10 +273,12 @@ class _DiagnosticsSummary extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final columns = constraints.maxWidth >= 680 ? 2 : 1;
-        final width = (constraints.maxWidth - (columns - 1) * 12) / columns;
+        final width =
+            (constraints.maxWidth - (columns - 1) * PromptUiTokens.panelGap) /
+            columns;
         return Wrap(
-          spacing: 12,
-          runSpacing: 12,
+          spacing: PromptUiTokens.panelGap,
+          runSpacing: PromptUiTokens.panelGap,
           children: [
             SizedBox(
               width: width,
@@ -332,23 +344,21 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       label: '$title: $status. $detail',
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Text(status, style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 6),
-              Text(detail),
-              if (footer != null) ...[
-                const SizedBox(height: 12),
-                Text(footer!, style: Theme.of(context).textTheme.bodySmall),
-              ],
+      child: PromptPanel(
+        padding: const EdgeInsets.all(PromptUiTokens.compactPagePadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(status, style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 6),
+            Text(detail),
+            if (footer != null) ...[
+              const SizedBox(height: 12),
+              Text(footer!, style: Theme.of(context).textTheme.bodySmall),
             ],
-          ),
+          ],
         ),
       ),
     );

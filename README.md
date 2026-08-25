@@ -8,13 +8,16 @@ prompt queue, responsive streaming, and local-first voice transcription.
 
 ## Voice status
 
-Voice input is configured once from **Voice settings**. After selecting a local
-multilingual Whisper model, the conversation composer shows a Voice input
-button beside Send. It streams local transcription into the draft and requests
-microphone permission only from that direct action. Audio and transcripts are
-never sent remotely or retained on disk. Android currently provides the native
-engine; Linux and Web truthfully remain unavailable until their native/WASM
-adapters are bundled.
+Voice input is configured once from **Voice settings**. Prompt uses
+`sherpa_onnx` 1.13.5 (Apache-2.0) with two explicit-language streaming Zipformer
+INT8 models, one French and one English. One explicit Install action downloads
+the four files from pinned Hugging Face revisions, verifies their SHA-256
+digests, stores them privately, and selects the language model. One recognizer is loaded in a dedicated isolate for voice mode;
+each segment gets a new stream. There is no automatic language mode or final
+Whisper pass. Audio is memory-only; the transcript stays local until the user
+explicitly sends the prompt.
+Android and Linux use the native engine; Web remains a typed unavailable
+implementation.
 
 The product scope is in [PLAN.md](PLAN.md); the binding implementation rules
 are in [ARCHITECTURE.md](ARCHITECTURE.md) and [AGENTS.md](AGENTS.md).
@@ -25,10 +28,10 @@ it can access workspace files and provider/source-control credentials.
 
 ## Development
 
-This repository pins Flutter 3.44.6 through FVM.
+This repository pins Flutter 3.44.9 through FVM.
 
 ```sh
-fvm flutter pub get
+fvm flutter pub get --enforce-lockfile
 fvm flutter analyze
 fvm flutter test
 ```

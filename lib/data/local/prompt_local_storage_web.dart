@@ -1,7 +1,7 @@
 import '../../core/async/result.dart';
 import '../../core/security/database_key_store.dart';
-import '../../features/connection/data/server_profile_store.dart';
-import '../../features/queue/data/in_memory_queue_prompts_dao.dart';
+import '../../features/connection/connection.dart';
+import '../../features/queue/queue.dart';
 import 'database_open_failure.dart';
 import 'prompt_local_storage_handle.dart';
 

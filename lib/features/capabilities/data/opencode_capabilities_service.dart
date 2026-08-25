@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 
 class OpenCodeCapabilitiesService {
   OpenCodeCapabilitiesService(this._transport);

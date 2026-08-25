@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/workspace_entry.dart';
 import '../domain/workspace_failure.dart';
 import 'opencode_workspace_service.dart';

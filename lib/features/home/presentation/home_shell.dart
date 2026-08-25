@@ -6,12 +6,9 @@ import '../../capabilities/capabilities.dart';
 import '../../connection/connection.dart';
 import '../../diagnostics/diagnostics.dart';
 import '../../sessions/sessions.dart';
-import '../../sessions/presentation/sessions_screen.dart';
-import '../../settings/presentation/theme_view_model.dart';
-import '../../workspace/presentation/workspace_screen.dart';
-import '../../workspace/presentation/workspace_view_model.dart';
-import '../../terminal/presentation/terminal_screen.dart';
-import '../../terminal/presentation/terminal_view_model.dart';
+import '../../settings/settings.dart';
+import '../../workspace/workspace.dart';
+import '../../terminal/terminal.dart';
 import '../../voice/voice.dart';
 
 class HomeShell extends StatelessWidget {

@@ -143,12 +143,27 @@ La file d'envoi est une fonctionnalite centrale et locale a Prompt.
   appel STT distant ni demande de permission au lancement n'est effectue.
 
 - Capture explicite : appui-maintien sur Android, demarrer/arreter sur Linux et Web.
-- Transcription francaise ou anglaise, partielle en direct puis editable avant envoi.
+- Prompt uses `sherpa_onnx` 1.13.5 (Apache-2.0) with two distinct streaming
+  Zipformer INT8 models, explicitly selected for French or English. Automatic
+  language mode is not currently supported. Partial and final text remains
+  editable before sending; the draft and prior segments stay local.
 - Arret immediat du microphone lorsque l'application devient inactive; aucun enregistrement permanent.
-- Mode local privilegie : modele Whisper multilingue telecharge avec consentement, de preference en Wi-Fi.
-- `base` est le modele live recommande (environ 150 Mo); `small` privilegie la precision (environ 500 Mo). L'utilisateur peut supprimer les modeles.
-- Android : `whisper_ggml`, moteur Whisper.cpp local, execution hors UI et transcription live. Les modeles `tiny`, `base` et `small` sans suffixe `.en` sont multilingues; `base` est le choix francais recommande.
-- Web : Whisper.cpp WASM construit avec Emscripten et integre via `dart:js_interop`; le moteur Web est distinct car `dart:ffi` et Dart Native Assets ne ciblent pas le Web.
+- One explicit Install action downloads the four runtime files from pinned
+  Hugging Face revisions, verifies size and SHA-256, stores them atomically in
+  private application support storage, and selects the language model. Prompt
+  does not bundle model files and exposes a Remove action per language.
+- Un seul recognizer est charge dans un isolate dedie pendant le mode vocal.
+  Chaque segment demarre un nouveau stream. A l'arret du mode vocal, Sherpa
+  redecode en une passe globale tous les segments conserves en memoire, avec
+  une courte separation silencieuse, puis remplace le brouillon concatene. Il
+  conserve au maximum deux minutes d'audio; au-dela, les transcriptions par
+  segment restent le repli sans croissance memoire. Il n'y a pas de passe
+  finale Whisper. L'audio est aussitot ecrase et reste libere
+  sur tous les chemins de fin, d'annulation et de cycle de vie.
+- Les hypotheses partielles, les segments finalises et la correction globale
+  sont normalises en minuscules avant leur insertion dans le brouillon.
+- Android et Linux utilisent le moteur natif Sherpa; Web reste une
+  implementation typed unavailable et ne demarre aucun moteur vocal.
 - Option VPS WireGuard possible uniquement par consentement explicite, comme repli si aucun modele local n'est installe. Audio et transcription ne sont jamais envoyes a un tiers.
 
 ## UX et navigation
@@ -264,10 +279,10 @@ file_selector:
 markdown:
 record:
 connectivity_plus:
-whisper_ggml: # Android et Linux uniquement
+sherpa_onnx: ^1.13.5 # Apache-2.0, Android et Linux
 ```
 
-Les notifications locales, le renderer ANSI du terminal et l'integration Whisper WASM ne seront ajoutes comme dependances que si une evaluation confirme leur maintenance, licence et compatibilite cible. Ils ont une exigence produit concrete; ils ne justifient pas un package generique de plus sans cette verification.
+Les notifications locales et le renderer ANSI du terminal ne seront ajoutes comme dependances que si une evaluation confirme leur maintenance, licence et compatibilite cible. Ils ont une exigence produit concrete; ils ne justifient pas un package generique de plus sans cette verification.
 
 Dependances de developpement :
 
@@ -279,7 +294,7 @@ flutter_lints:
 
 Pas de package de state management, routing, SSE, icones, syntax highlighting, cache HTTP ou design system par defaut. Flutter fournit les primitives necessaires.
 
-Flutter Rust Bridge et Dart Native Assets sont reserves a une internalisation future de l'implementation native Whisper. Ils ne resolvent pas le Web, qui impose une chaine WASM distincte; ils ne sont donc pas introduits tant que `whisper_ggml` repond aux exigences Android/Linux.
+Flutter Rust Bridge et Dart Native Assets ne sont pas requis par l'integration Sherpa actuelle. Web reste typed unavailable; aucune strategie WASM ou Whisper n'est retenue.
 
 ## Donnees Drift
 
@@ -299,7 +314,7 @@ Les secrets, cles et mots de passe ne figurent dans aucune table Drift.
 - Tests d'integration Drift, y compris migration et suppression complete des donnees.
 - Tests widget pour streaming, reprise, file, dictee, accessibilite et layouts mobile/bureau.
 - Tests de performance et profilage Flutter DevTools en mode release.
-- CI Android, Linux et Web; builds natifs et WASM controles separement pour Whisper.
+- CI Android, Linux et Web; la verification de la voix native Sherpa est separee des controles Web typed unavailable.
 
 ## Ordre de livraison Android-first
 
@@ -311,7 +326,7 @@ Toutes les capacites de l'inventaire font partie du produit. L'ordre livre d'abo
 4. Agents, skills, commandes, modeles/variantes, providers, OAuth poll-based, MCP, outils, todos et parametres de serveur/configuration.
 5. Fichiers, recherche/symboles, statut Git, diff/revue par fichier, undo/redo, commentaires locaux, export assaini et partage explicite.
 6. PTY distant experimental, workspaces/sync/control-plane derriere capability flags, puis ecrans avances uniquement lorsque le serveur les supporte.
-7. Dictee locale Android, gestion des modeles et audio; implementations Linux native et Web WASM sous la meme facade `VoiceEngine`.
+7. Dictee locale Android/Linux, gestion explicite des modeles Sherpa et audio memoire; Web typed unavailable sous la meme facade `VoiceEngine`.
 8. Parite Linux/Web : panneaux redimensionnables, palette/raccourcis, fenetres/deep links, ouverture de fichiers/IDE quand possible, Web HTTPS et cache restreint.
 9. Accessibilite, benchmarks de charge, CI Android/Linux/Web, tests de compatibilite serveur/reverse proxy et verification de tous les criteres d'acceptation ci-dessus.
 
@@ -320,8 +335,7 @@ Toutes les capacites de l'inventaire font partie du produit. L'ordre livre d'abo
 - Nom de domaine HTTPS prive et reverse proxy pour le client Web.
 - Version et mode d'authentification actuels d'OpenCode.
 - Politique de conservation locale par defaut, notamment pour Android/Linux.
-- Usage de `whisper_ggml` pour Android/Linux ou internalisation immediate via Rust/Flutter Rust Bridge.
-- Niveau minimal d'appareil Android cible afin de choisir les modeles Whisper proposes par defaut.
+- Sherpa INT8 beat Whisper and FP32 in measurements on Pixel 5/6a; FP32 did not improve WER and cost model size and memory, while Omnilingual offline was not viable. These measurements motivate the current choice without promising universal results.
 
 ## Sources de recherche
 

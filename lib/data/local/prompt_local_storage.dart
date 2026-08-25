@@ -7,7 +7,7 @@
 ///
 /// Both conditionally exported implementations expose the same
 /// `openPromptLocalStorage()` function and [PromptLocalStorageHandle], so
-/// the composition root (`app/prompt_app.dart`) only ever imports this
+/// the composition root (`app/app_dependencies.dart`) only ever imports this
 /// file.
 library;
 

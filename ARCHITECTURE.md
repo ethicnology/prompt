@@ -109,7 +109,7 @@ Repositories are the source of truth for one application data type and own:
 - cache reads and writes;
 - mapping external exceptions to typed failures.
 
-Repository public signatures only contain domain values and `Result` values. JSON maps, OpenCode generated types, HTTP responses, Drift rows, browser objects, recorder objects, and Whisper types do not cross the repository boundary.
+Repository public signatures only contain domain values and `Result` values. JSON maps, OpenCode generated types, HTTP responses, Drift rows, browser objects, recorder objects, and Sherpa types do not cross the repository boundary.
 
 Services are stateless wrappers around one external concern. Examples are `OpenCodeApiService`, `OpenCodeEventService`, `PromptDatabase`, `SecureCredentialsService`, `FileSelectionService`, and `VoiceEngine`.
 
@@ -117,10 +117,10 @@ Repositories do not depend on each other. If data from several repositories must
 
 ## Composition Root and Dependencies
 
-`main.dart` constructs the application dependencies once and passes them through `app_scope.dart`. `AppScope` is an `InheritedWidget` or `InheritedNotifier`; it is the only place that knows concrete implementations.
+`main.dart` constructs `AppDependencies` once and passes it to `PromptApp`. `AppDependencies` is the only place that knows concrete service and repository implementations, owns lazy storage and queue coordination, and disposes consumers before infrastructure. It is explicit constructor injection, not a service locator.
 
 ```text
-main.dart -> build services -> build repositories -> build view models -> PromptApp
+main.dart -> AppDependencies -> PromptApp
 ```
 
 This makes dependencies inspectable and test replacement straightforward without adding a service-locator package. A feature exports only a small public facade from `features/<feature>/<feature>.dart`; cross-feature consumers do not import its `data/`, `domain/`, or `presentation/` internals.
@@ -132,7 +132,8 @@ This makes dependencies inspectable and test replacement straightforward without
 - REST obtains initial snapshots and performs commands.
 - A single SSE connection per server carries live events.
 - `OpenCodeEventService` parses events but holds no feature state.
-- Relevant repositories reduce events into domain updates and publish view-model-visible state.
+- `ChatRepository` is the single source of truth for the active conversation. It reconciles REST message snapshots with SSE events, replays only events newer than an in-flight snapshot, applies removals immediately, and publishes one consolidated state to the view model and queue coordinator.
+- `QueueSendCoordinator` owns dispatch, reconnect gating, and queue transitions, but forwards conversation events to `ChatRepository` instead of reducing a second transcript state.
 - On reconnect, repositories fetch authoritative REST snapshots before declaring state synchronized.
 - The app closes SSE when inactive. It never maintains a background connection or aggressive reconnect loop.
 - Message history is cursor-paginated where the server supports it. Repositories never request an unbounded transcript or tool output to render a mobile screen.
@@ -192,8 +193,8 @@ Shared code cannot import a platform-only library. Each cross-platform capabilit
 
 ```text
 VoiceEngine
-  |- Android/Linux: whisper_ggml / Whisper.cpp native implementation
-  |- Web: Whisper.cpp WASM through dart:js_interop
+  |- Android/Linux: sherpa_onnx native implementation
+  |- Web: typed unavailable implementation
   `- Optional private VPS transcription implementation
 ```
 
@@ -201,23 +202,35 @@ The local voice engine is preferred. VPS transcription is an explicit user choic
 
 The initial voice foundation exposes a `VoiceEngine` conditional platform
 boundary and a `VoiceRepository` that owns and releases a memory-only capture.
-Android uses `record`'s 16 kHz mono PCM stream with `whisper_ggml` live
-transcription in automatic multilingual mode so one live session accepts both
-French and English without a language restart. A user selects an existing local multilingual GGML model once
-from global Voice settings; that app-scoped configuration enables the Voice
-input control beside Send in every conversation. The control is the only
-permission-capable command and streams partial/final text into the composer.
-One memory-only Whisper live session remains active for the whole voice mode.
-Holding push-to-talk resumes only the recorder; releasing it pauses only the
-recorder, without finalizing Whisper. Stop is the single action that drains and
-closes Whisper while retaining the loaded model for the next turn in the same
-transcript. Prompt enters `listening` only after the recorder confirms resume
-and emits haptic feedback as the safe-to-speak cue. Changing sessions or
-leaving the foreground cancels and releases the capture and model.
-Prompt never invokes the package's model download API and no model is bundled
-by this application. Linux and Web adapters remain typed unavailable stubs and
-never start a recorder or Whisper session. Audio is
-passed directly between the recorder and Whisper, never written to a path or retained after stop,
+Android and Linux use `sherpa_onnx` 1.13.5 (Apache-2.0) with 16 kHz mono PCM
+and one explicitly selected streaming Zipformer INT8 model for either French or
+English. One explicit Install action contacts Hugging Face and downloads the INT8 encoder, decoder, INT8
+joiner, and `tokens.txt` from pinned Hugging Face revisions, verifies their
+sizes and SHA-256 digests, and atomically stores and selects the pack in private
+application support storage. Prompt never bundles model files. Installed packs
+survive updates and are removed by the in-app Remove action, clearing app data,
+or uninstalling on Android. There is no automatic language mode and no final
+Whisper pass. The app-scoped selection enables the Voice input control beside
+Send in every conversation. The control is the only permission-capable command
+and streams partial/final text into the composer.
+One recognizer is loaded in a dedicated isolate for the whole voice mode. Each
+push-to-talk segment creates a new memory-only stream; stopping the segment
+flushes and finalizes it before the next stream. Completed segment PCM remains
+in that isolate until the user stops voice mode, when Sherpa re-decodes all
+segments as one utterance with short silence boundaries and replaces the
+stitched draft. Retention is capped at two minutes; longer voice modes keep
+their segment transcripts and skip the global replacement. The retained PCM is overwritten immediately after that pass or
+on cancellation, lifecycle inactivity, failure, or disposal. Audio never leaves
+memory or the device; the transcript remains local until the user explicitly
+sends the prompt.
+Download, HTTP, size, checksum, storage, cancellation, unavailable-platform, and unexpected failures are mapped to typed values at the repository boundary. The pinned repositories and the unresolved model-file redistribution status are recorded in `THIRD_PARTY_NOTICES.md`.
+Prompt enters `listening` only after native capture starts and emits haptic
+feedback as the safe-to-speak cue. Changing sessions or leaving the foreground
+cancels the active segment and releases the engine.
+Prompt never invokes Sherpa's model download API and no model is bundled
+by this application. Linux uses the same native Sherpa boundary; Web remains a
+typed unavailable stub and never starts a recorder or recognizer. Audio is
+passed directly between the recorder and Sherpa, never written to a path or retained after stop,
 cancellation, failure, lifecycle inactivity, conversation teardown, or disposal.
 
 The selected appearance mode (`system`, `light`, or `dark`) is a non-sensitive
@@ -230,7 +243,7 @@ access. Prompt aborts and deletes every known descendant session from deepest
 to shallowest before deleting the selected parent, allowing OpenCode's foreign
 key cascades to remove each session's messages, parts, todos, and related rows.
 
-Flutter Rust Bridge and Dart Native Assets are not part of the initial runtime architecture. They are valid Android/Linux-only build options should Prompt internalize the native voice engine. They do not solve Web, which requires a separate WASM build.
+Flutter Rust Bridge and Dart Native Assets are not part of the initial runtime architecture. They are not required for the current Sherpa integration and do not change Web's typed-unavailable status.
 
 ### Remote Terminal
 
@@ -247,7 +260,11 @@ The terminal emulator, special-key bar, clipboard, window resizing, and tab layo
 
 ## Adaptive UI
 
-Layout decisions use available width, height, pointer/keyboard capabilities, and current window state, not Android/Linux/Web checks.
+Layout decisions use available width, height, pointer/keyboard capabilities, and current window state, not Android/Linux/Web checks. `PromptSizeClass` itself is intentionally based only on width; components that need height or input capabilities treat those as separate signals.
+
+Shared adaptive presentation rules and visual geometry live in `lib/core/ui/`, exported by `ui.dart`. `PromptSizeClass` is resolved exclusively from widget constraints: phone is below 600 logical pixels, tablet is 600–899 pixels, and desktop is 900 pixels or wider. Views must use this API (or a local `LayoutBuilder` for a genuinely component-specific constraint) and must never select a layout from `Platform`, `defaultTargetPlatform`, `kIsWeb`, or another platform identity.
+
+The public `lib/core/ui/components/` directory contains only domain-neutral visual primitives. `PromptPanel` is shared by diagnostics and conversation; feature-specific widgets such as session cards, transcript details, approval dialogs, and voice model cards remain in their feature because they depend on feature entities or behavior. New central components require at least two compatible consumers before extraction.
 
 - Narrow layouts show projects/sessions and contextual panels as routes, drawers, or modal sheets.
 - Wide layouts present a three-pane shell: navigation, transcript, and contextual details.
@@ -297,7 +314,7 @@ Prompt targets a smooth 60 Hz experience. Profile and release builds are the sou
 | Integration | real server connection, secure storage, Drift migration, recorder permissions, PTY ticket flow, provider OAuth polling, platform-specific voice |
 | Performance | long transcripts, continuous streaming, large tool outputs/diffs, Android device and Web profile runs |
 
-CI must run format checks, analyzer, unit/widget tests, and the applicable platform builds. Slower native voice and integration jobs run separately from fast Dart checks when CI is introduced.
+CI runs lockfile resolution, format checks, analyzer, architecture boundaries, unit/widget tests, generated-code reproducibility, the isolated STT laboratory, and Web/Linux builds. Slower native voice and real-platform integration remain separate from the fast checks.
 
 ## Decision Log
 
@@ -305,6 +322,7 @@ CI must run format checks, analyzer, unit/widget tests, and the applicable platf
 - Use cases are conditional rather than mandatory to avoid ceremony.
 - Drift is the local database; secrets remain outside it.
 - A local persistent prompt queue is required because OpenCode does not provide the desired non-interrupting multi-prompt UX itself.
-- `whisper_ggml` is the native Android/Linux default; Web requires a separate Whisper WASM adapter.
+- `sherpa_onnx` 1.13.5 is the native Android/Linux voice engine. French and English use separate explicitly selected streaming Zipformer INT8 models; Web remains typed unavailable.
+- Pixel 5/6a measurements selected Sherpa INT8 over Whisper and Sherpa FP32: FP32 did not improve WER and increased model size and memory, while Omnilingual offline was not viable. This is a bounded implementation decision, not a promise of universal benchmark results.
 - Android is the first delivery surface, but REST, SSE, terminal, configuration, sharing, export, and voice boundaries are platform-neutral from their first implementation.
 - No implementation may compromise the Android/Linux/Web target set, privacy defaults, or streaming responsiveness without updating this document and `PLAN.md`.
