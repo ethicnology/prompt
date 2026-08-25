@@ -1,67 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Semantic surfaces shared by the conversation, workspace, and diagnostics.
-///
-/// Keeping these tokens separate from Material's generic containers prevents
-/// unrelated screens from drifting apart as the product grows.
-@immutable
-class PromptTokens extends ThemeExtension<PromptTokens> {
-  const PromptTokens({
-    required this.panel,
-    required this.panelRaised,
-    required this.subtle,
-    required this.success,
-    required this.warning,
-    required this.danger,
-    required this.diffAdd,
-    required this.diffDelete,
-  });
-
-  final Color panel;
-  final Color panelRaised;
-  final Color subtle;
-  final Color success;
-  final Color warning;
-  final Color danger;
-  final Color diffAdd;
-  final Color diffDelete;
-
-  @override
-  PromptTokens copyWith({
-    Color? panel,
-    Color? panelRaised,
-    Color? subtle,
-    Color? success,
-    Color? warning,
-    Color? danger,
-    Color? diffAdd,
-    Color? diffDelete,
-  }) => PromptTokens(
-    panel: panel ?? this.panel,
-    panelRaised: panelRaised ?? this.panelRaised,
-    subtle: subtle ?? this.subtle,
-    success: success ?? this.success,
-    warning: warning ?? this.warning,
-    danger: danger ?? this.danger,
-    diffAdd: diffAdd ?? this.diffAdd,
-    diffDelete: diffDelete ?? this.diffDelete,
-  );
-
-  @override
-  PromptTokens lerp(PromptTokens? other, double t) {
-    if (other == null) return this;
-    return PromptTokens(
-      panel: Color.lerp(panel, other.panel, t)!,
-      panelRaised: Color.lerp(panelRaised, other.panelRaised, t)!,
-      subtle: Color.lerp(subtle, other.subtle, t)!,
-      success: Color.lerp(success, other.success, t)!,
-      warning: Color.lerp(warning, other.warning, t)!,
-      danger: Color.lerp(danger, other.danger, t)!,
-      diffAdd: Color.lerp(diffAdd, other.diffAdd, t)!,
-      diffDelete: Color.lerp(diffDelete, other.diffDelete, t)!,
-    );
-  }
-}
+import '../core/ui/ui.dart';
 
 ThemeData promptTheme() => _theme(Brightness.light);
 
@@ -113,6 +52,13 @@ ThemeData _theme(Brightness brightness) {
     danger: dark ? const Color(0xffffaaa5) : const Color(0xffb42318),
     diffAdd: dark ? const Color(0xff123d30) : const Color(0xffdcf8e9),
     diffDelete: dark ? const Color(0xff4a2225) : const Color(0xffffe5e4),
+    userMessageBackground: dark
+        ? const Color(0xff173b35)
+        : const Color(0xffd7f7ed),
+    userMessageForeground: dark
+        ? const Color(0xfff2fff9)
+        : const Color(0xff123a30),
+    userMessageBorder: dark ? const Color(0xff56d6b2) : const Color(0xff64bba2),
   );
 
   return ThemeData(
@@ -147,6 +93,11 @@ ThemeData _theme(Brightness brightness) {
       thickness: 1,
       space: 1,
     ),
+    cardTheme: CardThemeData(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PromptUiTokens.cardRadius),
+      ),
+    ),
     chipTheme: ChipThemeData(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       side: BorderSide(color: scheme.outlineVariant),
@@ -157,19 +108,25 @@ ThemeData _theme(Brightness brightness) {
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
         minimumSize: const Size(48, 48),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(PromptUiTokens.controlRadius),
+        ),
         textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(48, 48),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(PromptUiTokens.controlRadius),
+        ),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PromptUiTokens.controlRadius),
+      ),
       backgroundColor: dark ? const Color(0xff252d34) : const Color(0xff20272c),
       contentTextStyle: const TextStyle(color: Colors.white),
     ),
