@@ -1,8 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/async/result.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
@@ -163,7 +165,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           return switch (state) {
             SessionsIdle() || SessionsLoading() => const _LoadingCatalog(),
             SessionsEmpty() => _EmptyCatalog(
-              onRefresh: () => widget.viewModel.load(widget.profile),
+              onCreate: () => _createSession(const []),
             ),
             SessionsError(:final failure) => _SessionsError(
               failure: failure,
@@ -230,7 +232,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           projects: filterProjects,
           selectedProjectId: selectedProjectId,
           onSelectProject: (id) => setState(() => _selectedProjectId = id),
-          onCreate: projects.isEmpty ? null : () => _createSession(projects),
+          onCreate: () => _createSession(projects),
         ),
         Expanded(
           child: primary.isEmpty
@@ -240,9 +242,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                     _searchController.clear();
                     setState(() => _selectedProjectId = null);
                   },
-                  onCreate: projects.isEmpty
-                      ? null
-                      : () => _createSession(projects),
+                  onCreate: () => _createSession(projects),
                 )
               : RefreshIndicator(
                   onRefresh: () => widget.viewModel.load(widget.profile),
@@ -271,95 +271,23 @@ class _SessionsScreenState extends State<SessionsScreen> {
   }
 
   Future<void> _createSession(List<OpenCodeProject> projects) async {
-    var selected = projects.firstWhere(
-      (project) => project.id != 'global',
-      orElse: () => projects.first,
-    );
-    final titleController = TextEditingController();
     final request =
-        await showModalBottomSheet<({OpenCodeProject project, String title})>(
+        await showModalBottomSheet<({String directory, String title})>(
           context: context,
           isScrollControlled: true,
           showDragHandle: true,
-          builder: (context) => StatefulBuilder(
-            builder: (context, setSheetState) {
-              return SafeArea(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    20,
-                    4,
-                    20,
-                    20 + MediaQuery.viewInsetsOf(context).bottom,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        'New session',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Choose the server-side project. No files are copied to '
-                        'the phone.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 20),
-                      DropdownButtonFormField<OpenCodeProject>(
-                        initialValue: selected,
-                        decoration: const InputDecoration(labelText: 'Project'),
-                        items: [
-                          for (final project in projects)
-                            DropdownMenuItem(
-                              value: project,
-                              child: Text(
-                                _projectLabel(project),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                        ],
-                        onChanged: (project) {
-                          if (project != null) {
-                            setSheetState(() => selected = project);
-                          }
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: titleController,
-                        autofocus: true,
-                        textInputAction: TextInputAction.done,
-                        decoration: const InputDecoration(
-                          labelText: 'Title (optional)',
-                          hintText: 'What are we working on?',
-                        ),
-                        onSubmitted: (_) => Navigator.of(
-                          context,
-                        ).pop((project: selected, title: titleController.text)),
-                      ),
-                      const SizedBox(height: 20),
-                      FilledButton.icon(
-                        onPressed: () => Navigator.of(
-                          context,
-                        ).pop((project: selected, title: titleController.text)),
-                        icon: const Icon(Icons.add_comment_outlined),
-                        label: const Text('Create and open'),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
+          builder: (context) => _NewSessionSheet(
+            profile: widget.profile,
+            viewModel: widget.viewModel,
+            projects: projects,
           ),
         );
-    titleController.dispose();
     if (!mounted || request == null) {
       return;
     }
     final result = await widget.viewModel.create(
       widget.profile,
-      request.project,
+      request.directory,
       title: request.title,
     );
     if (!mounted) {
@@ -454,6 +382,233 @@ class _SessionsScreenState extends State<SessionsScreen> {
     }
   }
 }
+
+class _NewSessionSheet extends StatefulWidget {
+  const _NewSessionSheet({
+    required this.profile,
+    required this.viewModel,
+    required this.projects,
+  });
+
+  final ServerProfile profile;
+  final SessionsViewModel viewModel;
+  final List<OpenCodeProject> projects;
+
+  @override
+  State<_NewSessionSheet> createState() => _NewSessionSheetState();
+}
+
+class _NewSessionSheetState extends State<_NewSessionSheet> {
+  late final TextEditingController _directoryController;
+  late final TextEditingController _titleController;
+  Timer? _debounce;
+  List<String> _suggestions = const [];
+  SessionsFailure? _suggestionFailure;
+  bool _searching = false;
+  int _suggestionRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.projects
+        .firstWhere(
+          (project) => project.id != 'global',
+          orElse: () => widget.projects.isEmpty
+              ? const OpenCodeProject(id: '', directory: '')
+              : widget.projects.first,
+        )
+        .directory;
+    _directoryController = TextEditingController(text: initial)
+      ..addListener(_directoryChanged);
+    _titleController = TextEditingController();
+    _suggestions = widget.projects
+        .map((project) => project.directory)
+        .where((directory) => directory.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+
+  @override
+  void dispose() {
+    _suggestionRevision++;
+    _debounce?.cancel();
+    _directoryController
+      ..removeListener(_directoryChanged)
+      ..dispose();
+    _titleController.dispose();
+    super.dispose();
+  }
+
+  void _directoryChanged() {
+    final revision = ++_suggestionRevision;
+    _debounce?.cancel();
+    final input = _directoryController.text.trim();
+    if (!mounted) return;
+    setState(() {
+      _searching = false;
+      _suggestionFailure = null;
+      _suggestions = _knownSuggestions(input);
+    });
+    if (input.isEmpty || !_isAbsoluteServerPath(input)) {
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 250), () async {
+      if (!mounted) return;
+      setState(() {
+        _searching = true;
+        _suggestionFailure = null;
+      });
+      final result = await widget.viewModel.suggestDirectories(
+        widget.profile,
+        input,
+      );
+      if (!mounted || revision != _suggestionRevision || result == null) return;
+      setState(() {
+        _searching = false;
+        switch (result) {
+          case Ok<List<String>, SessionsFailure>(:final value):
+            _suggestions = {..._knownSuggestions(input), ...value}.toList()
+              ..sort();
+          case Err<List<String>, SessionsFailure>(:final failure):
+            _suggestionFailure = failure;
+        }
+      });
+    });
+  }
+
+  List<String> _knownSuggestions(String input) {
+    final normalized = input.toLowerCase();
+    return widget.projects
+        .map((project) => project.directory)
+        .where(
+          (directory) =>
+              normalized.isEmpty ||
+              directory.toLowerCase().startsWith(normalized),
+        )
+        .toSet()
+        .toList()
+      ..sort();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final directory = _directoryController.text.trim();
+    final valid = _isAbsoluteServerPath(directory);
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          4,
+          20,
+          20 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'New session',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Enter an absolute path on the server. This does not select or copy files from the phone.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _directoryController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Server project path',
+                  hintText: '/srv/projects/my-app',
+                  suffixIcon: _searching
+                      ? const Padding(
+                          padding: EdgeInsets.all(14),
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : null,
+                  errorText: directory.isNotEmpty && !valid
+                      ? 'Use an absolute Unix or Windows path.'
+                      : null,
+                ),
+              ),
+              if (_suggestionFailure != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'Directory suggestions unavailable; you can still enter the path manually.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              if (_suggestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _suggestions.length > 20
+                        ? 20
+                        : _suggestions.length,
+                    itemBuilder: (context, index) {
+                      final suggestion = _suggestions[index];
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.folder_outlined),
+                        title: Text(
+                          suggestion,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () {
+                          _directoryController.value = TextEditingValue(
+                            text: suggestion,
+                            selection: TextSelection.collapsed(
+                              offset: suggestion.length,
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              TextField(
+                controller: _titleController,
+                textInputAction: TextInputAction.done,
+                decoration: const InputDecoration(
+                  labelText: 'Title (optional)',
+                  hintText: 'What are we working on?',
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: valid
+                    ? () => Navigator.of(context).pop((
+                        directory: directory,
+                        title: _titleController.text,
+                      ))
+                    : null,
+                icon: const Icon(Icons.add_comment_outlined),
+                label: const Text('Create and open'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+bool _isAbsoluteServerPath(String value) =>
+    RegExp(r'^/(?:[^/].*)?$').hasMatch(value) ||
+    RegExp(r'^(?:\\\\|//)[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$').hasMatch(value) ||
+    RegExp(r'^[A-Za-z]:[\\/](?:.*)?$').hasMatch(value);
 
 class _CatalogControls extends StatelessWidget {
   const _CatalogControls({
@@ -765,9 +920,9 @@ class _NoMatchingSessions extends StatelessWidget {
 }
 
 class _EmptyCatalog extends StatelessWidget {
-  const _EmptyCatalog({required this.onRefresh});
+  const _EmptyCatalog({required this.onCreate});
 
-  final VoidCallback onRefresh;
+  final VoidCallback onCreate;
 
   @override
   Widget build(BuildContext context) {
@@ -775,7 +930,7 @@ class _EmptyCatalog extends StatelessWidget {
       icon: Icons.folder_off_outlined,
       title: 'No OpenCode projects',
       body: 'Open a project on the server, then refresh this catalog.',
-      action: ('Refresh', onRefresh),
+      action: ('New session', onCreate),
     );
   }
 }

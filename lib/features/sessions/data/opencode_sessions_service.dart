@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/open_code_session.dart';
 
 class OpenCodeSessionsService {
@@ -21,9 +21,49 @@ class OpenCodeSessionsService {
       throw const FormatException('Projects response must be a list.');
     }
     return decoded
-        .whereType<Map<String, dynamic>>()
-        .map(OpenCodeProjectRecord.fromJson)
+        .map((entry) {
+          if (entry is! Map<String, dynamic>) {
+            throw const FormatException('Project entry must be an object.');
+          }
+          return OpenCodeProjectRecord.fromJson(entry);
+        })
         .toList(growable: false);
+  }
+
+  Future<List<String>> suggestDirectories(
+    ServerProfile profile,
+    String? password,
+    String input,
+  ) async {
+    final parsed = _directoryQuery(input);
+    final response = await _get(
+      profile,
+      password,
+      '/file?${Uri(queryParameters: {'directory': parsed.parent, 'path': '.'}).query}',
+    );
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List) {
+      throw const FormatException('Directory response must be a list.');
+    }
+    final matches = <String>{};
+    for (final entry in decoded) {
+      if (entry is! Map<String, dynamic>) {
+        throw const FormatException('Directory entry must be an object.');
+      }
+      final type = entry['type'];
+      final absolute = entry['absolute'];
+      if (type is! String ||
+          absolute is! String ||
+          (type != 'file' && type != 'directory')) {
+        throw const FormatException('Directory entry has invalid fields.');
+      }
+      if (type == 'directory' &&
+          _basename(absolute).toLowerCase().startsWith(parsed.prefix)) {
+        matches.add(absolute);
+      }
+    }
+    final result = matches.toList()..sort();
+    return result.take(20).toList(growable: false);
   }
 
   Future<List<OpenCodeSessionRecord>> listSessions(
@@ -46,8 +86,12 @@ class OpenCodeSessionsService {
       throw const FormatException('Sessions response must be a list.');
     }
     return decoded
-        .whereType<Map<String, dynamic>>()
-        .map(OpenCodeSessionRecord.fromJson)
+        .map((entry) {
+          if (entry is! Map<String, dynamic>) {
+            throw const FormatException('Session entry must be an object.');
+          }
+          return OpenCodeSessionRecord.fromJson(entry);
+        })
         .toList(growable: false);
   }
 
@@ -210,6 +254,39 @@ class OpenCodeSessionsService {
       throw OpenCodeHttpFailure(response.statusCode);
     }
   }
+
+  static _DirectoryQuery _directoryQuery(String input) {
+    final value = input.trim();
+    final separator = value.lastIndexOf(RegExp(r'[/\\]'));
+    if (separator < 0) {
+      return const _DirectoryQuery('/', '');
+    }
+    final parentWithSeparator = value.substring(0, separator + 1);
+    final prefix = value.substring(separator + 1).toLowerCase();
+    if (parentWithSeparator == '/' ||
+        RegExp(r'^[A-Za-z]:[/\\]$').hasMatch(parentWithSeparator)) {
+      return _DirectoryQuery(parentWithSeparator, prefix);
+    }
+    return _DirectoryQuery(
+      parentWithSeparator.substring(0, parentWithSeparator.length - 1),
+      prefix,
+    );
+  }
+
+  static String _basename(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final trimmed = normalized.endsWith('/')
+        ? normalized.substring(0, normalized.length - 1)
+        : normalized;
+    return trimmed.substring(trimmed.lastIndexOf('/') + 1);
+  }
+}
+
+class _DirectoryQuery {
+  const _DirectoryQuery(this.parent, this.prefix);
+
+  final String parent;
+  final String prefix;
 }
 
 class OpenCodeProjectRecord {
@@ -266,12 +343,9 @@ class OpenCodeSessionRecord {
       throw const FormatException('Session has invalid required fields.');
     }
 
-    final summary = json['summary'];
-    final summaryMap = summary is Map<String, dynamic> ? summary : null;
-    final share = json['share'];
-    final shareMap = share is Map<String, dynamic> ? share : null;
-    final model = json['model'];
-    final modelMap = model is Map<String, dynamic> ? model : null;
+    final summaryMap = _optionalMap(json, 'summary');
+    final shareMap = _optionalMap(json, 'share');
+    final modelMap = _optionalMap(json, 'model');
     return OpenCodeSessionRecord(
       id: id,
       projectId: projectId,
@@ -279,14 +353,14 @@ class OpenCodeSessionRecord {
       title: title,
       createdAtMillis: createdAt.toInt(),
       updatedAtMillis: updatedAt.toInt(),
-      parentId: json['parentID'] as String?,
-      changedFiles: summaryMap?['files'] as int?,
-      additions: summaryMap?['additions'] as int?,
-      deletions: summaryMap?['deletions'] as int?,
-      shareUrl: shareMap?['url'] as String?,
-      modelProviderId: modelMap?['providerID'] as String?,
-      modelId: modelMap?['id'] as String?,
-      agentName: json['agent'] as String?,
+      parentId: _optionalString(json, 'parentID'),
+      changedFiles: _optionalInt(summaryMap, 'files'),
+      additions: _optionalInt(summaryMap, 'additions'),
+      deletions: _optionalInt(summaryMap, 'deletions'),
+      shareUrl: _optionalString(shareMap, 'url'),
+      modelProviderId: _optionalString(modelMap, 'providerID'),
+      modelId: _optionalString(modelMap, 'id'),
+      agentName: _optionalString(json, 'agent'),
     );
   }
 
@@ -304,4 +378,34 @@ class OpenCodeSessionRecord {
   final String? modelProviderId;
   final String? modelId;
   final String? agentName;
+
+  static String? _optionalString(Map<String, dynamic>? json, String key) {
+    final value = json?[key];
+    if (value == null) return null;
+    if (value is! String) {
+      throw FormatException('Session field $key must be a string.');
+    }
+    return value;
+  }
+
+  static Map<String, dynamic>? _optionalMap(
+    Map<String, dynamic> json,
+    String key,
+  ) {
+    final value = json[key];
+    if (value == null) return null;
+    if (value is! Map<String, dynamic>) {
+      throw FormatException('Session field $key must be an object.');
+    }
+    return value;
+  }
+
+  static int? _optionalInt(Map<String, dynamic>? json, String key) {
+    final value = json?[key];
+    if (value == null) return null;
+    if (value is! num) {
+      throw FormatException('Session field $key must be a number.');
+    }
+    return value.toInt();
+  }
 }

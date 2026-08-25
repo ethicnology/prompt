@@ -85,6 +85,154 @@ void main() {
     expect(record.agentName, 'build');
   });
 
+  test('suggests matching directories from the server file endpoint', () async {
+    http.Request? captured;
+    final client = MockClient((request) async {
+      captured = request;
+      return http.Response(
+        '[{"type":"file","absolute":"/workspace/app.txt"},'
+        '{"type":"directory","absolute":"/workspace/App"},'
+        '{"type":"directory","absolute":"/workspace/apple"},'
+        '{"type":"directory","absolute":"/workspace/APP"},'
+        '{"type":"directory","absolute":"/workspace/beta"}]',
+        200,
+      );
+    });
+    final repository = SessionsRepository(
+      OpenCodeSessionsService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+
+    final result = await repository.suggestDirectories(
+      profile,
+      '/workspace/ap',
+    );
+
+    expect(result, isA<Ok<List<String>, SessionsFailure>>());
+    expect((result as Ok<List<String>, SessionsFailure>).value, [
+      '/workspace/APP',
+      '/workspace/App',
+      '/workspace/apple',
+    ]);
+    expect(captured!.url.queryParameters, {
+      'directory': '/workspace',
+      'path': '.',
+    });
+    expect(captured!.url.toString(), contains('directory=%2Fworkspace'));
+  });
+
+  test('handles Unix root and nested Windows directory queries', () async {
+    final requests = <http.Request>[];
+    final client = MockClient((request) async {
+      requests.add(request);
+      return http.Response('[]', 200);
+    });
+    final service = OpenCodeSessionsService(OpenCodeTransport(client));
+
+    await service.suggestDirectories(profile, null, '/');
+    await service.suggestDirectories(profile, null, r'C:\Work\pro');
+
+    expect(requests[0].url.queryParameters['directory'], '/');
+    expect(requests[1].url.queryParameters['directory'], r'C:\Work');
+    expect(requests[1].url.queryParameters['path'], '.');
+  });
+
+  test('maps malformed and rejected directory responses', () async {
+    final malformed = SessionsRepository(
+      OpenCodeSessionsService(
+        OpenCodeTransport(MockClient((_) async => http.Response('{}', 200))),
+      ),
+      const _PasswordStore('secret'),
+    );
+    final unauthorized = SessionsRepository(
+      OpenCodeSessionsService(
+        OpenCodeTransport(MockClient((_) async => http.Response('', 401))),
+      ),
+      const _PasswordStore('secret'),
+    );
+
+    final malformedResult = await malformed.suggestDirectories(
+      profile,
+      '/workspace/a',
+    );
+    final unauthorizedResult = await unauthorized.suggestDirectories(
+      profile,
+      '/workspace/a',
+    );
+    expect(malformedResult, isA<Err<List<String>, SessionsFailure>>());
+    expect(
+      (malformedResult as Err<List<String>, SessionsFailure>).failure,
+      SessionsFailure.unexpectedResponse,
+    );
+    expect(unauthorizedResult, isA<Err<List<String>, SessionsFailure>>());
+    expect(
+      (unauthorizedResult as Err<List<String>, SessionsFailure>).failure,
+      SessionsFailure.unauthorized,
+    );
+  });
+
+  test('maps invalid private origins for suggestions and creation', () async {
+    final repository = SessionsRepository(
+      OpenCodeSessionsService(
+        OpenCodeTransport(
+          MockClient((_) async => throw StateError('must not send')),
+        ),
+      ),
+      const _PasswordStore('secret'),
+    );
+    final invalidProfile = ServerProfile(
+      origin: Uri.parse('https://example.com'),
+      username: 'opencode',
+    );
+
+    final suggestions = await repository.suggestDirectories(
+      invalidProfile,
+      '/workspace/a',
+    );
+    final creation = await repository.create(invalidProfile, '/workspace/a');
+
+    expect(
+      suggestions,
+      const Err<List<String>, SessionsFailure>(
+        SessionsFailure.unexpectedResponse,
+      ),
+    );
+    expect(
+      creation,
+      const Err<OpenCodeSession, SessionsFailure>(
+        SessionsFailure.unexpectedResponse,
+      ),
+    );
+  });
+
+  test(
+    'creates a session in a directory absent from the project catalog',
+    () async {
+      http.Request? captured;
+      final client = MockClient((request) async {
+        captured = request;
+        return http.Response(_sessionJson('new-session'), 200);
+      });
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+
+      final result = await repository.create(
+        profile,
+        '  /workspace/new-project  ',
+        title: 'New project',
+      );
+
+      expect(result, isA<Ok<OpenCodeSession, SessionsFailure>>());
+      expect(
+        captured!.url.queryParameters['directory'],
+        '/workspace/new-project',
+      );
+      expect(captured!.body, '{"title":"New project"}');
+    },
+  );
+
   test('keeps the sessions that loaded when one project fails', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/project') {

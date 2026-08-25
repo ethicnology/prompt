@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
@@ -99,10 +99,9 @@ class SessionsRepository {
         ),
       );
     } on OpenCodeHttpFailure catch (failure) {
-      if (failure.statusCode == 401 || failure.statusCode == 403) {
-        return const SessionsLoadFailed(SessionsFailure.unauthorized);
-      }
-      return const SessionsLoadFailed(SessionsFailure.unexpectedResponse);
+      return SessionsLoadFailed(_httpFailure(failure.statusCode));
+    } on OpenCodeTransportFailure catch (failure) {
+      return SessionsLoadFailed(_httpFailure(failure.statusCode));
     } on TimeoutException {
       return const SessionsLoadFailed(SessionsFailure.unavailable);
     } on InvalidOpenCodeOrigin {
@@ -110,6 +109,8 @@ class SessionsRepository {
     } on http.ClientException {
       return const SessionsLoadFailed(SessionsFailure.unavailable);
     } on FormatException {
+      return const SessionsLoadFailed(SessionsFailure.unexpectedResponse);
+    } on TypeError {
       return const SessionsLoadFailed(SessionsFailure.unexpectedResponse);
     }
   }
@@ -157,27 +158,59 @@ class SessionsRepository {
 
   Future<SessionCreateResult> create(
     ServerProfile profile,
-    OpenCodeProject project, {
+    String directory, {
     String? title,
   }) async {
     try {
       final record = await _sessionsService.createSession(
         profile,
         await _credentialsStore.readPassword(profile.id),
-        project.directory,
+        directory.trim(),
         title: title,
       );
       return Ok(_toDomain(record));
     } on OpenCodeHttpFailure catch (failure) {
-      if (failure.statusCode == 401 || failure.statusCode == 403) {
-        return const Err(SessionsFailure.unauthorized);
-      }
-      return const Err(SessionsFailure.unexpectedResponse);
+      return Err(_httpFailure(failure.statusCode));
+    } on OpenCodeTransportFailure catch (failure) {
+      return Err(_httpFailure(failure.statusCode));
     } on TimeoutException {
       return const Err(SessionsFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const Err(SessionsFailure.unexpectedResponse);
     } on http.ClientException {
       return const Err(SessionsFailure.unavailable);
     } on FormatException {
+      return const Err(SessionsFailure.unexpectedResponse);
+    } on TypeError {
+      return const Err(SessionsFailure.unexpectedResponse);
+    }
+  }
+
+  Future<Result<List<String>, SessionsFailure>> suggestDirectories(
+    ServerProfile profile,
+    String input,
+  ) async {
+    try {
+      return Ok(
+        await _sessionsService.suggestDirectories(
+          profile,
+          await _credentialsStore.readPassword(profile.id),
+          input,
+        ),
+      );
+    } on OpenCodeHttpFailure catch (failure) {
+      return Err(_httpFailure(failure.statusCode));
+    } on OpenCodeTransportFailure catch (failure) {
+      return Err(_httpFailure(failure.statusCode));
+    } on TimeoutException {
+      return const Err(SessionsFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const Err(SessionsFailure.unexpectedResponse);
+    } on http.ClientException {
+      return const Err(SessionsFailure.unavailable);
+    } on FormatException {
+      return const Err(SessionsFailure.unexpectedResponse);
+    } on TypeError {
       return const Err(SessionsFailure.unexpectedResponse);
     }
   }
@@ -270,15 +303,16 @@ class SessionsRepository {
       await action();
       return const Ok(null);
     } on OpenCodeHttpFailure catch (failure) {
-      if (failure.statusCode == 401 || failure.statusCode == 403) {
-        return const Err(SessionsFailure.unauthorized);
-      }
-      return const Err(SessionsFailure.unexpectedResponse);
+      return Err(_httpFailure(failure.statusCode));
+    } on OpenCodeTransportFailure catch (failure) {
+      return Err(_httpFailure(failure.statusCode));
     } on TimeoutException {
       return const Err(SessionsFailure.unavailable);
     } on http.ClientException {
       return const Err(SessionsFailure.unavailable);
     } on FormatException {
+      return const Err(SessionsFailure.unexpectedResponse);
+    } on TypeError {
       return const Err(SessionsFailure.unexpectedResponse);
     }
   }
@@ -289,16 +323,16 @@ class SessionsRepository {
     try {
       return Ok(await action());
     } on OpenCodeHttpFailure catch (failure) {
-      return Err(
-        failure.statusCode == 401 || failure.statusCode == 403
-            ? SessionsFailure.unauthorized
-            : SessionsFailure.unexpectedResponse,
-      );
+      return Err(_httpFailure(failure.statusCode));
+    } on OpenCodeTransportFailure catch (failure) {
+      return Err(_httpFailure(failure.statusCode));
     } on TimeoutException {
       return const Err(SessionsFailure.unavailable);
     } on http.ClientException {
       return const Err(SessionsFailure.unavailable);
     } on FormatException {
+      return const Err(SessionsFailure.unexpectedResponse);
+    } on TypeError {
       return const Err(SessionsFailure.unexpectedResponse);
     }
   }
@@ -315,6 +349,11 @@ class SessionsRepository {
         ? uri.toString()
         : null;
   }
+
+  SessionsFailure _httpFailure(int statusCode) =>
+      statusCode == 401 || statusCode == 403
+      ? SessionsFailure.unauthorized
+      : SessionsFailure.unexpectedResponse;
 
   OpenCodeSession _toDomain(OpenCodeSessionRecord record) {
     return OpenCodeSession(

@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/async/result.dart';
-import '../../connection/domain/server_profile.dart';
+import '../../connection/connection.dart';
 import '../data/sessions_repository.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
@@ -41,6 +41,7 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
 
   final SessionsRepository _repository;
   int _revision = 0;
+  int _suggestionRevision = 0;
 
   Future<void> load(ServerProfile profile) async {
     final revision = ++_revision;
@@ -63,17 +64,30 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
 
   Future<Result<OpenCodeSession, SessionsFailure>> create(
     ServerProfile profile,
-    OpenCodeProject project, {
+    String directory, {
     String? title,
   }) async {
     final revision = ++_revision;
-    final result = await _repository.create(profile, project, title: title);
+    final result = await _repository.create(
+      profile,
+      directory.trim(),
+      title: title,
+    );
     if (revision == _revision) {
       if (result case Ok<OpenCodeSession, SessionsFailure>(:final value)) {
         _addSession(value);
       }
     }
     return result;
+  }
+
+  Future<Result<List<String>, SessionsFailure>?> suggestDirectories(
+    ServerProfile profile,
+    String input,
+  ) async {
+    final revision = ++_suggestionRevision;
+    final result = await _repository.suggestDirectories(profile, input);
+    return revision == _suggestionRevision ? result : null;
   }
 
   Future<SessionsFailure?> rename(
