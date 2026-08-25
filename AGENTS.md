@@ -9,7 +9,7 @@ Instructions for coding agents and contributors working in this repository.
 - `ARCHITECTURE.md`: binding architecture, data-flow, security, performance, and testing rules.
 - `AGENTS.md`: this file; implementation and verification conventions.
 
-The repository is intentionally at its initial documentation stage. Do not claim a package, command, directory, endpoint, or implementation exists before checking the worktree.
+The repository contains a substantial implementation that continues to evolve. Do not claim a package, command, directory, endpoint, or behavior exists before checking the worktree.
 
 ## Project Constraints
 
@@ -67,7 +67,7 @@ Read `ARCHITECTURE.md` before adding a feature.
 
 - Shared Dart code must compile for all targets. Do not import `dart:io` from code reachable by Web.
 - Put Android/Linux/Web implementation differences behind a small interface and conditional imports.
-- Native Whisper and FFI code apply only to Android/Linux. Web Whisper uses a separately built WASM module through `dart:js_interop`.
+- Prompt's native voice engine uses `sherpa_onnx` 1.13.5 (Apache-2.0) on Android/Linux with explicitly selected French or English streaming Zipformer INT8 models. Web voice remains a typed unavailable implementation; do not add a WASM or Whisper strategy without an explicit architecture decision.
 - Dart Native Assets do not support Web. Do not design a Web feature around FFI or Native Assets.
 - HTTPS is mandatory for the Web client because microphone and secure browser APIs require a secure context, even over WireGuard.
 
@@ -95,6 +95,11 @@ flutter test
 ```
 
 Use project Makefile or task-runner commands once they exist rather than inventing alternate command sequences.
+
+When an APK is built for user testing, expose it through the machine's
+configured private-only sharing mechanism, verify the downloaded size and
+checksum, and return the working URL. Never bind a debug artifact server to a
+public interface.
 
 ## Working Practices
 

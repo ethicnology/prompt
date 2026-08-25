@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.9
+
+jobs:
+  quick-checks:
+    name: Quick checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --set-exit-if-changed lib test tool
+      - run: flutter analyze
+      - run: python3 tool/check_architecture.py
+      - run: flutter test
+
+  generated-code:
+    name: Reproducible generated code
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: dart run build_runner build
+      - run: git diff --exit-code -- lib/data/local/prompt_database.g.dart
+
+  stt-lab:
+    name: STT lab
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: tools/stt_lab
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --set-exit-if-changed lib test integration_test test_driver
+      - run: flutter analyze
+      - run: flutter test
+      - name: Detect live STT benchmark configuration
+        id: live-stt
+        shell: bash
+        env:
+          STT_MODEL_ROOT: ${{ secrets.STT_MODEL_ROOT }}
+        run: |
+          if [[ -n "${STT_MODEL_ROOT}" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Run live STT benchmark when models are configured
+        if: ${{ steps.live-stt.outputs.enabled == 'true' }}
+        env:
+          STT_MODEL_ROOT: ${{ secrets.STT_MODEL_ROOT }}
+        run: >-
+          flutter test integration_test -d flutter-tester
+          --dart-define=STT_LAB_ALLOW_LIVE_TESTS=true
+          --dart-define=STT_MODEL_ROOT=${STT_MODEL_ROOT}
+
+  web-build:
+    name: Web build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter build web --release
+
+  linux-build:
+    name: Linux build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter build linux --release
