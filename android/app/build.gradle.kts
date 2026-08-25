@@ -4,6 +4,16 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseSigningEnvironment = mapOf(
+    "PROMPT_RELEASE_STORE_FILE" to System.getenv("PROMPT_RELEASE_STORE_FILE"),
+    "PROMPT_RELEASE_STORE_PASSWORD" to System.getenv("PROMPT_RELEASE_STORE_PASSWORD"),
+    "PROMPT_RELEASE_KEY_ALIAS" to System.getenv("PROMPT_RELEASE_KEY_ALIAS"),
+    "PROMPT_RELEASE_KEY_PASSWORD" to System.getenv("PROMPT_RELEASE_KEY_PASSWORD"),
+)
+val releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+
 android {
     namespace = "me.ethicnology.prompt"
     compileSdk = flutter.compileSdkVersion
@@ -30,9 +40,21 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Release signing is intentionally supplied by the build environment.
+            // Never fall back to the debug keystore for a distributable artifact.
+            if (releaseBuildRequested) {
+                require(releaseSigningEnvironment.all { it.value?.isNotBlank() == true }) {
+                    "Release signing requires PROMPT_RELEASE_STORE_FILE, " +
+                        "PROMPT_RELEASE_STORE_PASSWORD, PROMPT_RELEASE_KEY_ALIAS, and " +
+                        "PROMPT_RELEASE_KEY_PASSWORD environment variables"
+                }
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(releaseSigningEnvironment.getValue("PROMPT_RELEASE_STORE_FILE"))
+                    storePassword = releaseSigningEnvironment.getValue("PROMPT_RELEASE_STORE_PASSWORD")
+                    keyAlias = releaseSigningEnvironment.getValue("PROMPT_RELEASE_KEY_ALIAS")
+                    keyPassword = releaseSigningEnvironment.getValue("PROMPT_RELEASE_KEY_PASSWORD")
+                }
+            }
         }
     }
 }
