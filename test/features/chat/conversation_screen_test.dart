@@ -1427,6 +1427,48 @@ void main() {
     expect(find.bySemanticsLabel('Code block'), findsOneWidget);
   });
 
+  testWidgets('launches bare and Markdown HTTP links from selectable messages', (
+    tester,
+  ) async {
+    const channel = MethodChannel('plugins.flutter.io/url_launcher');
+    final launchedUrls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) async {
+        if (call.method == 'launch') {
+          final arguments = call.arguments as Map<Object?, Object?>;
+          launchedUrls.add(arguments['url']! as String);
+        }
+        return true;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'links',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: 'Bare HTTP: http://example.com\n\n[Secure](https://example.com)',
+      ),
+    ]);
+
+    await pumpScreen(tester);
+
+    await tester.tap(find.text('http://example.com'));
+    await tester.tap(find.text('Secure'));
+    await tester.pump();
+
+    expect(launchedUrls, [
+      'http://example.com',
+      'https://example.com',
+    ]);
+  });
+
   testWidgets('renders GFM tables with cells and horizontal scrolling', (
     tester,
   ) async {

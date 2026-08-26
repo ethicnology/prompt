@@ -36,12 +36,10 @@ class BasicMarkdownText extends StatelessWidget {
     return switch (block) {
       _HeadingBlock(:final text, :final level) => Semantics(
         header: true,
-        child: SelectableText.rich(
-          TextSpan(
-            style: _headingStyle(theme, level),
-            children: _inlineSpans(context, text, _headingStyle(theme, level)),
-          ),
-          onTap: onBlockTap == null ? null : () => onBlockTap!(text),
+        child: _selectableText(
+          context,
+          text,
+          _headingStyle(theme, level),
         ),
       ),
       _CodeBlock(:final text) => Semantics(
@@ -64,11 +62,22 @@ class BasicMarkdownText extends StatelessWidget {
           rows: rows,
           style: style,
         ),
-      _TextBlock(:final text) => SelectableText.rich(
-        TextSpan(style: style, children: _inlineSpans(context, text, style)),
-        onTap: onBlockTap == null ? null : () => onBlockTap!(text),
-      ),
+      _TextBlock(:final text) => _selectableText(context, text, style),
     };
+  }
+
+  Widget _selectableText(
+    BuildContext context,
+    String text,
+    TextStyle? textStyle,
+  ) {
+    final spans = _inlineSpans(context, text, textStyle);
+    final hasLink = spans.any((span) => span is WidgetSpan);
+    return SelectableText.rich(
+      TextSpan(style: textStyle, children: spans),
+      // A block-wide handler wins the gesture arena over embedded links.
+      onTap: hasLink || onBlockTap == null ? null : () => onBlockTap!(text),
+    );
   }
 
   TextStyle? _headingStyle(ThemeData theme, int level) {
@@ -425,8 +434,7 @@ int _nextMarkup(String text, int start) {
     if (text[index] == '`' ||
         text[index] == '[' ||
         text.startsWith('**', index) ||
-        text.startsWith('http://', index) ||
-        text.startsWith('https://', index)) {
+        _startsWithHttpScheme(text, index)) {
       return index;
     }
   }
@@ -434,8 +442,7 @@ int _nextMarkup(String text, int start) {
 }
 
 ({String text, Uri uri})? _bareUrlAt(String text, int start) {
-  if (!text.startsWith('http://', start) &&
-      !text.startsWith('https://', start)) {
+  if (!_startsWithHttpScheme(text, start)) {
     return null;
   }
   var end = start;
@@ -456,8 +463,14 @@ Uri? _safeHttpUri(String value) {
   final uri = Uri.tryParse(value);
   if (uri == null ||
       uri.host.isEmpty ||
-      (uri.scheme != 'http' && uri.scheme != 'https')) {
+      (uri.scheme.toLowerCase() != 'http' &&
+          uri.scheme.toLowerCase() != 'https')) {
     return null;
   }
   return uri;
 }
+
+final _httpSchemePattern = RegExp(r'https?://', caseSensitive: false);
+
+bool _startsWithHttpScheme(String text, int start) =>
+    _httpSchemePattern.matchAsPrefix(text, start) != null;
