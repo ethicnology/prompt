@@ -6,6 +6,14 @@ Prompt targets Android, Linux, and Web. It connects only to a user-controlled
 server reachable through WireGuard or Tailscale and is designed around a non-interrupting
 prompt queue, responsive streaming, and local-first voice transcription.
 
+## Demo
+
+[![Prompt editing a remote project and switching models from Android](assets/branding/prompt-demo.gif)](assets/branding/prompt-demo.mp4)
+
+Prompt streams agent activity, applies workspace changes, exposes session
+artifacts, and lets the user switch models without leaving the conversation.
+[Open the full-resolution MP4](assets/branding/prompt-demo.mp4).
+
 ## Voice status
 
 Voice input is configured once from **Voice settings**. Prompt uses
