@@ -5,6 +5,7 @@ export 'opencode_chat_api.dart'
         OpenCodeFileDiffRecord,
         OpenCodeGenericToolPresentationRecord,
         OpenCodeMessageDetailRecord,
+        OpenCodeMessagePage,
         OpenCodeMessageRecord,
         OpenCodeReasoningRecord,
         OpenCodeTaskPresentationRecord,

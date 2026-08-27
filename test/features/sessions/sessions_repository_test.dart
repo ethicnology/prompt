@@ -9,6 +9,7 @@ import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
 import 'package:prompt/features/sessions/data/sessions_repository.dart';
 import 'package:prompt/features/sessions/domain/session_load_result.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
+import 'package:prompt/features/sessions/domain/session_activity.dart';
 
 void main() {
   final profile = ServerProfile(
@@ -84,6 +85,125 @@ void main() {
     expect(record.modelId, 'claude-sonnet-4-6');
     expect(record.agentName, 'build');
   });
+
+  test(
+    'loads session activity snapshots without making catalog failure',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.path == '/session/status') {
+          return http.Response(
+            '{"session-1":{"type":"busy"},"idle":{"type":"idle"},'
+            '"retry":{"type":"retry","attempt":2,"message":"rate limited",'
+            '"next":5000},"unknown":{"type":"future"},'
+            '"malformed":[]}',
+            200,
+          );
+        }
+        if (request.url.path == '/session' || request.url.path == '/project') {
+          return http.Response(
+            request.url.path == '/project'
+                ? '[{"id":"project-1","worktree":"/workspace/project"}]'
+                : '[${_sessionJson('session-1')},'
+                      '${_sessionJson('idle')},${_sessionJson('retry')},'
+                      '${_sessionJson('unknown')},${_sessionJson('malformed')}]',
+            200,
+          );
+        }
+        return http.Response('', 404);
+      });
+      final result = await SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      ).load(profile);
+
+      final loaded = result as SessionsLoaded;
+      expect(loaded.activities['session-1'], SessionActivity.working);
+      expect(loaded.activities['idle'], SessionActivity.idle);
+      expect(loaded.activities['retry'], SessionActivity.retrying);
+      expect(loaded.activities['unknown'], SessionActivity.unknown);
+      expect(loaded.activities['malformed'], SessionActivity.unknown);
+    },
+  );
+
+  test(
+    'keeps sessions and reports unavailable activity when status fetch fails',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.path == '/session/status') {
+          return http.Response('', 503);
+        }
+        if (request.url.path == '/project') {
+          return http.Response(
+            '[{"id":"project-1","worktree":"/workspace/project"}]',
+            200,
+          );
+        }
+        if (request.url.path == '/session') {
+          return http.Response('[${_sessionJson('catalogued')}]', 200);
+        }
+        return http.Response('', 404);
+      });
+      final result = await SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      ).load(profile);
+
+      expect(result, isA<SessionsLoaded>());
+      final loaded = result as SessionsLoaded;
+      expect(loaded.sessions.single.id, 'catalogued');
+      expect(loaded.activities['catalogued'], SessionActivity.unavailable);
+      expect(loaded.unavailableDirectories, {'/workspace/project'});
+    },
+  );
+
+  test(
+    'maps omitted successful statuses to idle per session directory',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.path == '/project') {
+          return http.Response(
+            '[{"id":"ok-project","worktree":"/srv/ok"},'
+            '{"id":"failed-project","worktree":"/srv/failed"}]',
+            200,
+          );
+        }
+        if (request.url.path == '/session') {
+          return http.Response(
+            '[{"id":"ok-busy","projectID":"ok-project",'
+            '"directory":"/srv/ok","title":"Busy",'
+            '"time":{"created":1000,"updated":1000}},'
+            '{"id":"ok-idle","projectID":"ok-project",'
+            '"directory":"/srv/ok","title":"Idle",'
+            '"time":{"created":1000,"updated":1000}},'
+            '{"id":"failed-id","projectID":"failed-project",'
+            '"directory":"/srv/failed","title":"Unknown",'
+            '"time":{"created":1000,"updated":1000}}]',
+            200,
+          );
+        }
+        if (request.url.path == '/session/status' &&
+            request.url.queryParameters['directory'] == '/srv/ok') {
+          return http.Response('{"ok-busy":{"type":"busy"}}', 200);
+        }
+        if (request.url.path == '/session/status') {
+          return http.Response('', 503);
+        }
+        return http.Response('', 404);
+      });
+
+      final result = await SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      ).load(profile);
+
+      final loaded = result as SessionsLoaded;
+      expect(loaded.activities['ok-busy'], SessionActivity.working);
+      expect(loaded.activities['ok-idle'], SessionActivity.idle);
+      expect(loaded.activities['failed-id'], SessionActivity.unavailable);
+      expect(loaded.unavailableDirectories, {'/srv/failed'});
+      expect(loaded.sessions, hasLength(3));
+    },
+  );
 
   test('suggests matching directories from the server file endpoint', () async {
     http.Request? captured;

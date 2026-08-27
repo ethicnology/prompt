@@ -233,6 +233,7 @@ class AppDependencies {
           );
         }
         _queueCoordinator = created;
+        sessionsViewModel.bindLiveStatuses(created.liveStatuses);
         return created;
       } finally {
         if (identical(_queueCoordinatorFuture, current)) {

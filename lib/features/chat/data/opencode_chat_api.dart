@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../data/remote/opencode_transport.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import '../../connection/connection.dart';
 import '../../sessions/sessions.dart';
 import '../../queue/queue.dart';
@@ -16,13 +17,18 @@ class OpenCodeChatApi {
 
   final OpenCodeTransport _transport;
 
-  Future<List<OpenCodeMessageRecord>> listMessages(
+  Future<OpenCodeMessagePage> listMessages(
     ServerProfile profile,
     String? password,
-    OpenCodeSession session,
-  ) async {
+    OpenCodeSession session, {
+    String? before,
+  }) async {
     final query = Uri(
-      queryParameters: {'directory': session.directory, 'limit': '100'},
+      queryParameters: {
+        'directory': session.directory,
+        'limit': '100',
+        if (before != null && before.isNotEmpty) 'before': before,
+      },
     ).query;
     final response = await _get(
       profile,
@@ -33,10 +39,38 @@ class OpenCodeChatApi {
     if (decoded is! List) {
       throw const FormatException('Messages response must be a list.');
     }
-    return decoded
+    final records = decoded
         .whereType<Map<String, dynamic>>()
         .map(OpenCodeMessageRecord.fromJson)
         .toList(growable: false);
+    return OpenCodeMessagePage(
+      records: records,
+      nextCursor: _nextCursor(response.headers),
+    );
+  }
+
+  String? _nextCursor(Map<String, String> headers) {
+    final direct = headers.entries
+        .firstWhere(
+          (entry) => entry.key.toLowerCase() == 'x-next-cursor',
+          orElse: () => const MapEntry('', ''),
+        )
+        .value
+        .trim();
+    if (direct.isNotEmpty) return direct;
+    final link = headers.entries
+        .firstWhere(
+          (entry) => entry.key.toLowerCase() == 'link',
+          orElse: () => const MapEntry('', ''),
+        )
+        .value;
+    final match = RegExp(
+      r'''<([^>]+)>\s*;\s*rel\s*=\s*["']next["']''',
+      caseSensitive: false,
+    ).firstMatch(link);
+    final uri = match == null ? null : Uri.tryParse(match.group(1)!);
+    final cursor = uri?.queryParameters['before']?.trim();
+    return cursor == null || cursor.isEmpty ? null : cursor;
   }
 
   Future<List<OpenCodeTodoRecord>> listTodos(
@@ -289,11 +323,7 @@ class OpenCodeChatApi {
       if (value is! Map<String, dynamic>) {
         throw const FormatException('Session status entry is malformed.');
       }
-      final state = _mapSessionExecutionState(value);
-      if (state == null) {
-        throw const FormatException('Session status entry is malformed.');
-      }
-      statuses[entry.key] = state;
+      statuses[entry.key] = _mapSessionExecutionState(value);
     }
     return statuses;
   }
@@ -343,31 +373,18 @@ class OpenCodeChatApi {
   }
 }
 
-/// Maps a raw `SessionStatus` JSON object, as returned by both `GET
-/// /session/status` and the `session.status` SSE event, to a typed
-/// [SessionExecutionState]. Returns `null` for a malformed or unrecognized
-/// payload.
-SessionExecutionState? _mapSessionExecutionState(Map<String, dynamic> json) {
-  final type = json['type'];
-  switch (type) {
-    case 'idle':
-      return const SessionIdle();
-    case 'busy':
-      return const SessionBusy();
-    case 'retry':
-      final attempt = json['attempt'];
-      final message = json['message'];
-      final next = json['next'];
-      if (attempt is! num || message is! String || next is! num) {
-        return null;
-      }
-      return SessionRetrying(
-        attempt: attempt.toInt(),
-        nextAttemptAtMillis: next.toInt(),
-      );
-    default:
-      return null;
-  }
+SessionExecutionState _mapSessionExecutionState(Object? value) {
+  return switch (parseOpenCodeSessionStatus(value)) {
+    OpenCodeSessionStatusBusy() => const SessionBusy(),
+    OpenCodeSessionStatusIdle() => const SessionIdle(),
+    OpenCodeSessionStatusRetry(:final attempt, :final message, :final next) =>
+      SessionRetrying(
+        attempt: attempt,
+        message: message,
+        nextAttemptAtMillis: next,
+      ),
+    OpenCodeSessionStatusUnknown() => const SessionExecutionUnknown(),
+  };
 }
 
 class OpenCodeTodoRecord {
@@ -437,6 +454,15 @@ class OpenCodeFileDiffRecord {
   final int additions;
   final int deletions;
   final String? status;
+}
+
+class OpenCodeMessagePage {
+  const OpenCodeMessagePage({required this.records, this.nextCursor});
+
+  final List<OpenCodeMessageRecord> records;
+  final String? nextCursor;
+
+  bool get cursorUnavailable => records.length == 100 && nextCursor == null;
 }
 
 class OpenCodeMessageRecord {

@@ -7,6 +7,11 @@ sealed class SessionExecutionState {
   const SessionExecutionState();
 }
 
+/// No authoritative execution state is currently available.
+final class SessionExecutionUnknown extends SessionExecutionState {
+  const SessionExecutionUnknown();
+}
+
 /// The session is not generating and is not waiting to retry.
 final class SessionIdle extends SessionExecutionState {
   const SessionIdle();
@@ -21,11 +26,13 @@ final class SessionBusy extends SessionExecutionState {
 final class SessionRetrying extends SessionExecutionState {
   const SessionRetrying({
     required this.attempt,
+    this.message = '',
     required this.nextAttemptAtMillis,
   });
 
   /// 1-based attempt count reported by the server.
   final int attempt;
+  final String message;
 
   /// Epoch milliseconds of the next scheduled attempt.
   final int nextAttemptAtMillis;

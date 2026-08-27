@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/async/result.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import '../../connection/connection.dart';
 import '../data/sessions_repository.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
+import '../domain/session_activity.dart';
 import '../domain/session_load_result.dart';
 
 sealed class SessionsUiState {
@@ -20,10 +22,17 @@ class SessionsLoading extends SessionsUiState {
 }
 
 class SessionsReady extends SessionsUiState {
-  const SessionsReady(this.sessions, this.projects);
+  const SessionsReady(
+    this.sessions,
+    this.projects, {
+    this.activities = const <String, SessionActivity>{},
+    this.unavailableDirectories = const <String>{},
+  });
 
   final List<OpenCodeSession> sessions;
   final List<OpenCodeProject> projects;
+  final Map<String, SessionActivity> activities;
+  final Set<String> unavailableDirectories;
 }
 
 class SessionsEmpty extends SessionsUiState {
@@ -42,6 +51,35 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
   final SessionsRepository _repository;
   int _revision = 0;
   int _suggestionRevision = 0;
+  ValueListenable<Map<String, OpenCodeSessionStatus>>? _liveStatuses;
+  Map<String, SessionActivity> _liveActivities = const {};
+  Map<String, SessionActivity> _baseActivities = const {};
+
+  /// Binds the coordinator's existing global SSE status feed. Binding is
+  /// presentation-only: this view model never starts network work.
+  void bindLiveStatuses(
+    ValueListenable<Map<String, OpenCodeSessionStatus>> statuses,
+  ) {
+    if (identical(_liveStatuses, statuses)) {
+      return;
+    }
+    unbindLiveStatuses();
+    _liveStatuses = statuses;
+    _liveActivities = _toActivities(statuses.value);
+    statuses.addListener(_onLiveStatusesChanged);
+    _overlayCurrentState();
+  }
+
+  void unbindLiveStatuses() {
+    final statuses = _liveStatuses;
+    if (statuses == null) {
+      return;
+    }
+    statuses.removeListener(_onLiveStatusesChanged);
+    _liveStatuses = null;
+    _liveActivities = const {};
+    _overlayCurrentState();
+  }
 
   Future<void> load(ServerProfile profile) async {
     final revision = ++_revision;
@@ -53,10 +91,26 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
       return;
     }
     switch (result) {
-      case SessionsLoaded(:final sessions, :final projects):
+      case SessionsLoaded(
+        :final sessions,
+        :final projects,
+        :final activities,
+        :final unavailableDirectories,
+      ):
+        _baseActivities = Map.unmodifiable(activities);
         value = sessions.isEmpty
-            ? SessionsReady(const [], projects)
-            : SessionsReady(sessions, projects);
+            ? SessionsReady(
+                const [],
+                projects,
+                activities: _overlayActivities(activities),
+                unavailableDirectories: unavailableDirectories,
+              )
+            : SessionsReady(
+                sessions,
+                projects,
+                activities: _overlayActivities(activities),
+                unavailableDirectories: unavailableDirectories,
+              );
       case SessionsLoadFailed(:final failure):
         value = SessionsError(failure);
     }
@@ -88,6 +142,44 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
     final revision = ++_suggestionRevision;
     final result = await _repository.suggestDirectories(profile, input);
     return revision == _suggestionRevision ? result : null;
+  }
+
+  void _onLiveStatusesChanged() {
+    final statuses = _liveStatuses;
+    if (statuses == null) return;
+    _liveActivities = _toActivities(statuses.value);
+    _overlayCurrentState();
+  }
+
+  Map<String, SessionActivity> _toActivities(
+    Map<String, OpenCodeSessionStatus> statuses,
+  ) => {
+    for (final entry in statuses.entries)
+      entry.key: switch (entry.value) {
+        OpenCodeSessionStatusBusy() => SessionActivity.working,
+        OpenCodeSessionStatusIdle() => SessionActivity.idle,
+        OpenCodeSessionStatusRetry() => SessionActivity.retrying,
+        OpenCodeSessionStatusUnknown() => SessionActivity.unknown,
+      },
+  };
+
+  Map<String, SessionActivity> _overlayActivities(
+    Map<String, SessionActivity> activities,
+  ) => Map.unmodifiable({...activities, ..._liveActivities});
+
+  void _overlayCurrentState() {
+    if (value case SessionsReady(
+      :final sessions,
+      :final projects,
+      :final unavailableDirectories,
+    )) {
+      value = SessionsReady(
+        sessions,
+        projects,
+        activities: _overlayActivities(_baseActivities),
+        unavailableDirectories: unavailableDirectories,
+      );
+    }
   }
 
   Future<SessionsFailure?> rename(
@@ -134,12 +226,22 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
       return failure;
     }
     if (revision == _revision) {
-      if (value case SessionsReady(:final sessions, :final projects)) {
+      if (value case SessionsReady(
+        :final sessions,
+        :final projects,
+        :final unavailableDirectories,
+      )) {
+        final nextActivities = Map<String, SessionActivity>.from(
+          _baseActivities,
+        )..remove(session.id);
+        _baseActivities = Map.unmodifiable(nextActivities);
         value = SessionsReady(
           List.unmodifiable(
             sessions.where((candidate) => candidate.id != session.id),
           ),
           projects,
+          activities: _overlayActivities(_baseActivities),
+          unavailableDirectories: unavailableDirectories,
         );
       }
     }
@@ -147,22 +249,46 @@ class SessionsViewModel extends ValueNotifier<SessionsUiState> {
   }
 
   void _addSession(OpenCodeSession session) {
-    if (value case SessionsReady(:final sessions, :final projects)) {
+    if (value case SessionsReady(
+      :final sessions,
+      :final projects,
+      :final unavailableDirectories,
+    )) {
       final updated = [
         session,
         ...sessions.where((candidate) => candidate.id != session.id),
       ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-      value = SessionsReady(List.unmodifiable(updated), projects);
+      value = SessionsReady(
+        List.unmodifiable(updated),
+        projects,
+        activities: _overlayActivities(_baseActivities),
+        unavailableDirectories: unavailableDirectories,
+      );
     }
   }
 
   void _replaceSession(OpenCodeSession previous, OpenCodeSession replacement) {
-    if (value case SessionsReady(:final sessions, :final projects)) {
+    if (value case SessionsReady(
+      :final sessions,
+      :final projects,
+      :final unavailableDirectories,
+    )) {
       final updated = [
         for (final session in sessions)
           if (session.id == previous.id) replacement else session,
       ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-      value = SessionsReady(List.unmodifiable(updated), projects);
+      value = SessionsReady(
+        List.unmodifiable(updated),
+        projects,
+        activities: _overlayActivities(_baseActivities),
+        unavailableDirectories: unavailableDirectories,
+      );
     }
+  }
+
+  @override
+  void dispose() {
+    unbindLiveStatuses();
+    super.dispose();
   }
 }

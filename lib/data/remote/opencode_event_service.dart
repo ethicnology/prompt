@@ -10,7 +10,10 @@ class OpenCodeEventEnvelope {
   final String? directory;
   final Map<String, dynamic> payload;
 
-  String? get type => payload['type'] as String?;
+  String? get type {
+    final value = payload['type'];
+    return value is String ? value : null;
+  }
 }
 
 class OpenCodeEventService {
@@ -43,18 +46,26 @@ class OpenCodeEventService {
       }
       final jsonText = dataLines.join('\n');
       dataLines.clear();
-      final decoded = jsonDecode(jsonText);
-      if (decoded is! Map<String, dynamic>) {
+      try {
+        final decoded = jsonDecode(jsonText);
+        if (decoded is! Map<String, dynamic>) {
+          return null;
+        }
+        final directory = decoded['directory'];
+        if (directory != null && directory is! String) {
+          return null;
+        }
+        final payload = decoded['payload'];
+        if (payload is! Map<String, dynamic>) {
+          return null;
+        }
+        return OpenCodeEventEnvelope(
+          directory: directory as String?,
+          payload: payload,
+        );
+      } on FormatException {
         return null;
       }
-      final payload = decoded['payload'];
-      if (payload is! Map<String, dynamic>) {
-        return null;
-      }
-      return OpenCodeEventEnvelope(
-        directory: decoded['directory'] as String?,
-        payload: payload,
-      );
     }
 
     await for (final line

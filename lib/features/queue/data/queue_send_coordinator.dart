@@ -69,6 +69,7 @@ import '../../../core/async/reconnect_backoff.dart';
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_event_service.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import '../../chat/chat.dart';
 import '../../connection/connection.dart';
 import '../../sessions/sessions.dart';
@@ -118,6 +119,9 @@ class QueueSendCoordinator {
 
   ServerProfile? _profile;
   OpenCodeSession? _session;
+  String? _liveStatusProfileId;
+  final ValueNotifier<Map<String, OpenCodeSessionStatus>> _liveStatuses =
+      ValueNotifier(const <String, OpenCodeSessionStatus>{});
 
   StreamSubscription<List<QueuedPrompt>>? _queueSubscription;
   StreamSubscription<OpenCodeEventEnvelope>? _sseSubscription;
@@ -142,6 +146,12 @@ class QueueSendCoordinator {
   /// rebuild carrying the final text, not one per token.
   ValueListenable<ConversationState> get conversationStateUpdates =>
       _chatRepository.conversationStateUpdates;
+
+  /// Latest valid execution status observed for each session in the active
+  /// server profile. This is fed by the same global SSE connection used for
+  /// conversation coordination.
+  ValueListenable<Map<String, OpenCodeSessionStatus>> get liveStatuses =>
+      _liveStatuses;
 
   bool _dispatchInProgress = false;
   String? _pendingSendNowPromptId;
@@ -256,7 +266,13 @@ class QueueSendCoordinator {
     required OpenCodeSession session,
   }) async {
     _requireNotDisposed();
+    final previousProfileId = _liveStatusProfileId;
     await deactivate();
+
+    if (previousProfileId != profile.id) {
+      _liveStatuses.value = const <String, OpenCodeSessionStatus>{};
+    }
+    _liveStatusProfileId = profile.id;
 
     _activationToken++;
     final token = _activationToken;
@@ -516,6 +532,10 @@ class QueueSendCoordinator {
     if (_isStale(token)) {
       return;
     }
+    final liveStatus = parseOpenCodeGlobalSessionStatus(envelope.payload);
+    if (liveStatus != null) {
+      _publishLiveStatus(liveStatus.sessionId, liveStatus.status);
+    }
     final previousState = _chatRepository.conversationStateUpdates.value;
     _chatRepository.applyEnvelope(envelope, session);
     final nextState = _chatRepository.conversationStateUpdates.value;
@@ -678,6 +698,7 @@ class QueueSendCoordinator {
     PermissionResponse response,
   ) {
     return _submitApprovalReply(
+      permissionId,
       (profile, session) => _chatRepository.respondToPermission(
         profile,
         session,
@@ -696,6 +717,7 @@ class QueueSendCoordinator {
     List<List<String>> answers,
   ) {
     return _submitApprovalReply(
+      requestId,
       (profile, session) =>
           _chatRepository.replyToQuestion(profile, session, requestId, answers),
     );
@@ -706,12 +728,14 @@ class QueueSendCoordinator {
   /// identically here.
   Future<Result<void, QueueApprovalFailure>> rejectQuestion(String requestId) {
     return _submitApprovalReply(
+      requestId,
       (profile, session) =>
           _chatRepository.rejectQuestion(profile, session, requestId),
     );
   }
 
   Future<Result<void, QueueApprovalFailure>> _submitApprovalReply(
+    String approvalId,
     Future<Result<void, ChatFailure>> Function(
       ServerProfile profile,
       OpenCodeSession session,
@@ -732,6 +756,16 @@ class QueueSendCoordinator {
       return const Err(QueueApprovalFailure.requestFailed);
     }
     _chatRepository.clearApproval(session.id);
+    await _reconcilePendingApprovals(
+      profile,
+      session,
+      token,
+      resumeWhenEmpty: false,
+      excludedApprovalId: approvalId,
+    );
+    if (_isStale(token)) {
+      return const Err(QueueApprovalFailure.noActiveSession);
+    }
     return const Ok(null);
   }
 
@@ -744,6 +778,7 @@ class QueueSendCoordinator {
     await deactivate();
     _disposed = true;
     _connectionState.dispose();
+    _liveStatuses.dispose();
   }
 
   /// Applies a fresh authoritative execution state for [sessionId] — from
@@ -756,6 +791,7 @@ class QueueSendCoordinator {
     String sessionId,
     SessionExecutionState state,
   ) async {
+    _publishLiveStatus(sessionId, _toOpenCodeStatus(state));
     final previousState = _chatRepository.conversationStateUpdates.value;
     _chatRepository.applySessionState(sessionId, state);
     final nextState = _chatRepository.conversationStateUpdates.value;
@@ -768,6 +804,36 @@ class QueueSendCoordinator {
         _activationToken,
       ),
     );
+  }
+
+  void _publishLiveStatus(String sessionId, OpenCodeSessionStatus status) {
+    if (_liveStatusProfileId == null ||
+        status is OpenCodeSessionStatusUnknown) {
+      return;
+    }
+    final next = <String, OpenCodeSessionStatus>{
+      ..._liveStatuses.value,
+      sessionId: status,
+    };
+    _liveStatuses.value = Map.unmodifiable(next);
+  }
+
+  OpenCodeSessionStatus _toOpenCodeStatus(SessionExecutionState state) {
+    return switch (state) {
+      SessionBusy() => const OpenCodeSessionStatusBusy(),
+      SessionIdle() => const OpenCodeSessionStatusIdle(),
+      SessionRetrying(
+        :final attempt,
+        :final message,
+        :final nextAttemptAtMillis,
+      ) =>
+        OpenCodeSessionStatusRetry(
+          attempt: attempt,
+          message: message,
+          next: nextAttemptAtMillis,
+        ),
+      SessionExecutionUnknown() => const OpenCodeSessionStatusUnknown(),
+    };
   }
 
   Future<void> _serializeBlockTransition(Future<void> Function() operation) {
@@ -798,17 +864,29 @@ class QueueSendCoordinator {
   Future<void> _reconcilePendingApprovals(
     ServerProfile profile,
     OpenCodeSession session,
-    int token,
-  ) async {
+    int token, {
+    bool resumeWhenEmpty = true,
+    String? excludedApprovalId,
+  }) async {
     final result = await _chatRepository.pendingApprovals(profile, session);
     if (_isStale(token)) {
       return;
     }
     switch (result) {
       case Ok<List<PendingApproval>, ChatFailure>(:final value):
-        final approval = value.isEmpty ? null : value.first;
+        final remaining = excludedApprovalId == null
+            ? value
+            : value
+                  .where(
+                    (candidate) =>
+                        _pendingApprovalId(candidate) != excludedApprovalId,
+                  )
+                  .toList(growable: false);
+        final approval = remaining.isEmpty ? null : remaining.first;
         if (approval == null) {
-          await _resumeBlockedPrompts(token);
+          if (resumeWhenEmpty) {
+            await _resumeBlockedPrompts(token);
+          }
           return;
         }
         final previous = _chatRepository.conversationStateUpdates.value;
@@ -892,6 +970,13 @@ class QueueSendCoordinator {
   bool _isBlockPauseReason(QueuePauseReason? reason) {
     return reason == QueuePauseReason.permissionPending ||
         reason == QueuePauseReason.questionPending;
+  }
+
+  String _pendingApprovalId(PendingApproval approval) {
+    return switch (approval) {
+      PendingPermissionApproval(:final permissionId) => permissionId,
+      PendingQuestionApproval(:final requestId) => requestId,
+    };
   }
 
   void _maybeDispatch() {

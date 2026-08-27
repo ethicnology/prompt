@@ -1,16 +1,24 @@
 import '../../../core/async/result.dart';
 import 'open_code_project.dart';
 import 'open_code_session.dart';
+import 'session_activity.dart';
 
 sealed class SessionLoadResult {
   const SessionLoadResult();
 }
 
 class SessionsLoaded extends SessionLoadResult {
-  const SessionsLoaded(this.sessions, {this.projects = const []});
+  const SessionsLoaded(
+    this.sessions, {
+    this.projects = const [],
+    this.activities = const <String, SessionActivity>{},
+    this.unavailableDirectories = const <String>{},
+  });
 
   final List<OpenCodeSession> sessions;
   final List<OpenCodeProject> projects;
+  final Map<String, SessionActivity> activities;
+  final Set<String> unavailableDirectories;
 }
 
 class SessionsLoadFailed extends SessionLoadResult {

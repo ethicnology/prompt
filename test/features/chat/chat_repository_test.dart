@@ -11,6 +11,8 @@ import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_load_result.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/conversation_event.dart';
+import 'package:prompt/features/chat/domain/conversation_message.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/chat/domain/session_artifacts.dart';
@@ -62,6 +64,190 @@ void main() {
     expect(messages.first.text, 'Explain this');
     expect(messages.last.role, ChatMessageRole.assistant);
     expect(messages.last.text, 'Here is an explanation.');
+  });
+
+  test('prepends older history and deduplicates stable message ids', () async {
+    final client = MockClient((request) async {
+      if (request.url.queryParameters['before'] == 'cursor-1') {
+        return http.Response(
+          jsonEncode([
+            _messageJson('older', 500),
+            _messageJson('latest', 1000),
+          ]),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode([_messageJson('latest', 1000)]),
+        200,
+        headers: {'x-next-cursor': 'cursor-1'},
+      );
+    });
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+    repository.activateConversation(session);
+
+    final initial = await repository.load(profile, session);
+    expect((initial as ChatLoaded).hasMore, isTrue);
+    final older = await repository.loadOlder(profile, session);
+
+    expect((older as ChatOlderLoaded).hasMore, isFalse);
+    expect(
+      repository.historyUpdates.value.messages.map((message) => message.id),
+      ['older', 'latest'],
+    );
+  });
+
+  test('replays live updates and removals that race an older page', () async {
+    final olderResponse = Completer<http.Response>();
+    final client = MockClient((request) async {
+      if (request.url.queryParameters['before'] != null) {
+        return olderResponse.future;
+      }
+      return http.Response(
+        jsonEncode([_messageJson('latest', 1000)]),
+        200,
+        headers: {'x-next-cursor': 'cursor-1'},
+      );
+    });
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+    repository.activateConversation(session);
+    await repository.load(profile, session);
+    final loading = repository.loadOlder(profile, session);
+    await _waitFor(() => repository.historyUpdates.value.loadingOlder);
+
+    repository.applyEvent(
+      const MessageUpdatedEvent(
+        sessionId: 'session-1',
+        messageId: 'latest',
+        role: ConversationRole.assistant,
+      ),
+    );
+    repository.applyEvent(
+      const MessagePartUpdatedEvent(
+        sessionId: 'session-1',
+        part: TextMessagePart(
+          id: 'part-1',
+          messageId: 'latest',
+          text: 'live update',
+        ),
+      ),
+    );
+    repository.applyEvent(
+      const MessageRemovedEvent(sessionId: 'session-1', messageId: 'older'),
+    );
+    olderResponse.complete(
+      http.Response(
+        jsonEncode([_messageJson('older', 500), _messageJson('latest', 1000)]),
+        200,
+      ),
+    );
+    await loading;
+
+    expect(repository.conversationUpdates.value.messages, hasLength(1));
+    expect(
+      repository.conversationUpdates.value.messages.single.text,
+      'live update',
+    );
+  });
+
+  test('discards an older page after the active session changes', () async {
+    final olderResponse = Completer<http.Response>();
+    final client = MockClient((request) async {
+      if (request.url.queryParameters['before'] != null) {
+        return olderResponse.future;
+      }
+      return http.Response(
+        jsonEncode([_messageJson('latest', 1000)]),
+        200,
+        headers: {'x-next-cursor': 'cursor-1'},
+      );
+    });
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+    repository.activateConversation(session);
+    await repository.load(profile, session);
+    final loading = repository.loadOlder(profile, session);
+    await _waitFor(() => repository.historyUpdates.value.loadingOlder);
+
+    repository.deactivateConversation();
+    olderResponse.complete(
+      http.Response(jsonEncode([_messageJson('older', 500)]), 200),
+    );
+    await loading;
+
+    expect(repository.conversationUpdates.value.messages, isEmpty);
+    expect(repository.historyUpdates.value.messages, isEmpty);
+  });
+
+  test(
+    'preserves readable history and pagination after older-page failure',
+    () async {
+      final client = MockClient((request) async {
+        if (request.url.queryParameters['before'] != null) {
+          return http.Response('', 503);
+        }
+        return http.Response(
+          jsonEncode([_messageJson('latest', 1000)]),
+          200,
+          headers: {'x-next-cursor': 'cursor-1'},
+        );
+      });
+      final repository = ChatRepository(
+        OpenCodeChatService(OpenCodeTransport(client)),
+        const _PasswordStore('secret'),
+      );
+      repository.activateConversation(session);
+      await repository.load(profile, session);
+
+      final result = await repository.loadOlder(profile, session);
+
+      expect(result, isA<ChatLoadFailed>());
+      expect(repository.conversationUpdates.value.messages.single.id, 'latest');
+      expect(repository.historyUpdates.value.hasMore, isTrue);
+      expect(
+        repository.historyUpdates.value.failure,
+        ChatFailure.unexpectedResponse,
+      );
+    },
+  );
+
+  test('preserves the older cursor when an initial refresh fails', () async {
+    var requestCount = 0;
+    final client = MockClient((request) async {
+      requestCount++;
+      if (requestCount == 1) {
+        return http.Response(
+          jsonEncode([_messageJson('latest', 1000)]),
+          200,
+          headers: {'x-next-cursor': 'cursor-1'},
+        );
+      }
+      return http.Response('', 503);
+    });
+    final repository = ChatRepository(
+      OpenCodeChatService(OpenCodeTransport(client)),
+      const _PasswordStore('secret'),
+    );
+    repository.activateConversation(session);
+    await repository.load(profile, session);
+
+    final result = await repository.load(profile, session);
+
+    expect(result, isA<ChatLoadFailed>());
+    expect(repository.historyUpdates.value.messages.single.id, 'latest');
+    expect(repository.historyUpdates.value.hasMore, isTrue);
+    expect(
+      repository.historyUpdates.value.failure,
+      ChatFailure.unexpectedResponse,
+    );
   });
 
   test(
@@ -1037,6 +1223,17 @@ http.Response _messageResponse(String text) => http.Response(
   ]),
   200,
 );
+
+Map<String, dynamic> _messageJson(String id, int created) => {
+  'info': {
+    'id': id,
+    'role': 'assistant',
+    'time': {'created': created},
+  },
+  'parts': [
+    {'type': 'text', 'text': id},
+  ],
+};
 
 Future<void> _waitFor(bool Function() condition) async {
   while (!condition()) {

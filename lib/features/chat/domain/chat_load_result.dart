@@ -5,9 +5,27 @@ sealed class ChatLoadResult {
 }
 
 class ChatLoaded extends ChatLoadResult {
-  const ChatLoaded(this.messages);
+  const ChatLoaded(
+    this.messages, {
+    this.hasMore = false,
+    this.cursorUnavailable = false,
+  });
 
   final List<ChatMessage> messages;
+  final bool hasMore;
+  final bool cursorUnavailable;
+}
+
+class ChatOlderLoaded extends ChatLoadResult {
+  const ChatOlderLoaded(
+    this.messages, {
+    required this.hasMore,
+    this.cursorUnavailable = false,
+  });
+
+  final List<ChatMessage> messages;
+  final bool hasMore;
+  final bool cursorUnavailable;
 }
 
 class ChatLoadFailed extends ChatLoadResult {

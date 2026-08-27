@@ -31,4 +31,40 @@ void main() {
 
     expect(events, isEmpty);
   });
+
+  test(
+    'continues after malformed JSON and emits a subsequent valid event',
+    () async {
+      final bytes = Stream.value(
+        utf8.encode(
+          'data: {not valid JSON}\n\n'
+          'data: {"directory":"/x","payload":{"type":"session.idle"}}\n\n',
+        ),
+      );
+
+      final events = await OpenCodeEventService.decode(bytes).toList();
+
+      expect(events, hasLength(1));
+      expect(events.single.directory, '/x');
+      expect(events.single.type, 'session.idle');
+    },
+  );
+
+  test(
+    'ignores a non-string directory but safely exposes a non-string type',
+    () async {
+      final bytes = Stream.value(
+        utf8.encode(
+          'data: {"directory":42,"payload":{"type":"ignored"}}\n\n'
+          'data: {"directory":"/x","payload":{"type":42}}\n\n',
+        ),
+      );
+
+      final events = await OpenCodeEventService.decode(bytes).toList();
+
+      expect(events, hasLength(1));
+      expect(events.single.directory, '/x');
+      expect(events.single.type, isNull);
+    },
+  );
 }

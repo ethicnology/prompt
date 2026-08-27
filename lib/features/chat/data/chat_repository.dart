@@ -11,6 +11,7 @@ import '../../connection/connection.dart';
 import '../../sessions/sessions.dart';
 import '../../queue/queue.dart';
 import '../domain/chat_load_result.dart';
+import '../domain/chat_page_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/pending_approval.dart';
 import '../domain/permission_response.dart';
@@ -39,10 +40,18 @@ class ChatRepository {
   final ValueNotifier<ConversationState> _conversationState = ValueNotifier(
     const ConversationState(),
   );
+  final ValueNotifier<ChatHistoryState> _history = ValueNotifier(
+    const ChatHistoryState(messages: <ChatMessage>[], hasMore: false),
+  );
   final List<_RecordedEvent> _events = <_RecordedEvent>[];
   int _eventSequence = 0;
   int _loadGeneration = 0;
   OpenCodeSession? _activeSession;
+  String? _olderCursor;
+  bool _hasMore = false;
+  bool _cursorUnavailable = false;
+  bool _loadingOlder = false;
+  ChatFailure? _historyFailure;
 
   ValueListenable<ConversationRepositoryState> get conversationUpdates =>
       _conversation;
@@ -50,28 +59,38 @@ class ChatRepository {
   ValueListenable<ConversationState> get conversationStateUpdates =>
       _conversationState;
 
+  ValueListenable<ChatHistoryState> get historyUpdates => _history;
+
   void activateConversation(OpenCodeSession session) {
     if (_activeSession?.id == session.id &&
         _activeSession?.directory == session.directory) {
       return;
     }
     _activeSession = session;
+    _loadGeneration++;
+    _resetPagination();
+    _historyFailure = null;
     _events.clear();
     _conversation.value = const ConversationRepositoryState(
       messages: <ChatMessage>[],
       conversation: ConversationState(),
     );
     _conversationState.value = const ConversationState();
+    _publishHistory(const <ChatMessage>[]);
   }
 
   void deactivateConversation() {
     _activeSession = null;
+    _loadGeneration++;
+    _resetPagination();
+    _historyFailure = null;
     _events.clear();
     _conversation.value = const ConversationRepositoryState(
       messages: <ChatMessage>[],
       conversation: ConversationState(),
     );
     _conversationState.value = const ConversationState();
+    _publishHistory(const <ChatMessage>[]);
   }
 
   void applyEvent(ConversationEvent event) {
@@ -124,26 +143,30 @@ class ChatRepository {
     ServerProfile profile,
     OpenCodeSession session,
   ) async {
+    _activeSession ??= session;
     final loadGeneration = ++_loadGeneration;
+    // These two values are one explicit snapshot boundary. Events newer than
+    // this pair are replayed after REST, while older events are already in the
+    // captured conversation state.
+    final snapshotStart = _eventSequence;
+    final stateAtSnapshotStart = _conversation.value.conversation;
     try {
-      final snapshotStart = _eventSequence;
       final password = await _credentialsStore.readPassword(profile.id);
-      final records = await _chatService.listMessages(
-        profile,
-        password,
-        session,
-      );
+      final page = await _chatService.listMessages(profile, password, session);
       if (loadGeneration != _loadGeneration) {
-        return ChatLoaded(_conversation.value.messages);
+        return ChatLoaded(
+          _conversation.value.messages,
+          hasMore: _hasMore,
+          cursorUnavailable: _cursorUnavailable,
+        );
       }
-      final messages = records
+      final messages = page.records
           .where(
             (record) => record.role == 'user' || record.role == 'assistant',
           )
           .map(mapChatMessage)
           .toList(growable: false);
       final replay = _events.where((event) => event.sequence > snapshotStart);
-      final stateAtSnapshotStart = _conversation.value.conversation;
       var state = ConversationState(
         sessionStates: stateAtSnapshotStart.sessionStates,
         sessionBlocks: stateAtSnapshotStart.sessionBlocks,
@@ -156,20 +179,114 @@ class ChatRepository {
       }
       _events.removeWhere((event) => event.sequence <= snapshotStart);
       _publish(state, consolidatedMessages);
-      return ChatLoaded(_conversation.value.messages);
+      _olderCursor = page.nextCursor;
+      _hasMore = page.nextCursor != null;
+      _cursorUnavailable = page.cursorUnavailable;
+      _historyFailure = null;
+      _publishHistory(_conversation.value.messages);
+      return ChatLoaded(
+        _conversation.value.messages,
+        hasMore: _hasMore,
+        cursorUnavailable: _cursorUnavailable,
+      );
     } on OpenCodeHttpFailure catch (failure) {
       if (failure.statusCode == 401 || failure.statusCode == 403) {
-        return const ChatLoadFailed(ChatFailure.unauthorized);
+        return _loadFailure(ChatFailure.unauthorized);
       }
-      return const ChatLoadFailed(ChatFailure.unexpectedResponse);
+      return _loadFailure(ChatFailure.unexpectedResponse);
     } on TimeoutException {
-      return const ChatLoadFailed(ChatFailure.unavailable);
+      return _loadFailure(ChatFailure.unavailable);
     } on InvalidOpenCodeOrigin {
-      return const ChatLoadFailed(ChatFailure.unexpectedResponse);
+      return _loadFailure(ChatFailure.unexpectedResponse);
     } on http.ClientException {
-      return const ChatLoadFailed(ChatFailure.unavailable);
+      return _loadFailure(ChatFailure.unavailable);
     } on FormatException {
-      return const ChatLoadFailed(ChatFailure.unexpectedResponse);
+      return _loadFailure(ChatFailure.unexpectedResponse);
+    }
+  }
+
+  Future<ChatLoadResult> loadOlder(
+    ServerProfile profile,
+    OpenCodeSession session,
+  ) async {
+    final cursor = _olderCursor;
+    final loadGeneration = _loadGeneration;
+    if (_activeSession?.id != session.id ||
+        _activeSession?.directory != session.directory ||
+        cursor == null ||
+        _loadingOlder) {
+      return ChatOlderLoaded(
+        _conversation.value.messages,
+        hasMore: _hasMore,
+        cursorUnavailable: _cursorUnavailable,
+      );
+    }
+    _loadingOlder = true;
+    _historyFailure = null;
+    _publishHistory(_conversation.value.messages);
+    final snapshotStart = _eventSequence;
+    final stateAtSnapshotStart = _conversation.value.conversation;
+    try {
+      final password = await _credentialsStore.readPassword(profile.id);
+      final page = await _chatService.listMessages(
+        profile,
+        password,
+        session,
+        before: cursor,
+      );
+      if (loadGeneration != _loadGeneration ||
+          _activeSession?.id != session.id ||
+          _activeSession?.directory != session.directory) {
+        return ChatOlderLoaded(
+          _conversation.value.messages,
+          hasMore: _hasMore,
+          cursorUnavailable: _cursorUnavailable,
+        );
+      }
+      final replay = _events.where((event) => event.sequence > snapshotStart);
+      var state = stateAtSnapshotStart;
+      for (final event in replay) {
+        state = reduceConversationEvent(state, event.event);
+      }
+      final current = _conversation.value.messages;
+      final existing = current.map((message) => message.id).toSet();
+      var merged = [
+        ...page.records
+            .where(
+              (record) => record.role == 'user' || record.role == 'assistant',
+            )
+            .map(mapChatMessage)
+            .where((message) => !existing.contains(message.id)),
+        ...current,
+      ];
+      for (final event in replay) {
+        merged = _applyRemoval(event.event, merged);
+      }
+      _events.removeWhere((event) => event.sequence <= snapshotStart);
+      _publish(state, merged);
+      _olderCursor = page.nextCursor;
+      _hasMore = page.nextCursor != null;
+      _cursorUnavailable = page.cursorUnavailable;
+      _historyFailure = null;
+      _publishHistory(_conversation.value.messages);
+      return ChatOlderLoaded(
+        _conversation.value.messages,
+        hasMore: _hasMore,
+        cursorUnavailable: _cursorUnavailable,
+      );
+    } on OpenCodeHttpFailure catch (failure) {
+      return _olderFailure(_chatFailureForHttp(failure));
+    } on TimeoutException {
+      return _olderFailure(ChatFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return _olderFailure(ChatFailure.unexpectedResponse);
+    } on http.ClientException {
+      return _olderFailure(ChatFailure.unavailable);
+    } on FormatException {
+      return _olderFailure(ChatFailure.unexpectedResponse);
+    } finally {
+      _loadingOlder = false;
+      _publishHistory(_conversation.value.messages);
     }
   }
 
@@ -180,6 +297,41 @@ class ChatRepository {
       conversation: state,
     );
     _conversationState.value = state;
+    _publishHistory(_conversation.value.messages);
+  }
+
+  void _resetPagination() {
+    _olderCursor = null;
+    _hasMore = false;
+    _cursorUnavailable = false;
+    _loadingOlder = false;
+  }
+
+  void _publishHistory(List<ChatMessage> messages, {ChatFailure? failure}) {
+    _history.value = ChatHistoryState(
+      messages: List.unmodifiable(messages),
+      hasMore: _hasMore,
+      loadingOlder: _loadingOlder,
+      failure: failure ?? _historyFailure,
+    );
+  }
+
+  ChatLoadFailed _loadFailure(ChatFailure failure) {
+    _historyFailure = failure;
+    _publishHistory(_conversation.value.messages);
+    return ChatLoadFailed(failure);
+  }
+
+  ChatLoadResult _olderFailure(ChatFailure failure) {
+    _historyFailure = failure;
+    _publishHistory(_conversation.value.messages);
+    return ChatLoadFailed(failure);
+  }
+
+  ChatFailure _chatFailureForHttp(OpenCodeHttpFailure failure) {
+    return failure.statusCode == 401 || failure.statusCode == 403
+        ? ChatFailure.unauthorized
+        : ChatFailure.unexpectedResponse;
   }
 
   List<ChatMessage> _applyRemoval(

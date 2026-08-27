@@ -350,6 +350,7 @@ void main() {
 
       final state = (event as SessionStatusEvent).state as SessionRetrying;
       expect(state.attempt, 2);
+      expect(state.message, 'rate limited');
       expect(state.nextAttemptAtMillis, 1700000000000);
     });
 

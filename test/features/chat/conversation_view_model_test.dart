@@ -74,10 +74,13 @@ class _ScriptedChatBackend {
   List<Map<String, dynamic>> restMessages = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> todos = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> diffs = <Map<String, dynamic>>[];
+  final List<({String? messageId, Completer<void> gate})> artifactGates = [];
+  List<Map<String, dynamic>> messageSpecificDiffs = <Map<String, dynamic>>[];
 
   int promptAsyncCallCount = 0;
   int abortCallCount = 0;
   final List<String> promptAsyncOrder = <String>[];
+  final List<List<Map<String, dynamic>>> promptAsyncParts = [];
 
   int permissionResponseCallCount = 0;
   int questionReplyCallCount = 0;
@@ -94,10 +97,22 @@ class _ScriptedChatBackend {
       return http.Response(jsonEncode(todos), 200);
     }
     if (path.endsWith('/diff')) {
-      return http.Response(jsonEncode(diffs), 200);
+      final messageId = request.url.queryParameters['messageID'];
+      final gate = artifactGates.firstWhere(
+        (candidate) => candidate.messageId == messageId,
+        orElse: () => (messageId: null, gate: Completer<void>()..complete()),
+      );
+      if (!gate.gate.isCompleted) await gate.gate.future;
+      return http.Response(
+        jsonEncode(
+          messageId == 'message-specific' ? messageSpecificDiffs : diffs,
+        ),
+        200,
+      );
     }
     if (path.endsWith('/prompt_async')) {
       promptAsyncCallCount++;
+      promptAsyncParts.add(_promptParts(request.body));
       promptAsyncOrder.add(_promptText(request.body));
       return http.Response('', promptAsyncStatusCode);
     }
@@ -129,10 +144,13 @@ class _ScriptedChatBackend {
   }
 
   String _promptText(String body) {
-    final decoded = jsonDecode(body) as Map<String, dynamic>;
-    final parts = decoded['parts'] as List<dynamic>;
-    final first = parts.first as Map<String, dynamic>;
+    final first = _promptParts(body).first;
     return first['text'] as String;
+  }
+
+  List<Map<String, dynamic>> _promptParts(String body) {
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    return (decoded['parts'] as List<dynamic>).cast<Map<String, dynamic>>();
   }
 }
 
@@ -511,6 +529,58 @@ void main() {
     },
   );
 
+  test(
+    'reconciles the REST transcript when busy execution becomes idle',
+    () async {
+      backend.sessionStatusType = 'busy';
+      await viewModel.open(profile, session);
+      await _settleLive();
+      backend.restMessages = [
+        {
+          'info': {
+            'id': 'msg-task',
+            'role': 'assistant',
+            'time': {'created': 1000},
+          },
+          'parts': [
+            {
+              'id': 'part-reasoning',
+              'type': 'reasoning',
+              'text': 'I checked the changed files before finishing.',
+            },
+            {
+              'id': 'part-task',
+              'type': 'tool',
+              'tool': 'task',
+              'state': {
+                'status': 'completed',
+                'input': {'description': 'Review changes'},
+                'output': '<task_result>Complete</task_result>',
+              },
+            },
+          ],
+        },
+      ];
+
+      eventClient.emit('session.idle', {'sessionID': session.id});
+      await _settleLive();
+
+      final messages = (viewModel.messages.value as ConversationReady).messages;
+      final task =
+          messages.single.details
+                  .whereType<ChatToolDetail>()
+                  .single
+                  .presentation
+              as ChatTaskPresentation;
+      final reasoning = messages.single.details
+          .whereType<ChatReasoningDetail>()
+          .single;
+      expect(reasoning.text, 'I checked the changed files before finishing.');
+      expect(task.description, 'Review changes');
+      expect(task.result, 'Complete');
+    },
+  );
+
   test('merges a queued prompt into the one above it', () async {
     backend.sessionStatusType = 'busy';
     await viewModel.open(profile, session);
@@ -645,6 +715,38 @@ void main() {
     expect(viewModel.queue.value.single.state, QueuedPromptState.acknowledged);
     expect(backend.promptAsyncCallCount, 1);
     expect(backend.promptAsyncOrder.single, 'hello there');
+  });
+
+  test('preserves screenshot media type through queue dispatch', () async {
+    backend.sessionStatusType = 'idle';
+    await viewModel.open(profile, session);
+    await _settle();
+    final screenshot = PromptAttachment(
+      name: 'Screenshot',
+      bytes: Uint8List.fromList([
+        0x89,
+        0x50,
+        0x4e,
+        0x47,
+        0x0d,
+        0x0a,
+        0x1a,
+        0x0a,
+      ]),
+    );
+    viewModel.attachments.value = [screenshot];
+
+    await viewModel.enqueuePrompt('Review this screenshot');
+    await _settle();
+
+    expect(backend.promptAsyncCallCount, 1);
+    expect(backend.promptAsyncParts.single[1], {
+      'type': 'file',
+      'mime': 'image/png',
+      'filename': 'Screenshot',
+      'url': 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    expect(screenshot.isReleased, isTrue);
   });
 
   test('enqueuePrompt queues while busy instead of sending directly', () async {
@@ -887,5 +989,40 @@ void main() {
     eventClient.emit('session.idle', {'sessionID': session.id});
     await _settle();
     expect(backend.promptAsyncCallCount, 0);
+  });
+
+  test('newer artifact refresh wins over an older delayed refresh', () async {
+    backend.sessionStatusType = 'idle';
+    backend.diffs = [
+      {'file': 'general-old.dart', 'additions': 1, 'deletions': 0},
+    ];
+    backend.messageSpecificDiffs = [
+      {'file': 'message-new.dart', 'additions': 2, 'deletions': 0},
+    ];
+    final generalGate = Completer<void>();
+    backend.artifactGates.add((messageId: null, gate: generalGate));
+    backend.artifactGates.add((
+      messageId: 'message-specific',
+      gate: Completer<void>()..complete(),
+    ));
+    await viewModel.open(profile, session);
+    await _settle();
+
+    // The initial general request is still waiting; the explicit refresh is
+    // newer and completes independently.
+    final old = viewModel.reloadArtifacts();
+    final newest = viewModel.reloadArtifacts(messageId: 'message-specific');
+    await newest;
+    expect(
+      (viewModel.artifacts.value as SessionArtifactsReady).diffs.single.file,
+      'message-new.dart',
+    );
+    generalGate.complete();
+    await old;
+    await _settle();
+    expect(
+      (viewModel.artifacts.value as SessionArtifactsReady).diffs.single.file,
+      'message-new.dart',
+    );
   });
 }

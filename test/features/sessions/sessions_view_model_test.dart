@@ -1,13 +1,18 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/core/async/result.dart';
 import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
+import 'package:prompt/data/remote/opencode_session_status_parser.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
 import 'package:prompt/features/sessions/data/sessions_repository.dart';
 import 'package:prompt/features/sessions/domain/session_load_result.dart';
+import 'package:prompt/features/sessions/domain/session_activity.dart';
 import 'package:prompt/features/sessions/presentation/sessions_view_model.dart';
 
 void main() {
@@ -42,7 +47,105 @@ void main() {
       viewModel.dispose();
     },
   );
+
+  test(
+    'live status changes update activities without another REST load',
+    () async {
+      var requests = 0;
+      final client = MockClient((request) async {
+        requests++;
+        if (request.url.path == '/session') {
+          return http.Response('[$_sessionJson]', 200);
+        }
+        if (request.url.path == '/project') {
+          return http.Response(
+            '[{"id":"project-1","worktree":"/srv/app"}]',
+            200,
+          );
+        }
+        if (request.url.path == '/session/status') {
+          return http.Response('{"session-1":{"type":"idle"}}', 200);
+        }
+        return http.Response('', 404);
+      });
+      final viewModel = SessionsViewModel(
+        SessionsRepository(
+          OpenCodeSessionsService(OpenCodeTransport(client)),
+          const _PasswordStore(),
+        ),
+      );
+      final liveStatuses = ValueNotifier<Map<String, OpenCodeSessionStatus>>(
+        {},
+      );
+      viewModel.bindLiveStatuses(liveStatuses);
+
+      await viewModel.load(profile);
+      final requestsAfterLoad = requests;
+      liveStatuses.value = const {'session-1': OpenCodeSessionStatusBusy()};
+      expect(
+        (viewModel.value as SessionsReady).activities['session-1'],
+        SessionActivity.working,
+      );
+      liveStatuses.value = const {'session-1': OpenCodeSessionStatusIdle()};
+      expect(
+        (viewModel.value as SessionsReady).activities['session-1'],
+        SessionActivity.idle,
+      );
+      expect(requests, requestsAfterLoad);
+      viewModel.dispose();
+      expect(
+        () => liveStatuses.value = const {
+          'session-1': OpenCodeSessionStatusBusy(),
+        },
+        returnsNormally,
+      );
+      liveStatuses.dispose();
+    },
+  );
+
+  test('a stale REST completion cannot replace a newer live status', () async {
+    final statusGate = Completer<void>();
+    final statusStarted = Completer<void>();
+    final client = MockClient((request) async {
+      if (request.url.path == '/session') {
+        return http.Response('[$_sessionJson]', 200);
+      }
+      if (request.url.path == '/project') {
+        return http.Response('[{"id":"project-1","worktree":"/srv/app"}]', 200);
+      }
+      if (request.url.path == '/session/status') {
+        statusStarted.complete();
+        await statusGate.future;
+        return http.Response('{"session-1":{"type":"idle"}}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    final liveStatuses = ValueNotifier<Map<String, OpenCodeSessionStatus>>({});
+    viewModel.bindLiveStatuses(liveStatuses);
+    final load = viewModel.load(profile);
+    await statusStarted.future;
+    liveStatuses.value = const {'session-1': OpenCodeSessionStatusBusy()};
+    statusGate.complete();
+    await load;
+
+    expect(
+      (viewModel.value as SessionsReady).activities['session-1'],
+      SessionActivity.working,
+    );
+    viewModel.dispose();
+    liveStatuses.dispose();
+  });
 }
+
+const _sessionJson =
+    '{"id":"session-1","projectID":"project-1","directory":"/srv/app",'
+    '"title":"Session one","time":{"created":1000,"updated":1000}}';
 
 class _PasswordStore implements CredentialsStore {
   const _PasswordStore();

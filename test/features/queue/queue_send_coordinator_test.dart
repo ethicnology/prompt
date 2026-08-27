@@ -11,6 +11,7 @@ import 'package:prompt/core/security/credentials_store.dart';
 import 'package:prompt/data/local/prompt_database.dart' as db;
 import 'package:prompt/data/local/prompt_database.dart' show PromptDatabase;
 import 'package:prompt/data/remote/opencode_event_service.dart';
+import 'package:prompt/data/remote/opencode_session_status_parser.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
@@ -88,6 +89,8 @@ class _ScriptedChatBackend {
   int questionRejectCallCount = 0;
   String? lastPermissionResponse;
   List<List<String>>? lastQuestionAnswers;
+  List<Map<String, dynamic>> pendingPermissions = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> pendingQuestions = <Map<String, dynamic>>[];
 
   late final http.Client client = MockClient(_handle);
 
@@ -117,6 +120,12 @@ class _ScriptedChatBackend {
       final decoded = jsonDecode(request.body) as Map<String, dynamic>;
       lastPermissionResponse = decoded['response'] as String;
       return http.Response(jsonEncode(true), permissionResponseStatusCode);
+    }
+    if (path == '/permission') {
+      return http.Response(jsonEncode(pendingPermissions), 200);
+    }
+    if (path == '/question') {
+      return http.Response(jsonEncode(pendingQuestions), 200);
     }
     if (path.endsWith('/reply')) {
       questionReplyCallCount++;
@@ -176,12 +185,15 @@ class _ScriptedEventClient extends http.BaseClient {
   /// attempts (initial connect plus every reconnect) this client has
   /// served.
   int get connectionCount => _controllers.length;
+  int subscriptionCount = 0;
 
   StreamController<List<int>> get _latest => _controllers.last;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    final controller = StreamController<List<int>>();
+    final controller = StreamController<List<int>>(
+      onListen: () => subscriptionCount++,
+    );
     _controllers.add(controller);
     return http.StreamedResponse(controller.stream, nextConnectStatusCode);
   }
@@ -492,6 +504,44 @@ void main() {
   });
 
   group('SSE-gated dispatch', () {
+    test(
+      'publishes global activity for another session without reducing chat',
+      () async {
+        backend.sessionStatusType = 'busy';
+        await coordinator.activate(profile: profile, session: session);
+        await _settle();
+        expect(eventClient.connectionCount, 1);
+        expect(eventClient.subscriptionCount, 1);
+
+        eventClient.emit('session.status', {
+          'sessionID': 'session-B',
+          'status': {'type': 'busy'},
+        });
+        await _settle();
+        expect(
+          coordinator.liveStatuses.value['session-B'],
+          isA<OpenCodeSessionStatusBusy>(),
+        );
+        expect(
+          coordinator.conversationStateUpdates.value.sessionStates.keys,
+          isNot(contains('session-B')),
+        );
+
+        eventClient.emit('session.idle', {'sessionID': 'session-B'});
+        await _settle();
+        expect(
+          coordinator.liveStatuses.value['session-B'],
+          isA<OpenCodeSessionStatusIdle>(),
+        );
+        expect(eventClient.connectionCount, 1);
+        expect(eventClient.subscriptionCount, 1);
+        expect(
+          coordinator.conversationStateUpdates.value.sessionStates.keys,
+          contains(session.id),
+        );
+      },
+    );
+
     test(
       'holds the queue while busy and dispatches once session.idle arrives',
       () async {
@@ -871,6 +921,89 @@ void main() {
   });
 
   group('respondToPermission', () {
+    test(
+      'refetches and presents the next approval without resuming the queue',
+      () async {
+        backend.sessionStatusType = 'busy';
+        backend.pendingPermissions = [
+          {
+            'id': 'perm_1',
+            'type': 'bash',
+            'sessionID': session.id,
+            'title': 'Run the first command',
+          },
+        ];
+        await coordinator.activate(profile: profile, session: session);
+        await _settle();
+        await enqueue('blocked prompt');
+        await _settle();
+
+        expect(
+          coordinator.currentPendingApproval,
+          isA<PendingPermissionApproval>(),
+        );
+        expect((await currentQueue()).single.state, QueuedPromptState.paused);
+
+        backend.pendingPermissions = <Map<String, dynamic>>[];
+        backend.pendingQuestions = [
+          {
+            'id': 'question_2',
+            'sessionID': session.id,
+            'questions': [
+              {
+                'question': 'Choose the second option',
+                'header': 'Choice',
+                'options': [
+                  {'label': 'Continue', 'description': 'Continue safely'},
+                ],
+              },
+            ],
+          },
+        ];
+
+        final firstResult = await coordinator.respondToPermission(
+          'perm_1',
+          PermissionResponse.once,
+        );
+        await _settle();
+
+        expect(firstResult, isA<Ok<void, QueueApprovalFailure>>());
+        expect(
+          coordinator.currentPendingApproval,
+          isA<PendingQuestionApproval>(),
+        );
+        expect(
+          coordinator.currentSessionBlockReason,
+          SessionBlockReason.question,
+        );
+        expect((await currentQueue()).single.state, QueuedPromptState.paused);
+        expect(backend.promptAsyncCallCount, 0);
+
+        backend.pendingQuestions = <Map<String, dynamic>>[];
+        final secondResult = await coordinator.rejectQuestion('question_2');
+        await _settle();
+
+        expect(secondResult, isA<Ok<void, QueueApprovalFailure>>());
+        expect(coordinator.currentPendingApproval, isNull);
+        expect(
+          coordinator.currentSessionBlockReason,
+          SessionBlockReason.question,
+        );
+        expect((await currentQueue()).single.state, QueuedPromptState.paused);
+        expect(backend.promptAsyncCallCount, 0);
+
+        eventClient.emit('session.idle', {'sessionID': session.id});
+        await _settle();
+
+        expect(coordinator.currentSessionBlockReason, isNull);
+        expect(
+          (await currentQueue()).single.state,
+          QueuedPromptState.acknowledged,
+        );
+        expect(backend.promptAsyncCallCount, 1);
+      },
+    );
+
     test('fails with noActiveSession when nothing is activated', () async {
       final result = await coordinator.respondToPermission(
         'perm_1',

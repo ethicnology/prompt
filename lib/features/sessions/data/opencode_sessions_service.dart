@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../data/remote/opencode_transport.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import '../../connection/connection.dart';
 import '../domain/open_code_session.dart';
 
@@ -121,6 +122,23 @@ class OpenCodeSessionsService {
       );
     }
     return OpenCodeSessionRecord.fromJson(decoded);
+  }
+
+  Future<Map<String, OpenCodeSessionStatus>> fetchSessionActivities(
+    ServerProfile profile,
+    String? password,
+    String directory,
+  ) async {
+    final query = Uri(queryParameters: {'directory': directory}).query;
+    final response = await _get(profile, password, '/session/status?$query');
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Session status response must be a map.');
+    }
+    return {
+      for (final entry in decoded.entries)
+        entry.key: parseOpenCodeSessionStatus(entry.value),
+    };
   }
 
   Future<void> renameSession(

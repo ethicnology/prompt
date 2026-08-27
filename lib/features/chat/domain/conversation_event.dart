@@ -7,6 +7,7 @@
 library;
 
 import '../../../data/remote/opencode_event_service.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import 'conversation_message.dart';
 import 'pending_approval.dart';
 import 'session_block_reason.dart';
@@ -349,33 +350,24 @@ ConversationEvent? _mapSessionStatus(
     return null;
   }
   final state = _mapSessionExecutionState(status);
-  if (state == null) {
+  if (state is SessionExecutionUnknown) {
     return null;
   }
   return SessionStatusEvent(sessionId: eventSessionId, state: state);
 }
 
-SessionExecutionState? _mapSessionExecutionState(Map<String, dynamic> json) {
-  final type = json['type'];
-  switch (type) {
-    case 'idle':
-      return const SessionIdle();
-    case 'busy':
-      return const SessionBusy();
-    case 'retry':
-      final attempt = json['attempt'];
-      final message = json['message'];
-      final next = json['next'];
-      if (attempt is! num || message is! String || next is! num) {
-        return null;
-      }
-      return SessionRetrying(
-        attempt: attempt.toInt(),
-        nextAttemptAtMillis: next.toInt(),
-      );
-    default:
-      return null;
-  }
+SessionExecutionState _mapSessionExecutionState(Object? value) {
+  return switch (parseOpenCodeSessionStatus(value)) {
+    OpenCodeSessionStatusBusy() => const SessionBusy(),
+    OpenCodeSessionStatusIdle() => const SessionIdle(),
+    OpenCodeSessionStatusRetry(:final attempt, :final message, :final next) =>
+      SessionRetrying(
+        attempt: attempt,
+        message: message,
+        nextAttemptAtMillis: next,
+      ),
+    OpenCodeSessionStatusUnknown() => const SessionExecutionUnknown(),
+  };
 }
 
 ConversationEvent? _mapSessionIdle(

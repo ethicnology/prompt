@@ -5,10 +5,12 @@ import 'package:http/http.dart' as http;
 import '../../../core/async/result.dart';
 import '../../../core/security/credentials_store.dart';
 import '../../../data/remote/opencode_transport.dart';
+import '../../../data/remote/opencode_session_status_parser.dart';
 import '../../connection/connection.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
+import '../domain/session_activity.dart';
 import 'opencode_sessions_service.dart';
 
 class SessionsRepository {
@@ -29,7 +31,7 @@ class SessionsRepository {
       var projects = <OpenCodeProjectRecord>[];
       var loadedProjects = false;
       final globalSessions = <OpenCodeSessionRecord>[];
-      final unavailableDirectories = <String>{};
+      final unavailableCatalogDirectories = <String>{};
 
       Future<void> loadProjectCatalog(String directory) async {
         try {
@@ -44,7 +46,7 @@ class SessionsRepository {
           }
         } on Object catch (error) {
           firstFailure ??= error;
-          unavailableDirectories.add(directory);
+          unavailableCatalogDirectories.add(directory);
         }
       }
 
@@ -81,7 +83,7 @@ class SessionsRepository {
         // Keep global entries only for an unavailable worktree. Every other
         // project response, including an empty one, is an explicit snapshot.
         for (final session in globalSessions) {
-          if (unavailableDirectories.contains(session.directory)) {
+          if (unavailableCatalogDirectories.contains(session.directory)) {
             byId.putIfAbsent(session.id, () => session);
           }
         }
@@ -89,6 +91,43 @@ class SessionsRepository {
 
       final sessions = byId.values.map(_toDomain).toList()
         ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+      final activities = <String, SessionActivity>{};
+      final unavailableActivityDirectories = <String>{};
+      final sessionsByDirectory = <String, List<String>>{};
+      for (final session in sessions) {
+        sessionsByDirectory
+            .putIfAbsent(session.directory, () => <String>[])
+            .add(session.id);
+      }
+      await _forEachBounded(sessionsByDirectory.keys, (directory) async {
+        try {
+          final statuses = await _sessionsService.fetchSessionActivities(
+            profile,
+            password,
+            directory,
+          );
+          for (final sessionId in sessionsByDirectory[directory]!) {
+            activities[sessionId] = _toActivity(
+              statuses[sessionId] ?? const OpenCodeSessionStatusIdle(),
+            );
+          }
+        } on OpenCodeHttpFailure {
+          unavailableActivityDirectories.add(directory);
+        } on OpenCodeTransportFailure {
+          unavailableActivityDirectories.add(directory);
+        } on TimeoutException {
+          unavailableActivityDirectories.add(directory);
+        } on http.ClientException {
+          unavailableActivityDirectories.add(directory);
+        } on FormatException {
+          unavailableActivityDirectories.add(directory);
+        }
+        if (unavailableActivityDirectories.contains(directory)) {
+          for (final sessionId in sessionsByDirectory[directory]!) {
+            activities[sessionId] = SessionActivity.unavailable;
+          }
+        }
+      });
       return SessionsLoaded(
         List.unmodifiable(sessions),
         projects: List.unmodifiable(
@@ -96,6 +135,10 @@ class SessionsRepository {
             (project) =>
                 OpenCodeProject(id: project.id, directory: project.worktree),
           ),
+        ),
+        activities: Map.unmodifiable(activities),
+        unavailableDirectories: Set.unmodifiable(
+          unavailableActivityDirectories,
         ),
       );
     } on OpenCodeHttpFailure catch (failure) {
@@ -373,4 +416,11 @@ class SessionsRepository {
       agentName: record.agentName,
     );
   }
+
+  SessionActivity _toActivity(OpenCodeSessionStatus status) => switch (status) {
+    OpenCodeSessionStatusBusy() => SessionActivity.working,
+    OpenCodeSessionStatusIdle() => SessionActivity.idle,
+    OpenCodeSessionStatusRetry() => SessionActivity.retrying,
+    OpenCodeSessionStatusUnknown() => SessionActivity.unknown,
+  };
 }

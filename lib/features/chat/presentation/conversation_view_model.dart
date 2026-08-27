@@ -9,6 +9,7 @@ import '../../sessions/sessions.dart';
 import '../data/chat_repository.dart';
 import '../data/attachment_picker.dart';
 import '../domain/chat_load_result.dart';
+import '../domain/chat_page_result.dart';
 import '../domain/chat_message.dart';
 import '../domain/conversation_state.dart';
 import '../domain/pending_approval.dart';
@@ -35,6 +36,26 @@ class ConversationError extends ConversationUiState {
   const ConversationError(this.failure);
 
   final ChatFailure failure;
+}
+
+class ConversationHistoryUiState {
+  const ConversationHistoryUiState({
+    required this.hasMore,
+    required this.loadingOlder,
+    required this.limitedByServer,
+    this.failure,
+  });
+
+  const ConversationHistoryUiState.initial()
+    : hasMore = false,
+      loadingOlder = false,
+      limitedByServer = false,
+      failure = null;
+
+  final bool hasMore;
+  final bool loadingOlder;
+  final bool limitedByServer;
+  final ChatFailure? failure;
 }
 
 /// Drives one conversation screen: the read-only message transcript (via
@@ -110,9 +131,19 @@ class ConversationViewModel {
     const SseSuspended(),
   );
 
+  /// The server execution state, separate from the SSE transport state.
+  final ValueNotifier<SessionExecutionState> executionState = ValueNotifier(
+    const SessionExecutionUnknown(),
+  );
+
   /// Whether a reconciliation is running over an already-visible transcript,
   /// so the UI can float a progress indicator instead of replacing it.
   final ValueNotifier<bool> refreshing = ValueNotifier(false);
+
+  /// Pagination state translated into presentation-owned values.
+  final ValueNotifier<ConversationHistoryUiState> history = ValueNotifier(
+    const ConversationHistoryUiState.initial(),
+  );
 
   final StreamController<String> _queueErrors =
       StreamController<String>.broadcast();
@@ -151,6 +182,8 @@ class ConversationViewModel {
   SessionExecutionState? _lastSessionExecutionState;
 
   bool _disposed = false;
+  VoidCallback? _historyListener;
+  int _artifactGeneration = 0;
 
   /// Loads [session]'s transcript, activates queue coordination for it, and
   /// starts watching its durable queue. Tears down any previously open
@@ -159,6 +192,7 @@ class ConversationViewModel {
   Future<void> open(ServerProfile profile, OpenCodeSession session) async {
     _requestedSession = session;
     messages.value = const ConversationLoading();
+    history.value = const ConversationHistoryUiState.initial();
     artifacts.value = const SessionArtifactsLoading();
     queue.value = const <QueuedPrompt>[];
     pendingApproval.value = null;
@@ -169,6 +203,7 @@ class ConversationViewModel {
     }
     _profile = profile;
     _session = session;
+    _attachHistoryListener();
 
     final queueRepository = _queueRepository ??=
         await _queueRepositoryProvider();
@@ -213,9 +248,14 @@ class ConversationViewModel {
       final nextState = liveConversationState.value.sessionStates[session.id];
       if (nextState is SessionIdle &&
           _lastSessionExecutionState is! SessionIdle) {
+        if (_lastSessionExecutionState is SessionBusy ||
+            _lastSessionExecutionState is SessionRetrying) {
+          unawaited(_loadMessages());
+        }
         unawaited(_loadArtifacts());
       }
       _lastSessionExecutionState = nextState;
+      executionState.value = nextState ?? const SessionExecutionUnknown();
     }
 
     _liveConversationState = liveConversationState;
@@ -227,6 +267,8 @@ class ConversationViewModel {
     _scheduleLiveConversationRender(liveConversationState.value);
     pendingApproval.value = queueCoordinator.currentPendingApproval;
     _lastSessionExecutionState = queueCoordinator.currentSessionState;
+    executionState.value =
+        queueCoordinator.currentSessionState ?? const SessionExecutionUnknown();
 
     // Mirrors the coordinator's connection status so the conversation UI
     // can render it, and — the moment a reconnect starts reconciling —
@@ -254,6 +296,28 @@ class ConversationViewModel {
 
   /// Re-fetches the transcript for the currently open session.
   Future<void> reload() => _loadMessages();
+
+  Future<void> loadOlderFromUserAction() async {
+    final profile = _profile;
+    final session = _session;
+    if (profile == null ||
+        session == null ||
+        history.value.loadingOlder ||
+        !history.value.hasMore) {
+      return;
+    }
+    final result = await _chatRepository.loadOlder(profile, session);
+    if (_disposed || _session != session) return;
+    switch (result) {
+      case ChatOlderLoaded():
+        _mirrorHistory(_chatRepository.historyUpdates.value);
+      case ChatLoaded():
+        _mirrorHistory(_chatRepository.historyUpdates.value);
+      case ChatLoadFailed(:final failure):
+        _mirrorHistory(_chatRepository.historyUpdates.value, failure: failure);
+        _transcriptErrors.add(failure.message);
+    }
+  }
 
   /// Reconciles every server-owned conversation surface from a direct user
   /// gesture without affecting the local send queue.
@@ -344,6 +408,9 @@ class ConversationViewModel {
     switch (result) {
       case ChatLoaded(messages: final loadedMessages):
         messages.value = ConversationReady(loadedMessages);
+        _mirrorHistory(_chatRepository.historyUpdates.value);
+      case ChatOlderLoaded():
+        _mirrorHistory(_chatRepository.historyUpdates.value);
       case ChatLoadFailed(:final failure):
         // A failed refresh must not discard a readable transcript.
         if (hadTranscript) {
@@ -351,6 +418,7 @@ class ConversationViewModel {
         } else {
           messages.value = ConversationError(failure);
         }
+        _mirrorHistory(_chatRepository.historyUpdates.value, failure: failure);
     }
   }
 
@@ -360,13 +428,14 @@ class ConversationViewModel {
     if (profile == null || session == null) {
       return;
     }
+    final generation = ++_artifactGeneration;
     artifacts.value = const SessionArtifactsLoading();
     final result = await _chatRepository.loadArtifacts(
       profile,
       session,
       messageId: messageId,
     );
-    if (_disposed || _session != session) {
+    if (_disposed || _session != session || generation != _artifactGeneration) {
       return;
     }
     artifacts.value = switch (result) {
@@ -674,10 +743,13 @@ class ConversationViewModel {
     _detachRemoteConnectionState();
     await _queueCoordinator?.deactivate();
     connectionState.value = const SseSuspended();
+    executionState.value = const SessionExecutionUnknown();
     pendingApproval.value = null;
     artifacts.value = const SessionArtifactsLoading();
     _profile = null;
     _session = null;
+    _detachHistoryListener();
+    _artifactGeneration++;
   }
 
   Future<void> dispose() async {
@@ -694,14 +766,18 @@ class ConversationViewModel {
     _queueSubscription = null;
     _detachLiveConversationState();
     _detachRemoteConnectionState();
+    _detachHistoryListener();
+    _artifactGeneration++;
     await _queueCoordinator?.deactivate();
     messages.dispose();
     artifacts.dispose();
     queue.dispose();
     attachments.dispose();
     connectionState.dispose();
+    executionState.dispose();
     pendingApproval.dispose();
     refreshing.dispose();
+    history.dispose();
     unawaited(_queueErrors.close());
     unawaited(_transcriptErrors.close());
   }
@@ -725,6 +801,34 @@ class ConversationViewModel {
     _remoteConnectionState = null;
     _remoteConnectionStateListener = null;
     _lastSessionExecutionState = null;
+  }
+
+  void _attachHistoryListener() {
+    _detachHistoryListener();
+    void listener() {
+      if (!_disposed) _mirrorHistory(_chatRepository.historyUpdates.value);
+    }
+
+    _historyListener = listener;
+    _chatRepository.historyUpdates.addListener(listener);
+    _mirrorHistory(_chatRepository.historyUpdates.value);
+  }
+
+  void _detachHistoryListener() {
+    final listener = _historyListener;
+    if (listener != null) {
+      _chatRepository.historyUpdates.removeListener(listener);
+      _historyListener = null;
+    }
+  }
+
+  void _mirrorHistory(ChatHistoryState state, {ChatFailure? failure}) {
+    history.value = ConversationHistoryUiState(
+      hasMore: state.hasMore,
+      loadingOlder: state.loadingOlder,
+      limitedByServer: state.limitedByServer,
+      failure: failure ?? state.failure,
+    );
   }
 }
 

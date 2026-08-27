@@ -1,0 +1,191 @@
+import 'dart:io';
+
+import 'package:drift/native.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:prompt/data/local/prompt_database.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3lib;
+
+void main() {
+  late File databaseFile;
+  PromptDatabase? database;
+
+  setUp(() {
+    databaseFile = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}'
+      'prompt-database-migration-${DateTime.now().microsecondsSinceEpoch}.sqlite',
+    );
+    database = null;
+  });
+
+  tearDown(() async {
+    try {
+      await database?.close();
+    } finally {
+      if (await databaseFile.exists()) {
+        await databaseFile.delete();
+      }
+    }
+  });
+
+  test('migrates a v1 database and preserves its queued prompt', () async {
+    _createFixture(databaseFile, version: 1);
+    database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
+
+    final row = await _readPrompt(database!);
+
+    await _expectVersion4(database!);
+    expect(row.id, 'legacy-v1-prompt');
+    expect(row.serverProfileId, 'legacy-profile');
+    expect(row.sessionId, 'legacy-session');
+    expect(row.directory, '/workspace/legacy');
+    expect(row.position, 2);
+    expect(row.promptText, 'Keep this v1 prompt');
+    expect(row.state, 'queued');
+    expect(row.attemptCount, 3);
+    expect(row.createdAtMillis, 1000);
+    expect(row.updatedAtMillis, 2000);
+    expect(row.modelProviderId, isNull);
+    expect(row.modelId, isNull);
+    expect(row.agentName, isNull);
+    expect(row.operationType, 'prompt');
+    expect(row.commandName, isNull);
+    expect(row.attachmentsJson, isNull);
+  });
+
+  test(
+    'migrates v2 to v4 and preserves model options with default operation fields',
+    () async {
+      _createFixture(databaseFile, version: 2);
+      database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
+
+      final row = await _readPrompt(database!);
+
+      await _expectVersion4(database!);
+      expect(row.id, 'legacy-v2-prompt');
+      expect(row.serverProfileId, 'legacy-profile');
+      expect(row.sessionId, 'legacy-session');
+      expect(row.directory, '/workspace/legacy');
+      expect(row.position, 2);
+      expect(row.promptText, 'Keep this v2 prompt');
+      expect(row.state, 'queued');
+      expect(row.attemptCount, 3);
+      expect(row.createdAtMillis, 1000);
+      expect(row.updatedAtMillis, 2000);
+      expect(row.modelProviderId, 'openai');
+      expect(row.modelId, 'gpt-5');
+      expect(row.agentName, 'build');
+      expect(row.operationType, 'prompt');
+      expect(row.commandName, isNull);
+      expect(row.attachmentsJson, isNull);
+    },
+  );
+
+  test(
+    'migrates v3 to v4 and preserves operation fields with nullable attachments',
+    () async {
+      _createFixture(databaseFile, version: 3);
+      database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
+
+      final row = await _readPrompt(database!);
+
+      await _expectVersion4(database!);
+      expect(row.id, 'legacy-v3-prompt');
+      expect(row.serverProfileId, 'legacy-profile');
+      expect(row.sessionId, 'legacy-session');
+      expect(row.directory, '/workspace/legacy');
+      expect(row.position, 2);
+      expect(row.promptText, 'Keep this v3 command');
+      expect(row.state, 'queued');
+      expect(row.attemptCount, 3);
+      expect(row.createdAtMillis, 1000);
+      expect(row.updatedAtMillis, 2000);
+      expect(row.modelProviderId, 'anthropic');
+      expect(row.modelId, 'claude-sonnet');
+      expect(row.agentName, 'review');
+      expect(row.operationType, 'command');
+      expect(row.commandName, 'run-tests');
+      expect(row.attachmentsJson, isNull);
+    },
+  );
+}
+
+Future<QueuedPrompt> _readPrompt(PromptDatabase database) {
+  return (database.select(database.queuedPrompts)..limit(1)).getSingle();
+}
+
+Future<void> _expectVersion4(PromptDatabase database) async {
+  final version = await database
+      .customSelect('PRAGMA user_version')
+      .getSingle();
+  expect(version.data['user_version'], 4);
+}
+
+void _createFixture(File file, {required int version}) {
+  final sqlite = sqlite3lib.sqlite3.open(file.path);
+  final operationColumns = version >= 3
+      ? "operation_type TEXT NOT NULL DEFAULT 'prompt', command_name TEXT NULL,"
+      : '';
+  final modelColumns = version >= 2
+      ? 'model_provider_id TEXT NULL, model_id TEXT NULL, agent_name TEXT NULL,'
+      : '';
+  final operationInsertColumns = version >= 3
+      ? 'operation_type, command_name,'
+      : '';
+  final modelInsertColumns = version >= 2
+      ? 'model_provider_id, model_id, agent_name,'
+      : '';
+  final operationValues = version >= 3 ? "'command', 'run-tests'," : '';
+  final modelValues = version >= 2
+      ? "'${version == 2 ? 'openai' : 'anthropic'}', "
+            "'${version == 2 ? 'gpt-5' : 'claude-sonnet'}', "
+            "'${version == 2 ? 'build' : 'review'}',"
+      : '';
+  final promptText =
+      'Keep this v$version ${version >= 3 ? 'command' : 'prompt'}';
+  try {
+    sqlite.execute('''
+      CREATE TABLE server_profiles (
+        id TEXT NOT NULL PRIMARY KEY,
+        origin TEXT NOT NULL,
+        username TEXT NULL,
+        last_accessed_at_millis INTEGER NOT NULL
+      );
+      CREATE TABLE queued_prompts (
+        id TEXT NOT NULL PRIMARY KEY,
+        server_profile_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        directory TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        prompt_text TEXT NOT NULL,
+        $operationColumns
+        $modelColumns
+        state TEXT NOT NULL,
+        pause_reason TEXT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        created_at_millis INTEGER NOT NULL,
+        updated_at_millis INTEGER NOT NULL,
+        sending_started_at_millis INTEGER NULL,
+        acknowledged_at_millis INTEGER NULL,
+        UNIQUE (server_profile_id, session_id, position)
+      );
+      INSERT INTO server_profiles VALUES
+        ('legacy-profile', 'http://10.80.0.1:4096', 'legacy-user', 900);
+      INSERT INTO queued_prompts (
+        id, server_profile_id, session_id, directory, position, prompt_text,
+        $operationInsertColumns
+        $modelInsertColumns
+        state, pause_reason, attempt_count, created_at_millis, updated_at_millis,
+        sending_started_at_millis, acknowledged_at_millis
+      ) VALUES (
+        'legacy-v$version-prompt', 'legacy-profile', 'legacy-session',
+        '/workspace/legacy', 2, '$promptText',
+        $operationValues
+        $modelValues
+        'queued', NULL, 3, 1000, 2000, NULL, NULL
+      );
+      PRAGMA user_version = $version;
+    ''');
+  } finally {
+    sqlite.close();
+  }
+}

@@ -27,6 +27,60 @@ void main() {
     updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
   );
 
+  test(
+    'captures the V1 pagination cursor and sends it unchanged next time',
+    () async {
+      final requests = <http.Request>[];
+      final client = MockClient((request) async {
+        requests.add(request);
+        return http.Response(
+          '[{"info":{"id":"message-${requests.length}","role":"user",'
+          '"time":{"created":1000}},"parts":[]}]',
+          200,
+          headers: requests.length == 1
+              ? {'x-next-cursor': 'opaque cursor/?'}
+              : const {},
+        );
+      });
+      final service = OpenCodeChatService(OpenCodeTransport(client));
+
+      final first = await service.listMessages(profile, 'secret', session);
+      final second = await service.listMessages(
+        profile,
+        'secret',
+        session,
+        before: first.nextCursor,
+      );
+
+      expect(first.nextCursor, 'opaque cursor/?');
+      expect(requests.first.url.queryParameters, {
+        'directory': session.directory,
+        'limit': '100',
+      });
+      expect(requests[1].url.queryParameters['before'], 'opaque cursor/?');
+      expect(requests[1].url.queryParameters['limit'], '100');
+      expect(second.nextCursor, isNull);
+    },
+  );
+
+  test('uses a Link next cursor when the cursor header is absent', () async {
+    final client = MockClient(
+      (request) async => http.Response(
+        '[]',
+        200,
+        headers: {
+          'link':
+              '<https://server.test/session/session%201/message?before=link-cursor>; rel="next"',
+        },
+      ),
+    );
+    final service = OpenCodeChatService(OpenCodeTransport(client));
+
+    final page = await service.listMessages(profile, 'secret', session);
+
+    expect(page.nextCursor, 'link-cursor');
+  });
+
   group('sendPromptAsync', () {
     test('sends a Basic-authorized request with an encoded path, '
         'directory query, and a text part body', () async {
@@ -566,6 +620,7 @@ void main() {
       expect(statuses['busy-session'], isA<SessionBusy>());
       final retrying = statuses['retrying-session'] as SessionRetrying;
       expect(retrying.attempt, 2);
+      expect(retrying.message, 'rate limited');
       expect(retrying.nextAttemptAtMillis, 5000);
     });
 
@@ -579,7 +634,7 @@ void main() {
       );
     });
 
-    test('rejects a status entry with an unrecognized type', () async {
+    test('maps an unrecognized status entry to typed unknown', () async {
       final client = MockClient(
         (_) async => http.Response(
           jsonEncode({
@@ -590,10 +645,12 @@ void main() {
       );
       final service = OpenCodeChatService(OpenCodeTransport(client));
 
-      await expectLater(
-        service.fetchSessionStatuses(profile, 'secret', '/workspace/project'),
-        throwsA(isA<FormatException>()),
+      final statuses = await service.fetchSessionStatuses(
+        profile,
+        'secret',
+        '/workspace/project',
       );
+      expect(statuses['session-1'], isA<SessionExecutionUnknown>());
     });
 
     test('maps an unauthorized response to an OpenCodeHttpFailure', () async {
