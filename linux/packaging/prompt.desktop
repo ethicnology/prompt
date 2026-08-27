@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Prompt
+Comment=Private OpenCode client
+Exec=prompt
+Icon=prompt
+Terminal=false
+Categories=Development;Utility;
