@@ -86,7 +86,7 @@ Prompt sends Basic authentication on every OpenCode request when configured.
 The password is held in platform secure storage, not in the UI state, Drift,
 or logs.
 
-## Web Later
+## Web deployment with Caddy
 
 WireGuard encrypts native client traffic, but a browser requires HTTPS for the
 microphone and secure browser APIs. When Web support is deployed, place Caddy
@@ -97,6 +97,54 @@ without installing a private CA on every device.
 Do not publish the Caddy listener on the public interface. `tls internal` is
 possible, but requires trusting Caddy's private root CA on every device and is
 therefore not the default recommendation.
+
+The repository does not deploy or configure Caddy for you. The following is a
+concrete example for a private DNS name whose certificate is issued with DNS-01;
+replace the domain, certificate issuer credentials, and filesystem paths for
+your host. This example requires a Caddy build with the Cloudflare DNS module.
+It serves the built Flutter files and sends all non-file requests to the local
+OpenCode listener, so the browser's configured HTTPS origin can use a
+same-origin connection.
+
+```caddyfile
+opencode.example.internal {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
+    root * /srv/prompt/web
+
+    header {
+        # Keep this policy aligned with Flutter Web's generated loader. The
+        # API and SSE traffic is same-origin; add only the exact HTTPS/WSS
+        # origins used by this deployment if a separate API origin is needed.
+        Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' blob:"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()"
+        Strict-Transport-Security "max-age=31536000"
+    }
+
+    @flutter_files file
+    handle @flutter_files {
+        file_server
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:4096
+    }
+}
+```
+
+The HTTP response header is normative; the generated page's metadata must not
+be treated as a substitute for it. `script-src 'unsafe-inline'` and
+`wasm-unsafe-eval` are retained because Flutter's generated bootstrap and
+compiled runtime need them. Keep `connect-src 'self'` when the OpenCode API is
+same-origin. If the app is deliberately configured with another private HTTPS
+origin, replace it with that exact origin (and its `wss:` endpoint), rather than
+using a wildcard; the browser and server must then also allow that origin's CORS
+policy.
 
 ## Temporary APK Sharing
 
