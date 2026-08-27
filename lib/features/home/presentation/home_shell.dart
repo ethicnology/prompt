@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/platform/local_notification_service.dart';
+import '../../../core/ui/ui.dart';
 import '../../chat/chat.dart';
 import '../../capabilities/capabilities.dart';
 import '../../connection/connection.dart';
@@ -11,7 +12,7 @@ import '../../workspace/workspace.dart';
 import '../../terminal/terminal.dart';
 import '../../voice/voice.dart';
 
-class HomeShell extends StatelessWidget {
+class HomeShell extends StatefulWidget {
   const HomeShell({
     required this.profile,
     required this.sessionsViewModel,
@@ -42,29 +43,156 @@ class HomeShell extends StatelessWidget {
   final VoidCallback onDisconnect;
 
   @override
-  Widget build(BuildContext context) {
-    return SessionsScreen(
-      profile: profile,
-      viewModel: sessionsViewModel,
-      onDisconnect: onDisconnect,
-      onOpenSession: (session) => _openConversation(context, session),
-      onOpenWorkspace: (projects) => _openWorkspace(context, projects),
-      onOpenTerminal: () => _openTerminal(context),
-      onOpenDiagnostics: () => _openDiagnostics(context),
-      onOpenVoiceSettings: () => _openVoiceSettings(context),
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  OpenCodeSession? _selectedSession;
+  double? _catalogWidth;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedSession = _resolvedSelection(
+      widget.sessionsViewModel.value,
+      _selectedSession,
     );
+    widget.sessionsViewModel.addListener(_reconcileSelectedSession);
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionsViewModel != widget.sessionsViewModel) {
+      oldWidget.sessionsViewModel.removeListener(_reconcileSelectedSession);
+      widget.sessionsViewModel.addListener(_reconcileSelectedSession);
+      _reconcileSelectedSession();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.sessionsViewModel.removeListener(_reconcileSelectedSession);
+    super.dispose();
+  }
+
+  void _reconcileSelectedSession() {
+    if (!mounted) {
+      return;
+    }
+    final state = widget.sessionsViewModel.value;
+    if (state is! SessionsReady) {
+      return;
+    }
+    final next = _resolvedSelection(state, _selectedSession);
+    if (!identical(next, _selectedSession)) {
+      setState(() => _selectedSession = next);
+    }
+  }
+
+  OpenCodeSession? _resolvedSelection(
+    SessionsUiState state,
+    OpenCodeSession? selected,
+  ) {
+    if (state is! SessionsReady) {
+      return selected;
+    }
+    if (state.sessions.isEmpty) {
+      return null;
+    }
+    if (selected != null) {
+      for (final session in state.sessions) {
+        if (_hasSameIdentity(session, selected)) {
+          return session;
+        }
+      }
+    }
+    return state.sessions.first;
+  }
+
+  bool _hasSameIdentity(OpenCodeSession left, OpenCodeSession right) {
+    return left.id == right.id && left.directory == right.directory;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final desktop = constraints.maxWidth >= PromptBreakpoints.desktop;
+        final sessions = SessionsScreen(
+          embedded: desktop,
+          profile: widget.profile,
+          viewModel: widget.sessionsViewModel,
+          onDisconnect: widget.onDisconnect,
+          onOpenSession: (session) {
+            if (desktop) {
+              setState(() => _selectedSession = session);
+            } else {
+              _openConversation(context, session);
+            }
+          },
+          onOpenWorkspace: (projects) => _openWorkspace(context, projects),
+          onOpenTerminal: () => _openTerminal(context),
+          onOpenDiagnostics: () => _openDiagnostics(context),
+          onOpenVoiceSettings: () => _openVoiceSettings(context),
+        );
+        if (!desktop) return sessions;
+        final catalogWidth = _catalogWidthFor(constraints.maxWidth);
+        return Row(
+          children: [
+            SizedBox(width: catalogWidth, child: sessions),
+            _DesktopResizeHandle(
+              key: const ValueKey('home-session-catalog-divider'),
+              label: 'Resize session catalog',
+              onDelta: (delta) => setState(() {
+                _catalogWidth = _clampCatalogWidth(
+                  _catalogWidthFor(constraints.maxWidth) + delta,
+                  constraints.maxWidth,
+                );
+              }),
+            ),
+            Expanded(
+              child: switch (_selectedSession) {
+                final session? => ConversationScreen(
+                  key: ValueKey('conversation:${session.id}'),
+                  profile: widget.profile,
+                  session: session,
+                  viewModel: widget.conversationViewModel,
+                  capabilitiesViewModel: widget.capabilitiesViewModel,
+                  voiceViewModel: widget.voiceViewModel,
+                  onOpenFork: (forked) =>
+                      setState(() => _selectedSession = forked),
+                ),
+                _ => const _EmptyMasterDetail(),
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  double _catalogWidthFor(double totalWidth) {
+    final maximum = (totalWidth - 640).clamp(240.0, double.infinity);
+    final width = _catalogWidth ?? (totalWidth * .2).clamp(280.0, 400.0);
+    return width.clamp(240.0, maximum);
+  }
+
+  double _clampCatalogWidth(double width, double totalWidth) {
+    final maximum = (totalWidth - 640).clamp(240.0, double.infinity);
+    return width.clamp(240.0, maximum);
   }
 
   void _openDiagnostics(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => DiagnosticsScreen(
-          profile: profile,
-          viewModel: diagnosticsViewModel,
-          localNotificationService: localNotificationService,
-          themeViewModel: themeViewModel,
-          onReconnect: onReconnect,
-          onDisconnect: onDisconnect,
+          profile: widget.profile,
+          viewModel: widget.diagnosticsViewModel,
+          localNotificationService: widget.localNotificationService,
+          themeViewModel: widget.themeViewModel,
+          onReconnect: widget.onReconnect,
+          onDisconnect: widget.onDisconnect,
         ),
       ),
     );
@@ -73,7 +201,7 @@ class HomeShell extends StatelessWidget {
   void _openVoiceSettings(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => VoiceSettingsScreen(viewModel: voiceViewModel),
+        builder: (_) => VoiceSettingsScreen(viewModel: widget.voiceViewModel),
       ),
     );
   }
@@ -81,8 +209,10 @@ class HomeShell extends StatelessWidget {
   void _openTerminal(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            TerminalScreen(profile: profile, viewModel: terminalViewModel),
+        builder: (_) => TerminalScreen(
+          profile: widget.profile,
+          viewModel: widget.terminalViewModel,
+        ),
       ),
     );
   }
@@ -91,39 +221,92 @@ class HomeShell extends StatelessWidget {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => WorkspaceScreen(
-          profile: profile,
+          profile: widget.profile,
           projects: projects,
-          viewModel: workspaceViewModel,
+          viewModel: widget.workspaceViewModel,
         ),
       ),
     );
   }
 
-  void _openConversation(BuildContext context, OpenCodeSession session) {
-    Navigator.of(context).push(
+  Future<void> _openConversation(
+    BuildContext context,
+    OpenCodeSession session,
+  ) async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ConversationScreen(
-          profile: profile,
+          profile: widget.profile,
           session: session,
-          viewModel: conversationViewModel,
-          capabilitiesViewModel: capabilitiesViewModel,
-          voiceViewModel: voiceViewModel,
+          viewModel: widget.conversationViewModel,
+          capabilitiesViewModel: widget.capabilitiesViewModel,
+          voiceViewModel: widget.voiceViewModel,
           onOpenFork: (forked) => _replaceConversation(context, forked),
         ),
       ),
     );
+    await widget.sessionsViewModel.load(widget.profile);
   }
 
   void _replaceConversation(BuildContext context, OpenCodeSession session) {
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (_) => ConversationScreen(
-          profile: profile,
+          profile: widget.profile,
           session: session,
-          viewModel: conversationViewModel,
-          capabilitiesViewModel: capabilitiesViewModel,
-          voiceViewModel: voiceViewModel,
+          viewModel: widget.conversationViewModel,
+          capabilitiesViewModel: widget.capabilitiesViewModel,
+          voiceViewModel: widget.voiceViewModel,
           onOpenFork: (forked) => _replaceConversation(context, forked),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyMasterDetail extends StatelessWidget {
+  const _EmptyMasterDetail();
+
+  @override
+  Widget build(BuildContext context) => const Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.forum_outlined, size: 40),
+        SizedBox(height: 12),
+        Text('Start a conversation'),
+        SizedBox(height: 4),
+        Text('Create a session from the catalog to get started.'),
+      ],
+    ),
+  );
+}
+
+class _DesktopResizeHandle extends StatelessWidget {
+  const _DesktopResizeHandle({
+    required this.label,
+    required this.onDelta,
+    super.key,
+  });
+
+  final String label;
+  final ValueChanged<double> onDelta;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: Semantics(
+        label: label,
+        onIncrease: () => onDelta(24),
+        onDecrease: () => onDelta(-24),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (details) => onDelta(details.delta.dx),
+          child: const SizedBox(
+            width: 9,
+            child: Center(child: VerticalDivider(width: 1)),
+          ),
         ),
       ),
     );

@@ -36,11 +36,7 @@ class BasicMarkdownText extends StatelessWidget {
     return switch (block) {
       _HeadingBlock(:final text, :final level) => Semantics(
         header: true,
-        child: _selectableText(
-          context,
-          text,
-          _headingStyle(theme, level),
-        ),
+        child: _selectableText(context, text, _headingStyle(theme, level)),
       ),
       _CodeBlock(:final text) => Semantics(
         label: 'Code block',

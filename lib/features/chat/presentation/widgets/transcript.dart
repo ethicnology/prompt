@@ -13,6 +13,11 @@ class Transcript extends StatelessWidget {
     required this.onRefresh,
     required this.controller,
     required this.onRevert,
+    required this.onLoadOlder,
+    required this.hasMore,
+    required this.loadingOlder,
+    required this.limitedByServer,
+    this.desktop = false,
     super.key,
   });
 
@@ -20,16 +25,21 @@ class Transcript extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final ScrollController controller;
   final ValueChanged<ChatMessage> onRevert;
+  final VoidCallback onLoadOlder;
+  final bool hasMore;
+  final bool loadingOlder;
+  final bool limitedByServer;
+  final bool desktop;
 
   @override
   Widget build(BuildContext context) {
     // The transcript is built bottom-up: index 0 is the newest message and
     // sits at the bottom, so the latest turn is visible without any
-    // post-layout scrolling. `RefreshIndicator` only ever attaches to a
-    // scrollable's leading edge, so the whole scrollable is turned upside
-    // down and each row is turned back: the standard indicator, with its
-    // usual resistance, arming threshold and spinner, is then pulled up from
-    // the bottom of the conversation.
+    // post-layout scrolling. On phone and tablet, `RefreshIndicator` only
+    // attaches to a scrollable's leading edge, so that path rotates the whole
+    // scrollable and turns each row back to provide bottom pull-to-refresh.
+    // Desktop uses a normal reversed scrollable instead, because refresh is an
+    // explicit AppBar action and pointer scrolling should keep its direction.
     final visibleMessages = messages
         .where(
           (message) =>
@@ -39,38 +49,167 @@ class Transcript extends StatelessWidget {
         .reversed
         .toList(growable: false);
 
-    return Transform.rotate(
-      angle: math.pi,
-      child: RefreshIndicator(
-        onRefresh: onRefresh,
-        child: CustomScrollView(
-          controller: controller,
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-              sliver: SliverList.separated(
-                itemCount: visibleMessages.length,
-                itemBuilder: (context, index) {
-                  final message = visibleMessages[index];
-                  return Transform.rotate(
-                    angle: math.pi,
-                    child: _MessageBubble(
-                      key: ValueKey(message.id),
-                      message: message,
-                      showRevert: index == 0,
-                      onRevert: () => onRevert(message),
-                    ),
-                  );
-                },
-                separatorBuilder: (_, _) => const SizedBox(height: 12),
+    final scrollView = CustomScrollView(
+      key: const ValueKey('conversation-transcript-scroll'),
+      controller: controller,
+      reverse: desktop,
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          sliver: SliverList.separated(
+            itemCount: visibleMessages.length,
+            itemBuilder: (context, index) {
+              final message = visibleMessages[index];
+              final bubble = _MessageBubble(
+                key: ValueKey(message.id),
+                message: message,
+                showRevert: index == 0,
+                onRevert: () => onRevert(message),
+              );
+              return desktop
+                  ? bubble
+                  : Transform.rotate(angle: math.pi, child: bubble);
+            },
+            separatorBuilder: (_, _) => const SizedBox(height: 12),
+          ),
+        ),
+        if (hasMore || loadingOlder || limitedByServer)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Center(
+                child: limitedByServer
+                    ? const Text('History may be limited by this server')
+                    : loadingOlder
+                    ? const _LoadingHistoryControl()
+                    : Semantics(
+                        button: true,
+                        label: 'Load earlier messages',
+                        child: OutlinedButton.icon(
+                          onPressed: onLoadOlder,
+                          icon: const Icon(Icons.history),
+                          label: const Text('Load earlier messages'),
+                        ),
+                      ),
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+      ],
+    );
+    if (desktop) {
+      // `reverse` keeps the newest turn at the physical bottom while leaving
+      // pointer-wheel and trackpad deltas in their normal direction. The
+      // indicator therefore owns the ordinary, non-rotated scroll view.
+      return _DesktopRefreshable(
+        controller: controller,
+        onRefresh: onRefresh,
+        child: scrollView,
+      );
+    }
+    return Transform.rotate(
+      angle: math.pi,
+      child: RefreshIndicator(onRefresh: onRefresh, child: scrollView),
     );
   }
+}
+
+class _DesktopRefreshable extends StatefulWidget {
+  const _DesktopRefreshable({
+    required this.controller,
+    required this.onRefresh,
+    required this.child,
+  });
+
+  final ScrollController controller;
+  final Future<void> Function() onRefresh;
+  final Widget child;
+
+  @override
+  State<_DesktopRefreshable> createState() => _DesktopRefreshableState();
+}
+
+class _DesktopRefreshableState extends State<_DesktopRefreshable> {
+  static const _edgeTolerance = 0.5;
+
+  bool _refreshing = false;
+  double? _dragStart;
+  double _dragDelta = 0;
+
+  void _pointerDown(PointerDownEvent event) {
+    _dragStart = _atNewestEdge ? event.position.dy : null;
+    _dragDelta = 0;
+  }
+
+  void _pointerMove(PointerMoveEvent event) {
+    if (_dragStart != null) _dragDelta += event.delta.dy;
+  }
+
+  void _pointerUp(PointerUpEvent event) {
+    final shouldRefresh = _dragStart != null && _dragDelta > 80;
+    _dragStart = null;
+    _dragDelta = 0;
+    if (shouldRefresh && !_refreshing) {
+      _refreshing = true;
+      widget.onRefresh().whenComplete(() {
+        if (mounted) setState(() => _refreshing = false);
+      });
+    }
+  }
+
+  bool _onNotification(ScrollNotification notification) {
+    if (notification is! OverscrollNotification ||
+        notification.metrics.axis != Axis.vertical ||
+        _refreshing) {
+      return false;
+    }
+    final atNewestEdge =
+        notification.metrics.pixels <=
+        notification.metrics.minScrollExtent + _edgeTolerance;
+    if (!atNewestEdge) return false;
+    _refreshing = true;
+    widget.onRefresh().whenComplete(() {
+      if (mounted) setState(() => _refreshing = false);
+    });
+    return false;
+  }
+
+  bool get _atNewestEdge {
+    if (!widget.controller.hasClients) return false;
+    final position = widget.controller.position;
+    return position.pixels <=
+        position.minScrollExtent + _DesktopRefreshableState._edgeTolerance;
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      NotificationListener<ScrollNotification>(
+        onNotification: _onNotification,
+        child: Listener(
+          onPointerDown: _pointerDown,
+          onPointerMove: _pointerMove,
+          onPointerUp: _pointerUp,
+          child: widget.child,
+        ),
+      );
+}
+
+class _LoadingHistoryControl extends StatelessWidget {
+  const _LoadingHistoryControl();
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    label: 'Loading earlier messages',
+    child: const SizedBox(
+      height: 40,
+      width: 40,
+      child: Padding(
+        padding: EdgeInsets.all(10),
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    ),
+  );
 }
 
 class _MessageBubble extends StatelessWidget {

@@ -9,6 +9,49 @@ import '../../../capabilities/capabilities.dart';
 import '../../../voice/voice.dart';
 import '../../domain/prompt_attachment.dart';
 
+/// Whether the composer should use desktop keyboard shortcuts.
+///
+/// This is based on the target platform rather than the available width:
+/// mobile platforms can render a wide layout without gaining desktop input
+/// behavior, while the web client uses the desktop interaction model here.
+bool composerSupportsDesktopShortcuts({TargetPlatform? platform}) {
+  if (kIsWeb) return true;
+  return switch (platform ?? defaultTargetPlatform) {
+    TargetPlatform.android || TargetPlatform.iOS => false,
+    TargetPlatform.linux ||
+    TargetPlatform.macOS ||
+    TargetPlatform.windows => true,
+    TargetPlatform.fuchsia => false,
+  };
+}
+
+KeyEventResult _handleComposerKeyEvent(
+  TextEditingController controller,
+  bool desktopShortcuts,
+  KeyEvent event,
+) {
+  if (event is! KeyDownEvent ||
+      event.logicalKey != LogicalKeyboardKey.enter ||
+      HardwareKeyboard.instance.isControlPressed ||
+      HardwareKeyboard.instance.isMetaPressed) {
+    return KeyEventResult.ignored;
+  }
+  if (!desktopShortcuts || HardwareKeyboard.instance.isShiftPressed) {
+    final value = controller.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : start;
+    final text = value.text.replaceRange(start, end, '\n');
+    controller.value = value.copyWith(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + 1),
+      composing: TextRange.empty,
+    );
+    return KeyEventResult.handled;
+  }
+  return KeyEventResult.ignored;
+}
+
 class Composer extends StatelessWidget {
   const Composer({
     required this.controller,
@@ -35,8 +78,12 @@ class Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final desktopShortcuts = composerSupportsDesktopShortcuts();
+    final keyboardHint = desktopShortcuts
+        ? 'Enter sends; Shift+Enter inserts a newline; Ctrl+Enter queues'
+        : 'Enter inserts a newline; use the queue button to submit';
     return PromptAdaptiveBuilder(
-      builder: (context, sizeClass) => Padding(
+      builder: (context, _) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -113,22 +160,34 @@ class Composer extends StatelessWidget {
                         ? 'Prompt composer'
                         : 'Arguments for /${command!.name}',
                     hint: command == null
-                        ? 'Enter a prompt; it joins the send queue'
-                        : 'Enter command arguments; it joins the send queue',
+                        ? keyboardHint
+                        : desktopShortcuts
+                        ? 'Enter sends these command arguments; Shift+Enter inserts a newline; Ctrl+Enter queues'
+                        : 'Enter inserts a newline; use the queue button to submit',
                     child: CallbackShortcuts(
                       bindings: {
-                        const SingleActivator(
-                          LogicalKeyboardKey.enter,
-                          control: true,
-                        ): () =>
-                            unawaited(onSubmit()),
-                        const SingleActivator(
-                          LogicalKeyboardKey.enter,
-                          meta: true,
-                        ): () =>
-                            unawaited(onSubmit()),
+                        if (desktopShortcuts)
+                          const SingleActivator(LogicalKeyboardKey.enter): () =>
+                              unawaited(onSubmit()),
+                        if (desktopShortcuts)
+                          const SingleActivator(
+                            LogicalKeyboardKey.enter,
+                            control: true,
+                          ): () =>
+                              unawaited(onSubmit()),
+                        if (desktopShortcuts)
+                          const SingleActivator(
+                            LogicalKeyboardKey.enter,
+                            meta: true,
+                          ): () =>
+                              unawaited(onSubmit()),
                       },
                       child: Focus(
+                        onKeyEvent: (node, event) => _handleComposerKeyEvent(
+                          controller,
+                          desktopShortcuts,
+                          event,
+                        ),
                         child: TextField(
                           controller: controller,
                           minLines: 1,
@@ -141,9 +200,6 @@ class Composer extends StatelessWidget {
                             hintText: command == null
                                 ? 'Message this session…'
                                 : command!.description ?? 'Command arguments…',
-                            helperText: !sizeClass.isPhone
-                                ? 'Ctrl/Cmd+Enter to queue'
-                                : null,
                             border: const OutlineInputBorder(),
                           ),
                         ),

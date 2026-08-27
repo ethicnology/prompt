@@ -114,101 +114,103 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                         : null;
 
                     return AutofillGroup(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Icon(
-                            Icons.lock_outline,
-                            size: 48,
-                            color: theme.colorScheme.primary,
-                            semanticLabel: 'Private connection',
-                          ),
-                          const SizedBox(height: 24),
-                          Text(
-                            'Connect Prompt',
-                            style: theme.textTheme.headlineMedium,
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Connect to your OpenCode server through WireGuard or Tailscale.',
-                            style: theme.textTheme.bodyLarge,
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 32),
-                          TextFormField(
-                            controller: _originController,
-                            enabled: !checking,
-                            autofocus: true,
-                            autocorrect: false,
-                            keyboardType: TextInputType.url,
-                            textInputAction: TextInputAction.next,
-                            autofillHints: const [AutofillHints.url],
-                            onChanged: (_) => _editedAddress = true,
-                            decoration: const InputDecoration(
-                              labelText: 'Private server address',
-                              hintText: 'http://10.0.0.1:4096',
+                      child: SingleChildScrollView(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Icon(
+                              Icons.lock_outline,
+                              size: 48,
+                              color: theme.colorScheme.primary,
+                              semanticLabel: 'Private connection',
                             ),
-                            validator: _validateOrigin,
-                          ),
-                          const SizedBox(height: 16),
-                          TextFormField(
-                            controller: _usernameController,
-                            enabled: !checking,
-                            autocorrect: false,
-                            textInputAction: TextInputAction.next,
-                            autofillHints: const [AutofillHints.username],
-                            decoration: const InputDecoration(
-                              labelText: 'Username (optional)',
+                            const SizedBox(height: 24),
+                            Text(
+                              'Connect Prompt',
+                              style: theme.textTheme.headlineMedium,
+                              textAlign: TextAlign.center,
                             ),
-                          ),
-                          const SizedBox(height: 16),
-                          TextFormField(
-                            controller: _passwordController,
-                            enabled: !checking,
-                            obscureText: true,
-                            enableSuggestions: false,
-                            autocorrect: false,
-                            autofillHints: const [AutofillHints.password],
-                            onFieldSubmitted: (_) => _connect(),
-                            decoration: const InputDecoration(
-                              labelText: 'Password (optional)',
+                            const SizedBox(height: 8),
+                            Text(
+                              'Connect to your OpenCode server through WireGuard or Tailscale.',
+                              style: theme.textTheme.bodyLarge,
+                              textAlign: TextAlign.center,
                             ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'HTTP is permitted only on a private WireGuard or Tailscale address. Credentials stay on this device.',
-                            style: theme.textTheme.bodySmall,
-                            textAlign: TextAlign.center,
-                          ),
-                          if (failure != null) ...[
+                            const SizedBox(height: 32),
+                            TextFormField(
+                              controller: _originController,
+                              enabled: !checking,
+                              autofocus: true,
+                              autocorrect: false,
+                              keyboardType: TextInputType.url,
+                              textInputAction: TextInputAction.next,
+                              autofillHints: const [AutofillHints.url],
+                              onChanged: (_) => _editedAddress = true,
+                              decoration: const InputDecoration(
+                                labelText: 'Private server address',
+                                hintText: 'http://10.0.0.1:4096',
+                              ),
+                              validator: _validateOrigin,
+                            ),
                             const SizedBox(height: 16),
-                            Semantics(
-                              liveRegion: true,
-                              child: Text(
-                                failure.message,
-                                style: TextStyle(
-                                  color: theme.colorScheme.error,
-                                ),
-                                textAlign: TextAlign.center,
+                            TextFormField(
+                              controller: _usernameController,
+                              enabled: !checking,
+                              autocorrect: false,
+                              textInputAction: TextInputAction.next,
+                              autofillHints: const [AutofillHints.username],
+                              decoration: const InputDecoration(
+                                labelText: 'Username (optional)',
                               ),
                             ),
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              controller: _passwordController,
+                              enabled: !checking,
+                              obscureText: true,
+                              enableSuggestions: false,
+                              autocorrect: false,
+                              autofillHints: const [AutofillHints.password],
+                              onFieldSubmitted: (_) => _connect(),
+                              decoration: const InputDecoration(
+                                labelText: 'Password (optional)',
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'HTTP is permitted only on a private WireGuard or Tailscale address. Credentials stay on this device.',
+                              style: theme.textTheme.bodySmall,
+                              textAlign: TextAlign.center,
+                            ),
+                            if (failure != null) ...[
+                              const SizedBox(height: 16),
+                              Semantics(
+                                liveRegion: true,
+                                child: Text(
+                                  failure.message,
+                                  style: TextStyle(
+                                    color: theme.colorScheme.error,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 24),
+                            FilledButton(
+                              onPressed: checking ? null : _connect,
+                              child: checking
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text('Test private connection'),
+                            ),
                           ],
-                          const SizedBox(height: 24),
-                          FilledButton(
-                            onPressed: checking ? null : _connect,
-                            child: checking
-                                ? const SizedBox(
-                                    height: 20,
-                                    width: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Text('Test private connection'),
-                          ),
-                        ],
+                        ),
                       ),
                     );
                   },

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,12 +17,15 @@ import 'package:prompt/features/chat/data/chat_repository.dart';
 import 'package:prompt/features/chat/data/attachment_picker.dart';
 import 'package:prompt/features/chat/data/opencode_chat_service.dart';
 import 'package:prompt/features/chat/domain/chat_message.dart';
+import 'package:prompt/features/chat/domain/chat_load_result.dart';
 import 'package:prompt/features/chat/domain/pending_approval.dart';
 import 'package:prompt/features/chat/domain/permission_response.dart';
 import 'package:prompt/features/chat/domain/prompt_attachment.dart';
 import 'package:prompt/features/chat/domain/session_artifacts.dart';
+import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/chat/presentation/conversation_screen.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
+import 'package:prompt/features/chat/presentation/widgets/session_artifacts_panel.dart';
 import 'package:prompt/features/capabilities/data/capabilities_repository.dart';
 import 'package:prompt/features/capabilities/data/opencode_capabilities_service.dart';
 import 'package:prompt/features/capabilities/domain/open_code_capabilities.dart';
@@ -194,6 +198,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
   bool openCalled = false;
   bool leaveCalled = false;
   int refreshCallCount = 0;
+  int loadOlderCallCount = 0;
 
   int respondToPermissionCallCount = 0;
   String? lastPermissionId;
@@ -220,6 +225,11 @@ class _FakeConversationViewModel extends ConversationViewModel {
   @override
   Future<void> refreshFromUserAction() async {
     refreshCallCount++;
+  }
+
+  @override
+  Future<void> loadOlderFromUserAction() async {
+    loadOlderCallCount++;
   }
 
   @override
@@ -351,6 +361,8 @@ void main() {
     CapabilitiesViewModel? capabilitiesViewModel,
     VoiceViewModel? voiceViewModel,
     ThemeData? theme,
+    double textScale = 1.0,
+    double viewInsetsBottom = 0,
   }) async {
     // Default to a settled, empty transcript unless a test seeds its own:
     // the loading state renders an indeterminate `CircularProgressIndicator`,
@@ -361,6 +373,14 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: theme,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            size: tester.binding.renderViews.first.constraints.biggest,
+            textScaler: TextScaler.linear(textScale),
+            viewInsets: EdgeInsets.only(bottom: viewInsetsBottom),
+          ),
+          child: child!,
+        ),
         home: ConversationScreen(
           profile: profile,
           session: session,
@@ -382,6 +402,143 @@ void main() {
   });
 
   testWidgets(
+    'desktop conversation remains readable across widths and scaling',
+    (tester) async {
+      viewModel.messages.value = ConversationReady([
+        ChatMessage(
+          id: 'wide-message',
+          role: ChatMessageRole.assistant,
+          createdAt: DateTime(2024),
+          text: 'Transcript remains readable at every supported width.',
+        ),
+      ]);
+      viewModel.artifacts.value = const SessionArtifactsReady(
+        todos: [
+          SessionTodo(
+            content: 'Contextual detail',
+            status: SessionTodoStatus.inProgress,
+            priority: SessionTodoPriority.medium,
+          ),
+        ],
+        diffs: [],
+      );
+      for (final width in [900.0, 920.0, 1024.0, 1100.0, 1600.0]) {
+        for (final scale in [1.3, 2.0]) {
+          await tester.binding.setSurfaceSize(Size(width, 900));
+          await pumpScreen(tester, textScale: scale);
+          expect(
+            find.text('Transcript remains readable at every supported width.'),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+          final rail = find.byKey(
+            const ValueKey('desktop-composer-action-rail'),
+          );
+          if (width >= 900) {
+            expect(rail, findsOneWidget);
+            expect(find.text('Contextual detail'), findsOneWidget);
+            expect(find.byTooltip('Hide session details'), findsOneWidget);
+          }
+        }
+      }
+      await tester.binding.setSurfaceSize(null);
+    },
+  );
+
+  testWidgets('short height keeps approval, queue, and composer reachable', (
+    tester,
+  ) async {
+    await viewModel.enqueuePrompt('Queued prompt');
+    viewModel.pendingApproval.value = PendingQuestionApproval(
+      sessionId: 'session-1',
+      requestId: 'question-short',
+      questions: const [
+        QuestionPrompt(
+          question: 'Choose an option',
+          header: 'Approval',
+          options: [QuestionOption(label: 'Allow', description: 'Proceed')],
+        ),
+      ],
+    );
+    await tester.binding.setSurfaceSize(const Size(480, 450));
+    await pumpScreen(tester, textScale: 1.3, viewInsetsBottom: 180);
+    expect(tester.takeException(), isNull);
+    await tester.ensureVisible(find.text('Submit answers'));
+    await tester.ensureVisible(find.text('Reject'));
+    await tester.ensureVisible(find.text('Queued prompt'));
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField &&
+            widget.decoration?.hintText == 'Message this session…',
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.binding.setSurfaceSize(null);
+  });
+
+  testWidgets('keeps the composer adjacent to the software keyboard', (
+    tester,
+  ) async {
+    const surfaceSize = Size(393, 851);
+    const keyboardHeight = 320.0;
+    await tester.binding.setSurfaceSize(surfaceSize);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpScreen(tester, viewInsetsBottom: keyboardHeight);
+
+    final composerPanel = find.byKey(
+      const ValueKey('conversation-composer-panel'),
+    );
+    expect(
+      tester.getBottomRight(composerPanel).dy,
+      closeTo(surfaceSize.height - keyboardHeight, 1),
+    );
+  });
+
+  testWidgets(
+    'loads earlier history from the visible edge and preserves errors',
+    (tester) async {
+      viewModel.messages.value = ConversationReady([
+        ChatMessage(
+          id: 'visible',
+          role: ChatMessageRole.assistant,
+          createdAt: DateTime(2024),
+          text: 'Readable transcript',
+        ),
+      ]);
+      viewModel.history.value = const ConversationHistoryUiState(
+        hasMore: true,
+        loadingOlder: false,
+        limitedByServer: false,
+      );
+      await pumpScreen(tester);
+      final control = find.text('Load earlier messages');
+      await tester.ensureVisible(control);
+      await tester.tap(control);
+      expect(viewModel.loadOlderCallCount, 1);
+
+      viewModel.history.value = const ConversationHistoryUiState(
+        hasMore: false,
+        loadingOlder: false,
+        limitedByServer: true,
+        failure: ChatFailure.unavailable,
+      );
+      await tester.pump();
+      expect(find.text('Readable transcript'), findsOneWidget);
+      expect(
+        find.text('History may be limited by this server'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Earlier messages unavailable'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'hides an empty queue and shows a multi-line composer by default',
     (tester) async {
       await pumpScreen(tester);
@@ -392,6 +549,61 @@ void main() {
       expect(find.byTooltip('Queue this prompt'), findsOneWidget);
     },
   );
+
+  testWidgets('keeps the desktop footer intrinsic and caps active activity', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1600, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpScreen(tester);
+    await tester.tap(find.byTooltip('Hide session details'));
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('conversation-activity-scroll')),
+      findsNothing,
+    );
+    final composer = find.byKey(
+      const ValueKey('conversation-composer-content'),
+    );
+    final transcript = find.byKey(
+      const ValueKey('conversation-transcript-scroll'),
+    );
+    final oneLineHeight = tester.getSize(composer).height;
+    expect(tester.getSize(composer).width, lessThanOrEqualTo(960));
+    expect(oneLineHeight, lessThan(160));
+    expect(tester.getSize(transcript).height, greaterThan(400));
+
+    await tester.enterText(
+      find.byType(TextField),
+      'one\ntwo\nthree\nfour\nfive\nsix',
+    );
+    await tester.pump();
+    final sixLineHeight = tester.getSize(composer).height;
+    expect(sixLineHeight, greaterThan(oneLineHeight));
+    expect(sixLineHeight, lessThan(320));
+
+    await viewModel.enqueuePrompt('Queued prompt');
+    viewModel.pendingApproval.value = PendingQuestionApproval(
+      sessionId: 'session-1',
+      requestId: 'question-wide',
+      questions: const [
+        QuestionPrompt(
+          question: 'Choose an option',
+          header: 'Approval',
+          options: [QuestionOption(label: 'Allow', description: 'Proceed')],
+        ),
+      ],
+    );
+    await tester.pump();
+
+    final activity = find.byKey(const ValueKey('conversation-activity-scroll'));
+    expect(activity, findsOneWidget);
+    expect(tester.getSize(activity).height, lessThanOrEqualTo(320));
+    await tester.ensureVisible(find.text('Submit answers'));
+    await tester.ensureVisible(find.text('Queued prompt'));
+    await tester.ensureVisible(composer);
+  });
 
   testWidgets('pulling up from the transcript bottom refreshes the session', (
     tester,
@@ -540,7 +752,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 1));
       }
     });
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
@@ -610,6 +822,129 @@ void main() {
       expect(textField.controller!.text, isEmpty);
     },
   );
+
+  testWidgets('desktop plain Enter queues once and clears the composer', (
+    tester,
+  ) async {
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    try {
+      await pumpScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'Hello from Enter');
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(viewModel.enqueueCallCount, 1);
+      expect(viewModel.enqueuedTexts.single, 'Hello from Enter');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        isEmpty,
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
+  });
+
+  testWidgets('desktop Shift+Enter inserts a newline without queueing', (
+    tester,
+  ) async {
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    try {
+      await pumpScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'First');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+
+      expect(viewModel.enqueueCallCount, 0);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'First\n',
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
+  });
+
+  testWidgets('desktop Ctrl+Enter queues once', (tester) async {
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    try {
+      await pumpScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'Hello from Ctrl+Enter');
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(viewModel.enqueueCallCount, 1);
+      expect(viewModel.enqueuedTexts.single, 'Hello from Ctrl+Enter');
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
+  });
+
+  testWidgets('mobile plain Enter remains multiline at desktop width', (
+    tester,
+  ) async {
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await pumpScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'First');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(viewModel.enqueueCallCount, 0);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'First\n',
+      );
+      expect(
+        find.text(
+          'Enter to send · Shift+Enter for newline · Ctrl+Enter to queue',
+        ),
+        findsNothing,
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
+  });
+
+  testWidgets('mobile Ctrl+Enter does not trigger the desktop queue shortcut', (
+    tester,
+  ) async {
+    final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      await pumpScreen(tester);
+
+      await tester.enterText(find.byType(TextField), 'Mobile draft');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(viewModel.enqueueCallCount, 0);
+    } finally {
+      debugDefaultTargetPlatformOverride = originalPlatform;
+    }
+  });
 
   testWidgets('never enqueues blank composer text', (tester) async {
     await pumpScreen(tester);
@@ -833,6 +1168,34 @@ void main() {
     await pumpScreen(tester);
 
     expect(find.text('Hi there'), findsOneWidget);
+  });
+
+  testWidgets('shows execution state as an AppBar icon', (tester) async {
+    await pumpScreen(tester);
+
+    viewModel.executionState.value = const SessionBusy();
+    await tester.pump();
+    expect(find.bySemanticsLabel('Execution status: Working'), findsOneWidget);
+    expect(find.text('Working'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byIcon(Icons.sync_rounded),
+      ),
+      findsOneWidget,
+    );
+
+    viewModel.executionState.value = const SessionIdle();
+    await tester.pump();
+    expect(find.bySemanticsLabel('Execution status: Idle'), findsOneWidget);
+    expect(find.text('Idle'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byIcon(Icons.check_circle_outline_rounded),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('keeps a compact selectable user message legible in dark theme', (
@@ -1427,47 +1790,45 @@ void main() {
     expect(find.bySemanticsLabel('Code block'), findsOneWidget);
   });
 
-  testWidgets('launches bare and Markdown HTTP links from selectable messages', (
-    tester,
-  ) async {
-    const channel = MethodChannel('plugins.flutter.io/url_launcher');
-    final launchedUrls = <String>[];
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      channel,
-      (call) async {
+  testWidgets(
+    'launches bare and Markdown HTTP links from selectable messages',
+    (tester) async {
+      const channel = MethodChannel('plugins.flutter.io/url_launcher');
+      final launchedUrls = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
         if (call.method == 'launch') {
           final arguments = call.arguments as Map<Object?, Object?>;
           launchedUrls.add(arguments['url']! as String);
         }
         return true;
-      },
-    );
-    addTearDown(
-      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        channel,
-        null,
-      ),
-    );
-    viewModel.messages.value = ConversationReady([
-      ChatMessage(
-        id: 'links',
-        role: ChatMessageRole.assistant,
-        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-        text: 'Bare HTTP: http://example.com\n\n[Secure](https://example.com)',
-      ),
-    ]);
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      viewModel.messages.value = ConversationReady([
+        ChatMessage(
+          id: 'links',
+          role: ChatMessageRole.assistant,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+          text:
+              'Bare HTTP: http://example.com\n\n[Secure](https://example.com)',
+        ),
+      ]);
 
-    await pumpScreen(tester);
+      await pumpScreen(tester);
 
-    await tester.tap(find.text('http://example.com'));
-    await tester.tap(find.text('Secure'));
-    await tester.pump();
+      await tester.tap(find.text('http://example.com'));
+      await tester.tap(find.text('Secure'));
+      await tester.pump();
 
-    expect(launchedUrls, [
-      'http://example.com',
-      'https://example.com',
-    ]);
-  });
+      expect(launchedUrls, ['http://example.com', 'https://example.com']);
+    },
+  );
 
   testWidgets('renders GFM tables with cells and horizontal scrolling', (
     tester,
@@ -1727,20 +2088,100 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('shows the queue shortcut hint by width, not platform', (
+  testWidgets('keeps desktop queue shortcut guidance out of the field layout', (
     tester,
   ) async {
     final originalPlatform = debugDefaultTargetPlatformOverride;
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     try {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
       await pumpScreen(tester);
-      expect(find.text('Ctrl/Cmd+Enter to queue'), findsOneWidget);
+
+      expect(
+        find.text(
+          'Enter to send · Shift+Enter for newline · Ctrl+Enter to queue',
+        ),
+        findsNothing,
+      );
     } finally {
       debugDefaultTargetPlatformOverride = originalPlatform;
     }
   });
 
-  testWidgets('moves artifacts into a side panel on wide layouts', (
+  testWidgets('shows artifacts and keeps composer actions beside wide panel', (
+    tester,
+  ) async {
+    viewModel.artifacts.value = const SessionArtifactsReady(
+      todos: [
+        SessionTodo(
+          content: 'Desktop todo',
+          status: SessionTodoStatus.inProgress,
+          priority: SessionTodoPriority.medium,
+        ),
+      ],
+      diffs: [
+        SessionFileDiff(
+          file: 'lib/desktop.dart',
+          patch: '@@ -1 +1 @@\n-old\n+new',
+          additions: 1,
+          deletions: 1,
+        ),
+      ],
+    );
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'desktop-transcript',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime(2024),
+        text: 'Desktop transcript remains present',
+      ),
+    ]);
+    await tester.binding.setSurfaceSize(const Size(1600, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpScreen(tester);
+
+    expect(find.byType(VerticalDivider), findsOneWidget);
+    expect(find.text('Desktop todo'), findsOneWidget);
+    expect(find.text('lib/desktop.dart'), findsOneWidget);
+    expect(find.text('Desktop transcript remains present'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    final divider = tester.getRect(find.byType(VerticalDivider));
+    final actionRail = tester.getRect(
+      find.byKey(const ValueKey('desktop-composer-action-rail')),
+    );
+    final attachment = tester.getRect(find.byTooltip('Add attachment'));
+    expect(attachment.right, lessThanOrEqualTo(divider.left));
+    expect(actionRail.right, lessThanOrEqualTo(divider.left));
+    expect(attachment.left, lessThan(actionRail.right));
+    expect(attachment.left - divider.right, lessThanOrEqualTo(20));
+
+    final detailsBefore = tester
+        .getRect(find.byType(SessionArtifactsPanel))
+        .width;
+    expect(detailsBefore, greaterThan(450));
+    await tester.drag(
+      find.byKey(const ValueKey('desktop-session-details-divider')),
+      const Offset(-80, 0),
+    );
+    await tester.pump();
+    expect(
+      tester.getRect(find.byType(SessionArtifactsPanel)).width,
+      greaterThan(detailsBefore),
+    );
+    expect(
+      tester.getRect(find.byType(TextField)).right,
+      lessThan(
+        tester
+            .getRect(
+              find.byKey(const ValueKey('desktop-session-details-divider')),
+            )
+            .left,
+      ),
+    );
+  });
+
+  testWidgets('toggles the persistent artifacts panel on wide layouts', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1100, 900));
@@ -1748,7 +2189,154 @@ void main() {
 
     await pumpScreen(tester);
 
-    expect(find.byType(VerticalDivider), findsOneWidget);
+    final artifactsButton = find.widgetWithIcon(
+      IconButton,
+      Icons.assignment_outlined,
+    );
+    expect(
+      tester.widget<IconButton>(artifactsButton).tooltip,
+      'Hide session details',
+    );
+    expect(find.text('Session artifacts'), findsOneWidget);
+
+    await tester.tap(artifactsButton);
+    await tester.pump();
+    expect(
+      tester.widget<IconButton>(artifactsButton).tooltip,
+      'Show session details',
+    );
+    expect(find.byType(SessionArtifactsPanel), findsNothing);
+
+    await tester.tap(artifactsButton);
+    await tester.pump();
+    expect(
+      tester.widget<IconButton>(artifactsButton).tooltip,
+      'Hide session details',
+    );
+    expect(find.byType(SessionArtifactsPanel), findsOneWidget);
+  });
+
+  testWidgets('offers transcript refresh on wide layouts', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpScreen(tester);
+
+    expect(find.byTooltip('Refresh transcript'), findsOneWidget);
+    expect(viewModel.refreshCallCount, 0);
+    await tester.tap(find.byTooltip('Refresh transcript'));
+    await tester.pump();
+    expect(viewModel.refreshCallCount, 1);
+  });
+
+  testWidgets('desktop bottom pull-to-refresh triggers without inversion', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady(
+      List.generate(
+        20,
+        (index) => ChatMessage(
+          id: 'refresh-$index',
+          role: ChatMessageRole.assistant,
+          text: 'Refreshable message $index ' * 8,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+        ),
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpScreen(tester);
+    final scroll = find.byKey(const ValueKey('conversation-transcript-scroll'));
+    await tester.drag(
+      find.byKey(const ValueKey('conversation-transcript-scroll')),
+      const Offset(0, 380),
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(viewModel.refreshCallCount, 1);
+    expect(tester.takeException(), isNull);
+    expect(scroll, findsOneWidget);
+  });
+
+  testWidgets(
+    'desktop pull-to-refresh does not trigger from older transcript history',
+    (tester) async {
+      viewModel.messages.value = ConversationReady(
+        List.generate(
+          30,
+          (index) => ChatMessage(
+            id: 'older-refresh-$index',
+            role: ChatMessageRole.assistant,
+            text: 'Older refresh message $index ' * 12,
+            createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+          ),
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(1100, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await pumpScreen(tester);
+
+      final scrollView = find.byKey(
+        const ValueKey('conversation-transcript-scroll'),
+      );
+      final scrollable = find.descendant(
+        of: scrollView,
+        matching: find.byType(Scrollable),
+      );
+      final position = tester.state<ScrollableState>(scrollable.first).position;
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: tester.getCenter(scrollView),
+          scrollDelta: const Offset(0, -500),
+        ),
+      );
+      await tester.pump();
+      expect(position.pixels, greaterThan(80));
+
+      await tester.drag(scrollView, const Offset(0, 380));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(viewModel.refreshCallCount, 0);
+    },
+  );
+
+  testWidgets('desktop pointer scrolling moves toward older messages', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady(
+      List.generate(
+        30,
+        (index) => ChatMessage(
+          id: 'desktop-message-$index',
+          role: ChatMessageRole.assistant,
+          text: 'Desktop transcript item $index ' * 12,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(index + 1),
+        ),
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await pumpScreen(tester);
+
+    final scrollView = find.byKey(
+      const ValueKey('conversation-transcript-scroll'),
+    );
+    final scrollable = find.descendant(
+      of: scrollView,
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable.first).position;
+    expect(position.pixels, 0);
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(scrollView),
+        scrollDelta: const Offset(0, -300),
+      ),
+    );
+    await tester.pump();
+
+    expect(position.pixels, greaterThan(0));
   });
 
   testWidgets('hides messages without displayable text', (tester) async {
@@ -1890,6 +2478,7 @@ void main() {
           isNotNull,
         );
 
+        await tester.ensureVisible(submitButtonFinder);
         await tester.tap(submitButtonFinder);
         await tester.pump();
 
@@ -1932,6 +2521,7 @@ void main() {
         isNotNull,
       );
 
+      await tester.ensureVisible(submitButtonFinder);
       await tester.tap(submitButtonFinder);
       await tester.pump();
 
@@ -1959,6 +2549,7 @@ void main() {
 
       await pumpScreen(tester);
 
+      await tester.ensureVisible(find.text('Reject'));
       await tester.tap(find.text('Reject'));
       await tester.pump();
 

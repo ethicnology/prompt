@@ -4,6 +4,33 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:prompt/features/chat/domain/prompt_attachment.dart';
 
 void main() {
+  test('detects a PNG screenshot as image media', () {
+    final attachment = PromptAttachment(
+      name: 'Screenshot',
+      bytes: Uint8List.fromList([
+        0x89,
+        0x50,
+        0x4e,
+        0x47,
+        0x0d,
+        0x0a,
+        0x1a,
+        0x0a,
+      ]),
+    );
+
+    expect(attachment.mediaType, 'image/png');
+  });
+
+  test('uses the filename for common image formats', () {
+    final attachment = PromptAttachment(
+      name: 'photo.JPEG',
+      bytes: Uint8List.fromList([1, 2, 3]),
+    );
+
+    expect(attachment.mediaType, 'image/jpeg');
+  });
+
   test('release overwrites and drops memory-only attachment bytes', () {
     final bytes = Uint8List.fromList([4, 5, 6]);
     final attachment = PromptAttachment(name: 'private.txt', bytes: bytes);

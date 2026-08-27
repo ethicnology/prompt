@@ -14,6 +14,7 @@ import '../domain/chat_message.dart';
 import '../domain/pending_approval.dart';
 import '../domain/prompt_attachment.dart';
 import '../domain/session_artifacts.dart';
+import '../domain/session_execution_state.dart';
 import 'conversation_view_model.dart';
 import 'widgets/approval_dock.dart';
 import 'widgets/composer.dart';
@@ -80,6 +81,8 @@ class _ConversationScreenState extends State<ConversationScreen>
   StreamSubscription<String>? _queueErrorSubscription;
   StreamSubscription<String>? _transcriptErrorSubscription;
   bool _showJumpToLatest = false;
+  bool? _artifactsPanelOverride;
+  double? _artifactsWidth;
   late final ValueNotifier<PromptExecutionOptions> _executionOptions;
   OpenCodeSlashCommand? _selectedCommand;
   String? _voiceDraftPrefix;
@@ -447,14 +450,45 @@ class _ConversationScreenState extends State<ConversationScreen>
     }
   }
 
-  Widget _buildTranscript(List<ChatMessage> messages) {
+  Widget _buildTranscript(
+    List<ChatMessage> messages, {
+    bool showComposerActions = true,
+    bool desktop = false,
+  }) {
     return Stack(
       children: [
-        Transcript(
-          messages: messages,
-          onRefresh: widget.viewModel.refreshFromUserAction,
-          onRevert: _confirmRevert,
-          controller: _transcriptController,
+        ValueListenableBuilder<ConversationHistoryUiState>(
+          valueListenable: widget.viewModel.history,
+          builder: (context, history, _) => Column(
+            children: [
+              if (history.failure case final failure?)
+                MaterialBanner(
+                  content: Text(
+                    'Earlier messages unavailable: ${failure.message}',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () =>
+                          widget.viewModel.loadOlderFromUserAction(),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              Expanded(
+                child: Transcript(
+                  messages: messages,
+                  onRefresh: widget.viewModel.refreshFromUserAction,
+                  onRevert: _confirmRevert,
+                  onLoadOlder: () => widget.viewModel.loadOlderFromUserAction(),
+                  hasMore: history.hasMore,
+                  loadingOlder: history.loadingOlder,
+                  limitedByServer: history.limitedByServer,
+                  controller: _transcriptController,
+                  desktop: desktop,
+                ),
+              ),
+            ],
+          ),
         ),
         // Reconciliation floats over the transcript so the previous messages
         // stay readable and the list is never rebuilt from an empty state.
@@ -508,7 +542,8 @@ class _ConversationScreenState extends State<ConversationScreen>
             bottom: 8,
             child: Center(child: _jumpButton()),
           ),
-        Positioned(right: 16, bottom: 16, child: _composerActionColumn()),
+        if (showComposerActions)
+          Positioned(right: 16, bottom: 16, child: _composerActionColumn()),
       ],
     );
   }
@@ -601,21 +636,29 @@ class _ConversationScreenState extends State<ConversationScreen>
     child: const Icon(Icons.south),
   );
 
-  Widget _artifactsPanel({bool lazy = false}) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _executionPanel(),
-      const SizedBox(height: 8),
-      ValueListenableBuilder<SessionArtifactsState>(
-        valueListenable: widget.viewModel.artifacts,
-        builder: (context, state, _) => SessionArtifactsPanel(
-          state: state,
-          onRefresh: widget.viewModel.reloadArtifacts,
-          lazy: lazy,
-        ),
+  Widget _artifactsPanel({bool lazy = false}) {
+    final artifacts = ValueListenableBuilder<SessionArtifactsState>(
+      valueListenable: widget.viewModel.artifacts,
+      builder: (context, state, _) => SessionArtifactsPanel(
+        state: state,
+        onRefresh: widget.viewModel.reloadArtifacts,
+        lazy: false,
       ),
-    ],
-  );
+    );
+    if (!lazy) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [_executionPanel(), const SizedBox(height: 8), artifacts],
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(child: _executionPanel()),
+        const SliverToBoxAdapter(child: SizedBox(height: 8)),
+        SliverToBoxAdapter(child: artifacts),
+      ],
+    );
+  }
 
   Widget _executionPanel() {
     final capabilitiesViewModel = widget.capabilitiesViewModel;
@@ -701,7 +744,109 @@ class _ConversationScreenState extends State<ConversationScreen>
     ),
   );
 
-  Widget _transcriptPanel() => ValueListenableBuilder<ConversationUiState>(
+  void _toggleArtifactsPanel({required bool isDesktop, required bool showing}) {
+    if (!isDesktop) {
+      unawaited(_showArtifacts());
+      return;
+    }
+    setState(() => _artifactsPanelOverride = !showing);
+  }
+
+  double _artifactsWidthFor(double availableWidth) {
+    final maximum = (availableWidth - 560).clamp(280.0, 720.0);
+    final preferred = _artifactsWidth ?? availableWidth * .32;
+    return preferred.clamp(280.0, maximum);
+  }
+
+  Widget _activityPanel({double? maxHeight, bool flexible = false}) {
+    final activityMaxHeight =
+        (maxHeight ?? MediaQuery.sizeOf(context).height) < 500 ? 160.0 : 320.0;
+    return ValueListenableBuilder<PendingApproval?>(
+      valueListenable: widget.viewModel.pendingApproval,
+      builder: (context, approval, _) =>
+          ValueListenableBuilder<List<QueuedPrompt>>(
+            valueListenable: widget.viewModel.queue,
+            builder: (context, prompts, _) {
+              final activePrompts = prompts
+                  .where(
+                    (prompt) => prompt.state != QueuedPromptState.acknowledged,
+                  )
+                  .toList(growable: false);
+              if (approval == null && activePrompts.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              final panel = ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: activityMaxHeight),
+                child: SingleChildScrollView(
+                  key: const ValueKey('conversation-activity-scroll'),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (approval != null) ...[
+                        const Divider(height: 1),
+                        ApprovalDock(
+                          key: ValueKey(_approvalKey(approval)),
+                          approval: approval,
+                          onRespondToPermission:
+                              widget.viewModel.respondToPermission,
+                          onReplyToQuestion: widget.viewModel.replyToQuestion,
+                          onRejectQuestion: widget.viewModel.rejectQuestion,
+                        ),
+                      ],
+                      if (activePrompts.isNotEmpty) ...[
+                        const Divider(height: 1),
+                        QueuePanel(
+                          prompts: activePrompts,
+                          onRemove: (prompt) =>
+                              widget.viewModel.removeFromQueue(prompt.id),
+                          onSendNow: _confirmSendNow,
+                          onMergeIntoPrevious: (prompt) =>
+                              widget.viewModel.mergeIntoPrevious(prompt.id),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+              return flexible
+                  ? Flexible(fit: FlexFit.loose, child: panel)
+                  : panel;
+            },
+          ),
+    );
+  }
+
+  Widget _composerPanel({bool constrainWidth = false}) => SafeArea(
+    key: const ValueKey('conversation-composer-panel'),
+    top: false,
+    child: Align(
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        key: const ValueKey('conversation-composer-content'),
+        constraints: BoxConstraints(
+          maxWidth: constrainWidth ? 960 : double.infinity,
+        ),
+        child: Composer(
+          controller: _composerController,
+          command: _selectedCommand,
+          attachments: widget.viewModel.attachments,
+          onRemoveAttachment: widget.viewModel.removeAttachment,
+          onSubmit: _submitComposer,
+          voiceState: widget.voiceViewModel?.state,
+          onVoiceHoldStart: widget.voiceViewModel == null
+              ? null
+              : _startVoiceCapture,
+          onVoiceHoldEnd: widget.voiceViewModel?.finishSegmentFromUserAction,
+          onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
+        ),
+      ),
+    ),
+  );
+
+  Widget _transcriptPanel({
+    bool showComposerActions = true,
+    bool desktop = false,
+  }) => ValueListenableBuilder<ConversationUiState>(
     valueListenable: widget.viewModel.messages,
     builder: (context, state, _) {
       return switch (state) {
@@ -728,159 +873,200 @@ class _ConversationScreenState extends State<ConversationScreen>
             ),
           ),
         ),
-        ConversationReady(:final messages) => _buildTranscript(messages),
+        ConversationReady(:final messages) => _buildTranscript(
+          messages,
+          showComposerActions: showComposerActions,
+          desktop: desktop,
+        ),
       };
     },
   );
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 68,
-        titleSpacing: 4,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.session.title.isEmpty
-                  ? 'Untitled session'
-                  : widget.session.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth >= PromptBreakpoints.desktop;
+        final showArtifactsPanel = _artifactsPanelOverride ?? isDesktop;
+        return Scaffold(
+          appBar: AppBar(
+            toolbarHeight: 68,
+            titleSpacing: 4,
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.session.title.isEmpty
+                      ? 'Untitled session'
+                      : widget.session.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  directoryName(widget.session.directory),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 2),
-            Text(
-              directoryName(widget.session.directory),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
+            actions: [
+              if (isDesktop)
+                IconButton(
+                  onPressed: widget.viewModel.refreshFromUserAction,
+                  tooltip: 'Refresh transcript',
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+              ValueListenableBuilder<SessionExecutionState>(
+                valueListenable: widget.viewModel.executionState,
+                builder: (context, state, _) =>
+                    Center(child: _ExecutionIndicator(state: state)),
               ),
-            ),
-          ],
+              IconButton(
+                onPressed: () => _toggleArtifactsPanel(
+                  isDesktop: isDesktop,
+                  showing: showArtifactsPanel,
+                ),
+                icon: const Icon(Icons.assignment_outlined),
+                tooltip: isDesktop
+                    ? showArtifactsPanel
+                          ? 'Hide session details'
+                          : 'Show session details'
+                    : 'Session artifacts',
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: Column(
+            children: [
+              ValueListenableBuilder<SseConnectionState>(
+                valueListenable: widget.viewModel.connectionState,
+                builder: (context, state, _) {
+                  final banner = _connectionBanner(state);
+                  if (banner == null) {
+                    return const SizedBox.shrink();
+                  }
+                  return ConnectionStatusBanner(
+                    banner,
+                    reconnecting:
+                        state is SseReconnecting || state is SseReconciling,
+                    onRetry: state is SseDisconnected
+                        ? widget.viewModel.retryConnection
+                        : null,
+                  );
+                },
+              ),
+              Expanded(
+                child: isDesktop
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    children: [
+                                      Expanded(
+                                        child: _transcriptPanel(
+                                          showComposerActions: false,
+                                          desktop: true,
+                                        ),
+                                      ),
+                                      _activityPanel(
+                                        maxHeight: constraints.maxHeight,
+                                      ),
+                                      _composerPanel(constrainWidth: true),
+                                    ],
+                                  ),
+                                ),
+                                SizedBox(
+                                  key: const ValueKey(
+                                    'desktop-composer-action-rail',
+                                  ),
+                                  width: 64,
+                                  child: Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 16,
+                                      ),
+                                      child: _composerActionColumn(),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (showArtifactsPanel) ...[
+                            _DesktopResizeHandle(
+                              key: const ValueKey(
+                                'desktop-session-details-divider',
+                              ),
+                              label: 'Resize session details',
+                              onDelta: (delta) => setState(() {
+                                _artifactsWidth =
+                                    _artifactsWidthFor(constraints.maxWidth) -
+                                    delta;
+                              }),
+                            ),
+                            SizedBox(
+                              width: _artifactsWidthFor(constraints.maxWidth),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  12,
+                                  12,
+                                  12,
+                                  24,
+                                ),
+                                child: _artifactsPanel(lazy: true),
+                              ),
+                            ),
+                          ],
+                        ],
+                      )
+                    : _transcriptPanel(),
+              ),
+              if (!isDesktop)
+                _activityPanel(
+                  maxHeight: constraints.maxHeight,
+                  flexible: true,
+                ),
+              if (!isDesktop) _composerPanel(),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ExecutionIndicator extends StatelessWidget {
+  const _ExecutionIndicator({required this.state});
+
+  final SessionExecutionState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, icon) = switch (state) {
+      SessionBusy() => ('Working', Icons.sync_rounded),
+      SessionIdle() => ('Idle', Icons.check_circle_outline_rounded),
+      SessionRetrying() => ('Retrying', Icons.replay_rounded),
+      SessionExecutionUnknown() => ('Syncing activity', Icons.sync_problem),
+    };
+    return Tooltip(
+      message: label,
+      excludeFromSemantics: true,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Semantics(
+          liveRegion: true,
+          label: 'Execution status: $label',
+          child: Icon(icon, size: 22),
         ),
-        actions: [
-          IconButton(
-            onPressed: _showArtifacts,
-            icon: const Icon(Icons.assignment_outlined),
-            tooltip: 'Session artifacts',
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        children: [
-          ValueListenableBuilder<SseConnectionState>(
-            valueListenable: widget.viewModel.connectionState,
-            builder: (context, state, _) {
-              final banner = _connectionBanner(state);
-              if (banner == null) {
-                return const SizedBox.shrink();
-              }
-              return ConnectionStatusBanner(
-                banner,
-                reconnecting:
-                    state is SseReconnecting || state is SseReconciling,
-                onRetry: state is SseDisconnected
-                    ? widget.viewModel.retryConnection
-                    : null,
-              );
-            },
-          ),
-          Expanded(
-            child: PromptAdaptiveBuilder(
-              builder: (context, sizeClass) {
-                // A context panel only becomes persistent once it can retain
-                // a readable transcript width. Phones keep a one-column flow.
-                if (!sizeClass.isDesktop) {
-                  return _transcriptPanel();
-                }
-                return Row(
-                  children: [
-                    Expanded(child: _transcriptPanel()),
-                    const VerticalDivider(width: 1),
-                    SizedBox(
-                      width: 320,
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                        child: SizedBox(
-                          height: 560,
-                          child: _artifactsPanel(lazy: true),
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-          ValueListenableBuilder<PendingApproval?>(
-            valueListenable: widget.viewModel.pendingApproval,
-            builder: (context, approval, _) {
-              if (approval == null) {
-                return const SizedBox.shrink();
-              }
-              return Column(
-                children: [
-                  const Divider(height: 1),
-                  ApprovalDock(
-                    key: ValueKey(_approvalKey(approval)),
-                    approval: approval,
-                    onRespondToPermission: widget.viewModel.respondToPermission,
-                    onReplyToQuestion: widget.viewModel.replyToQuestion,
-                    onRejectQuestion: widget.viewModel.rejectQuestion,
-                  ),
-                ],
-              );
-            },
-          ),
-          const Divider(height: 1),
-          ValueListenableBuilder<List<QueuedPrompt>>(
-            valueListenable: widget.viewModel.queue,
-            builder: (context, prompts, _) {
-              final activePrompts = prompts
-                  .where(
-                    (prompt) => prompt.state != QueuedPromptState.acknowledged,
-                  )
-                  .toList(growable: false);
-              if (activePrompts.isEmpty) {
-                return const SizedBox.shrink();
-              }
-              return Column(
-                children: [
-                  const Divider(height: 1),
-                  QueuePanel(
-                    prompts: activePrompts,
-                    onRemove: (prompt) =>
-                        widget.viewModel.removeFromQueue(prompt.id),
-                    onSendNow: _confirmSendNow,
-                    onMergeIntoPrevious: (prompt) =>
-                        widget.viewModel.mergeIntoPrevious(prompt.id),
-                  ),
-                ],
-              );
-            },
-          ),
-          SafeArea(
-            top: false,
-            child: Composer(
-              controller: _composerController,
-              command: _selectedCommand,
-              attachments: widget.viewModel.attachments,
-              onRemoveAttachment: widget.viewModel.removeAttachment,
-              onSubmit: _submitComposer,
-              voiceState: widget.voiceViewModel?.state,
-              onVoiceHoldStart: widget.voiceViewModel == null
-                  ? null
-                  : _startVoiceCapture,
-              onVoiceHoldEnd:
-                  widget.voiceViewModel?.finishSegmentFromUserAction,
-              onVoiceStop: widget.voiceViewModel?.stopModeFromUserAction,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -956,6 +1142,37 @@ class _ExecutionPanel extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _DesktopResizeHandle extends StatelessWidget {
+  const _DesktopResizeHandle({
+    required this.label,
+    required this.onDelta,
+    super.key,
+  });
+
+  final String label;
+  final ValueChanged<double> onDelta;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeColumn,
+      child: Semantics(
+        label: label,
+        onIncrease: () => onDelta(24),
+        onDecrease: () => onDelta(-24),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (details) => onDelta(details.delta.dx),
+          child: const SizedBox(
+            width: 9,
+            child: Center(child: VerticalDivider(width: 1)),
+          ),
+        ),
       ),
     );
   }

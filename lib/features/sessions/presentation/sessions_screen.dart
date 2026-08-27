@@ -8,6 +8,7 @@ import '../../connection/connection.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
 import '../domain/session_load_result.dart';
+import '../domain/session_activity.dart';
 import 'sessions_view_model.dart';
 
 enum _CatalogAction {
@@ -28,6 +29,7 @@ class SessionsScreen extends StatefulWidget {
     required this.onOpenDiagnostics,
     required this.onOpenVoiceSettings,
     required this.onDisconnect,
+    this.embedded = false,
     super.key,
   });
 
@@ -39,6 +41,7 @@ class SessionsScreen extends StatefulWidget {
   final VoidCallback onOpenDiagnostics;
   final VoidCallback onOpenVoiceSettings;
   final VoidCallback onDisconnect;
+  final bool embedded;
 
   @override
   State<SessionsScreen> createState() => _SessionsScreenState();
@@ -67,6 +70,8 @@ class _SessionsScreenState extends State<SessionsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final body = _buildBody();
+    if (widget.embedded) return body;
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 72,
@@ -159,31 +164,40 @@ class _SessionsScreenState extends State<SessionsScreen> {
           const SizedBox(width: 4),
         ],
       ),
-      body: ValueListenableBuilder<SessionsUiState>(
-        valueListenable: widget.viewModel,
-        builder: (context, state, _) {
-          return switch (state) {
-            SessionsIdle() || SessionsLoading() => const _LoadingCatalog(),
-            SessionsEmpty() => _EmptyCatalog(
-              onCreate: () => _createSession(const []),
-            ),
-            SessionsError(:final failure) => _SessionsError(
-              failure: failure,
-              onRetry: () => widget.viewModel.load(widget.profile),
-            ),
-            SessionsReady(:final sessions, :final projects) => _buildReady(
-              sessions,
-              projects,
-            ),
-          };
-        },
-      ),
+      body: body,
+    );
+  }
+
+  Widget _buildBody() {
+    return ValueListenableBuilder<SessionsUiState>(
+      valueListenable: widget.viewModel,
+      builder: (context, state, _) {
+        return switch (state) {
+          SessionsIdle() || SessionsLoading() => const _LoadingCatalog(),
+          SessionsEmpty() => _EmptyCatalog(
+            onCreate: () => _createSession(const []),
+          ),
+          SessionsError(:final failure) => _SessionsError(
+            failure: failure,
+            onRetry: () => widget.viewModel.load(widget.profile),
+          ),
+          SessionsReady(
+            :final sessions,
+            :final projects,
+            :final activities,
+            :final unavailableDirectories,
+          ) =>
+            _buildReady(sessions, projects, activities, unavailableDirectories),
+        };
+      },
     );
   }
 
   Widget _buildReady(
     List<OpenCodeSession> sessions,
     List<OpenCodeProject> projects,
+    Map<String, SessionActivity> activities,
+    Set<String> unavailableDirectories,
   ) {
     final projectIdsWithSessions = sessions
         .map((session) => session.projectId)
@@ -233,6 +247,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           selectedProjectId: selectedProjectId,
           onSelectProject: (id) => setState(() => _selectedProjectId = id),
           onCreate: () => _createSession(projects),
+          onRefresh: () => widget.viewModel.load(widget.profile),
         ),
         Expanded(
           child: primary.isEmpty
@@ -256,6 +271,11 @@ class _SessionsScreenState extends State<SessionsScreen> {
                       final session = primary[index];
                       return _SessionCard(
                         session: session,
+                        activity:
+                            activities[session.id] ??
+                            (unavailableDirectories.contains(session.directory)
+                                ? SessionActivity.unavailable
+                                : SessionActivity.unknown),
                         childCount: childrenByParent[session.id] ?? 0,
                         onTap: () => widget.onOpenSession(session),
                         onCopyId: () => _copySessionId(session),
@@ -311,31 +331,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
   }
 
   Future<void> _renameSession(OpenCodeSession session) async {
-    final controller = TextEditingController(text: session.title);
     final title = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rename session'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
-          decoration: const InputDecoration(labelText: 'Title'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Rename'),
-          ),
-        ],
-      ),
+      builder: (context) => _RenameSessionDialog(initialTitle: session.title),
     );
-    controller.dispose();
     if (!mounted || title == null || title.isEmpty || title == session.title) {
       return;
     }
@@ -380,6 +379,55 @@ class _SessionsScreenState extends State<SessionsScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text(failure.message)));
     }
+  }
+}
+
+class _RenameSessionDialog extends StatefulWidget {
+  const _RenameSessionDialog({required this.initialTitle});
+
+  final String initialTitle;
+
+  @override
+  State<_RenameSessionDialog> createState() => _RenameSessionDialogState();
+}
+
+class _RenameSessionDialogState extends State<_RenameSessionDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialTitle);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename session'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+        decoration: const InputDecoration(labelText: 'Title'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Rename'),
+        ),
+      ],
+    );
   }
 }
 
@@ -617,6 +665,7 @@ class _CatalogControls extends StatelessWidget {
     required this.selectedProjectId,
     required this.onSelectProject,
     required this.onCreate,
+    required this.onRefresh,
   });
 
   final TextEditingController searchController;
@@ -624,6 +673,7 @@ class _CatalogControls extends StatelessWidget {
   final String? selectedProjectId;
   final ValueChanged<String?> onSelectProject;
   final VoidCallback? onCreate;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -665,6 +715,12 @@ class _CatalogControls extends StatelessWidget {
                   icon: const Icon(Icons.add_rounded),
                   tooltip: 'New session',
                 ),
+                const SizedBox(width: 4),
+                IconButton(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                  tooltip: 'Refresh sessions',
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -700,6 +756,7 @@ class _SessionCard extends StatelessWidget {
   const _SessionCard({
     required this.session,
     required this.childCount,
+    required this.activity,
     required this.onTap,
     required this.onCopyId,
     required this.onRename,
@@ -708,6 +765,7 @@ class _SessionCard extends StatelessWidget {
 
   final OpenCodeSession session;
   final int childCount;
+  final SessionActivity activity;
   final VoidCallback onTap;
   final VoidCallback onCopyId;
   final VoidCallback onRename;
@@ -763,6 +821,7 @@ class _SessionCard extends StatelessWidget {
                         color: theme.colorScheme.primary,
                       ),
                     ),
+                    _SessionActivityLabel(activity: activity),
                     const SizedBox(height: 8),
                     Wrap(
                       spacing: 10,
@@ -837,6 +896,36 @@ class _SessionCard extends StatelessWidget {
   }
 }
 
+class _SessionActivityLabel extends StatelessWidget {
+  const _SessionActivityLabel({required this.activity});
+
+  final SessionActivity activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, icon) = switch (activity) {
+      SessionActivity.working => ('Working', Icons.sync_rounded),
+      SessionActivity.idle => ('Idle', Icons.check_circle_outline_rounded),
+      SessionActivity.retrying => ('Retrying', Icons.replay_rounded),
+      SessionActivity.unknown => ('Activity unknown', Icons.help_outline),
+      SessionActivity.unavailable => ('Status unavailable', Icons.sync_problem),
+    };
+    return Semantics(
+      label: 'Session activity: $label',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 enum _SessionAction { copyId, rename, delete }
 
 class _MetaLabel extends StatelessWidget {
@@ -853,9 +942,15 @@ class _MetaLabel extends StatelessWidget {
       children: [
         Icon(icon, size: 14, color: color),
         const SizedBox(width: 4),
-        Text(
-          text,
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: color),
+          ),
         ),
       ],
     );

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../domain/session_artifacts.dart';
 
@@ -20,6 +21,9 @@ class SessionArtifactsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (lazy && state is SessionArtifactsLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
     return Semantics(
       container: true,
       label: 'Session artifacts',
@@ -200,15 +204,80 @@ class _TodoRow extends StatelessWidget {
   }
 }
 
-class _DiffRow extends StatelessWidget {
+class _DiffRow extends StatefulWidget {
   const _DiffRow({required this.diff});
 
   final SessionFileDiff diff;
 
   @override
+  State<_DiffRow> createState() => _DiffRowState();
+}
+
+class _DiffRowState extends State<_DiffRow> {
+  static const _previewLines = 12;
+  bool _expanded = false;
+  bool _loading = false;
+  List<String>? _lines;
+
+  SessionFileDiff get diff => widget.diff;
+
+  Future<void> _expand() async {
+    setState(() => _loading = true);
+    final lines = await compute(_splitPatch, diff.patch);
+    if (!mounted) return;
+    setState(() {
+      _lines = lines;
+      _expanded = true;
+      _loading = false;
+    });
+  }
+
+  Widget _patch(BuildContext context) {
+    if (diff.patch.isEmpty) {
+      return const Text('The server reported no patch for this file.');
+    }
+    final lines = _lines;
+    if (!_expanded || lines == null) {
+      final preview = diff.patch.split('\n').take(_previewLines).join('\n');
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SelectableText(preview, style: _codeStyle(context)),
+          if (diff.patch.split('\n').length > _previewLines)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _loading ? null : _expand,
+                icon: _loading
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.unfold_more),
+                label: const Text('Load full patch'),
+              ),
+            ),
+        ],
+      );
+    }
+    return SizedBox(
+      height: 280,
+      child: ListView.builder(
+        itemCount: lines.length,
+        itemBuilder: (context, index) =>
+            SelectableText(lines[index], style: _codeStyle(context)),
+      ),
+    );
+  }
+
+  TextStyle? _codeStyle(BuildContext context) =>
+      Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace');
+
+  @override
   Widget build(BuildContext context) {
     final counters = '+${diff.additions} · -${diff.deletions}';
     return ExpansionTile(
+      initiallyExpanded: diff.patch.split('\n').length > _previewLines,
       tilePadding: EdgeInsets.zero,
       title: SelectableText(diff.file.isEmpty ? 'Changed file' : diff.file),
       subtitle: Text(
@@ -220,19 +289,14 @@ class _DiffRow extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(12),
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: SelectableText(
-            diff.patch.isEmpty
-                ? 'The server reported no patch for this file.'
-                : diff.patch,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-          ),
+          child: _patch(context),
         ),
       ],
     );
   }
 }
+
+List<String> _splitPatch(String patch) => patch.split('\n');
 
 String _todoStatusLabel(SessionTodoStatus status) => switch (status) {
   SessionTodoStatus.pending => 'Pending',
