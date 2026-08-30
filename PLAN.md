@@ -134,6 +134,12 @@ La file d'envoi est une fonctionnalite centrale et locale a Prompt.
 - Navigation entre fichiers modifies, commandes de formatage, LSP, MCP et VCS exposes par OpenCode.
 - Les actions sensibles restent soumises aux permissions du serveur et sont toujours visibles dans la conversation.
 
+#### PoC de Contingent Review (Slices 1 et 2)
+
+Pour OpenCode 1.18.25, le PoC resout le diff non vide le plus recent produit par un message utilisateur de la session courante avant de figer le snapshot borne et immuable en memoire (au plus 20 fichiers et 200 000 caracteres de patch). Il propose par defaut deux passes independantes, correctness et security, et permet a l'utilisateur d'ajouter la passe tests/regressions. Chaque passe active utilise un modele distinct dans une session enfant OpenCode portant `parentID`; la selection par defaut maximise la diversite des providers connectes declares par la configuration OpenCode de l'utilisateur avant de reutiliser un provider. La creation est deny-all et chaque requete est tool-free; le diff est transmis comme donnees non fiables dans une demande a sortie JSON Schema structuree.
+
+Le PoC reste strictement en lecture seule: aucun Drift, fichier, workspace, Git, auto-fix, commit ou merge. Chaque passe a un timeout par defaut de 120 secondes et l'execution concurrente des passes une limite globale de 240 secondes apres preparation du snapshot et des sessions enfants. Un repository serialise ses runs. Un timeout declenche immediatement l'abort officiel de l'enfant; le nettoyage est confirme ou signale comme incertain dans un echec type, sans relancer automatiquement le provider. L'etat du run represente les succes partiels, echecs provider, timeout, annulation, metriques, provenance, hypotheses et desaccords sans detruire les opinions originales. La reconciliation utilise un polling REST borne des messages et du statut, et ne declare jamais un resultat sans message assistant termine. Le controle Android est prevu par une facade et un ViewModel adaptatifs; le debat ou l'adjudication au-dela du regroupement des desaccords est reporte.
+
 ### Dictee vocale locale
 
 - Les **Voice settings** sont globaux a l'application, jamais lies a une

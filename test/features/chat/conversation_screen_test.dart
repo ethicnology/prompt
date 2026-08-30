@@ -36,6 +36,7 @@ import 'package:prompt/features/capabilities/presentation/capabilities_view_mode
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/queue/domain/queued_prompt.dart';
 import 'package:prompt/features/queue/domain/prompt_execution_options.dart';
+import 'package:prompt/features/review/review.dart';
 import 'package:prompt/features/sessions/domain/open_code_session.dart';
 import 'package:prompt/features/sessions/domain/session_load_result.dart';
 import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
@@ -336,6 +337,29 @@ class _FakeConversationViewModel extends ConversationViewModel {
   }
 }
 
+class _ReviewRepositoryForScreen implements ReviewRepository {
+  final _progress = StreamController<ReviewRun>.broadcast();
+  @override
+  Stream<ReviewRun> get progress => _progress.stream;
+  @override
+  Future<ReviewSnapshot> loadSnapshot(ReviewTarget target) async =>
+      ReviewSnapshot(
+        target: target,
+        files: const [ReviewFile(path: 'a', status: 'M', patch: 'x')],
+      );
+  @override
+  Future<ReviewRun> start(
+    ReviewTarget target,
+    List<ReviewReviewerConfiguration> configurations, {
+    Duration timeout = const Duration(seconds: 120),
+    Duration globalTimeout = const Duration(seconds: 240),
+  }) async => const ReviewRun(state: ReviewRunState.completed);
+  @override
+  Future<void> cancel() async {}
+  @override
+  Future<void> dispose() => _progress.close();
+}
+
 void main() {
   final profile = ServerProfile(
     origin: Uri.parse('http://10.80.0.1:4096'),
@@ -359,6 +383,7 @@ void main() {
   Future<void> pumpScreen(
     WidgetTester tester, {
     CapabilitiesViewModel? capabilitiesViewModel,
+    ReviewViewModel Function()? reviewViewModelFactory,
     VoiceViewModel? voiceViewModel,
     ThemeData? theme,
     double textScale = 1.0,
@@ -386,6 +411,7 @@ void main() {
           session: session,
           viewModel: viewModel,
           capabilitiesViewModel: capabilitiesViewModel,
+          reviewViewModelFactory: reviewViewModelFactory,
           voiceViewModel: voiceViewModel,
         ),
       ),
@@ -399,6 +425,32 @@ void main() {
     await pumpScreen(tester);
 
     expect(viewModel.openCalled, isTrue);
+  });
+
+  testWidgets('Review diff action opens ReviewScreen through its factory', (
+    tester,
+  ) async {
+    final capabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    capabilities.value = const CapabilitiesReady(
+      OpenCodeCapabilities(models: [], agents: [], commands: []),
+    );
+    await pumpScreen(
+      tester,
+      capabilitiesViewModel: capabilities,
+      reviewViewModelFactory: () =>
+          ReviewViewModel(_ReviewRepositoryForScreen()),
+    );
+    await tester.tap(find.byTooltip('Review diff'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ReviewScreen), findsOneWidget);
+    expect(find.text('Review diff'), findsOneWidget);
   });
 
   testWidgets(

@@ -40,6 +40,7 @@ class OpenCodeTransport {
     String path, {
     Object? body,
     Map<String, String>? headers,
+    Duration timeout = const Duration(seconds: 15),
   }) {
     return _client
         .post(
@@ -47,7 +48,7 @@ class OpenCodeTransport {
           headers: {..._headers(profile, password), ...?headers},
           body: body,
         )
-        .timeout(const Duration(seconds: 15));
+        .timeout(timeout);
   }
 
   Future<http.Response> patch(

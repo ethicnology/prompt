@@ -227,6 +227,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
     final primary = filtered
         .where((session) => session.parentId?.isNotEmpty != true)
         .toList(growable: false);
+    final visibleSessions = query.isEmpty ? primary : filtered;
     final childrenByParent = <String, int>{};
     for (final session in sessions) {
       final parentId = session.parentId;
@@ -250,7 +251,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           onRefresh: () => widget.viewModel.load(widget.profile),
         ),
         Expanded(
-          child: primary.isEmpty
+          child: visibleSessions.isEmpty
               ? _NoMatchingSessions(
                   hasQuery: query.isNotEmpty || selectedProjectId != null,
                   onClear: () {
@@ -265,10 +266,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
                     keyboardDismissBehavior:
                         ScrollViewKeyboardDismissBehavior.onDrag,
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
-                    itemCount: primary.length,
+                    itemCount: visibleSessions.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
-                      final session = primary[index];
+                      final session = visibleSessions[index];
                       return _SessionCard(
                         session: session,
                         activity:

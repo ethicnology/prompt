@@ -29,6 +29,7 @@ import '../features/terminal/data/opencode_terminal_service.dart';
 import '../features/voice/voice.dart';
 import '../features/workspace/workspace.dart';
 import '../features/workspace/data/opencode_workspace_service.dart';
+import '../features/review/review.dart';
 
 /// Owns application-wide objects and their release order.
 ///
@@ -163,6 +164,13 @@ class AppDependencies {
   final http.Client httpClient;
   final Future<PromptLocalStorageHandle> Function() openStorage;
   final ChatRepository chatRepository;
+
+  /// Creates isolated state for one review route.
+  ReviewViewModel createReviewViewModel() => ReviewViewModel(
+    InMemoryReviewRepository(
+      OpenCodeReviewService(transport, credentialsStore: credentialsStore),
+    ),
+  );
 
   PromptLocalStorageHandle? _storage;
   Future<PromptLocalStorageHandle>? _storageFuture;

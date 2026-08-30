@@ -115,6 +115,7 @@ class _PromptAppState extends State<PromptApp> {
                 themeViewModel: _dependencies.themeViewModel,
                 onReconnect: _reconnect,
                 onDisconnect: _disconnect,
+                reviewViewModelFactory: _dependencies.createReviewViewModel,
               ),
       ),
     );

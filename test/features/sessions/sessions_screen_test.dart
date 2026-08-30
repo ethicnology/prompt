@@ -434,6 +434,61 @@ void main() {
     expect(find.text('/srv/known-project'), findsWidgets);
     viewModel.dispose();
   });
+
+  testWidgets('reveals and opens a child session only through search', (
+    tester,
+  ) async {
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response(
+          '[{"id":"project","worktree":"/srv/project"}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session') {
+        return http.Response(_parentAndChildSessionsJson, 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    OpenCodeSession? opened;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SessionsScreen(
+          profile: profile,
+          viewModel: viewModel,
+          onOpenSession: (session) => opened = session,
+          onOpenWorkspace: (_) {},
+          onOpenTerminal: () {},
+          onOpenDiagnostics: () {},
+          onOpenVoiceSettings: () {},
+          onDisconnect: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Parent session'), findsOneWidget);
+    expect(find.text('Child session'), findsNothing);
+
+    await tester.enterText(find.byType(TextField).first, 'child-session');
+    await tester.pump();
+
+    expect(find.text('Child session'), findsOneWidget);
+    await tester.tap(find.text('Child session'));
+    expect(opened?.id, 'child-session');
+    viewModel.dispose();
+  });
 }
 
 const _sessionJson =
@@ -455,6 +510,13 @@ const _unavailableSessionJson =
 const _refreshSessionJson =
     '[{"id":"refresh","projectID":"project","directory":"/srv/project",'
     '"title":"Refresh","time":{"created":1000,"updated":1000}}]';
+
+const _parentAndChildSessionsJson =
+    '[{"id":"parent-session","projectID":"project","directory":"/srv/project",'
+    '"title":"Parent session","time":{"created":1000,"updated":1000}},'
+    '{"id":"child-session","projectID":"project","directory":"/srv/project",'
+    '"title":"Child session","parentID":"parent-session",'
+    '"time":{"created":1000,"updated":1000}}]';
 
 class _PasswordStore implements CredentialsStore {
   const _PasswordStore();

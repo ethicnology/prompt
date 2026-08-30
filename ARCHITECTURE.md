@@ -78,6 +78,12 @@ lib/
 
 `data/` contains concrete infrastructure shared by several features. A feature owns its repository implementation and mapping code when the infrastructure is specific to that feature. `core/` never contains OpenCode product rules, chat behavior, or queue logic.
 
+### Contingent Review PoC
+
+`review` owns a read-only, in-memory review of an existing session diff. For OpenCode 1.18.25, the PoC resolves the latest non-empty user-message diff within the current session before freezing the bounded snapshot. Its immutable snapshot is bounded to 20 files and 200,000 patch characters. A review starts with two independent child-session passes, correctness and security, and the user may add the tests/regressions pass. Every active pass requires a distinct selected model; defaults maximize provider diversity among the connected models reported by the user's OpenCode configuration before falling back to another model from an already selected provider. Children are created with `parentID`, a deny-all permission ruleset, and tool-free prompts. The complete bounded diff is embedded as untrusted repository data and the request uses OpenCode JSON Schema structured output.
+
+The review repository reconciles bounded REST polling of session status and messages. A completed assistant structured result is required before success; idle status alone is insufficient. Each pass has a 120-second default timeout and concurrent pass execution has a 240-second global bound after the snapshot and child sessions are prepared. A timed-out pass immediately requests the official abort and cleanup is confirmed before reporting success; cleanup uncertainty remains a typed partial failure. One repository serializes its runs, preserves successful opinions, and never retries a provider generation automatically. Typed state preserves partial failures, timeout, cancellation, metrics, provider/model provenance, hypotheses, and disagreement groups while retaining each original opinion. Review never writes code, tests, workspaces, Drift, or Git, and never auto-confirms, fixes, commits, or merges. Debate/adjudication beyond disagreement grouping is deferred. The facade and presentation-neutral controller expose this flow for an adaptive Android UI without importing transport into the view model.
+
 The first version may keep files close together while small. Create subdirectories only when they improve discovery; do not create empty layers to satisfy a diagram.
 
 ## Layers

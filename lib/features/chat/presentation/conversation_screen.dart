@@ -22,6 +22,7 @@ import 'widgets/connection_status_banner.dart';
 import 'widgets/queue_panel.dart';
 import 'widgets/session_artifacts_panel.dart';
 import 'widgets/transcript.dart';
+import '../../review/review.dart';
 
 /// The user-facing text for [state], or `null` when nothing needs
 /// announcing (a healthy connection, or the app simply being inactive,
@@ -60,6 +61,7 @@ class ConversationScreen extends StatefulWidget {
     this.capabilitiesViewModel,
     this.voiceViewModel,
     this.onOpenFork,
+    this.reviewViewModelFactory,
     super.key,
   });
 
@@ -69,6 +71,7 @@ class ConversationScreen extends StatefulWidget {
   final CapabilitiesViewModel? capabilitiesViewModel;
   final VoiceViewModel? voiceViewModel;
   final ValueChanged<OpenCodeSession>? onOpenFork;
+  final ReviewViewModel Function()? reviewViewModelFactory;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -448,6 +451,24 @@ class _ConversationScreenState extends State<ConversationScreen>
     if (_transcriptController.hasClients) {
       _transcriptController.jumpTo(0);
     }
+  }
+
+  void _openReview() {
+    final factory = widget.reviewViewModelFactory;
+    final capabilities = widget.capabilitiesViewModel;
+    if (factory == null || capabilities == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ReviewScreen(
+          target: ReviewTarget(
+            profile: widget.profile,
+            session: widget.session,
+          ),
+          viewModel: factory(),
+          capabilitiesViewModel: capabilities,
+        ),
+      ),
+    );
   }
 
   Widget _buildTranscript(
@@ -915,6 +936,13 @@ class _ConversationScreenState extends State<ConversationScreen>
               ],
             ),
             actions: [
+              if (widget.reviewViewModelFactory != null &&
+                  widget.capabilitiesViewModel != null)
+                IconButton(
+                  onPressed: _openReview,
+                  tooltip: 'Review diff',
+                  icon: const Icon(Icons.rate_review_outlined),
+                ),
               if (isDesktop)
                 IconButton(
                   onPressed: widget.viewModel.refreshFromUserAction,

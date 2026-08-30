@@ -11,6 +11,7 @@ import '../../settings/settings.dart';
 import '../../workspace/workspace.dart';
 import '../../terminal/terminal.dart';
 import '../../voice/voice.dart';
+import '../../review/review.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({
@@ -26,6 +27,7 @@ class HomeShell extends StatefulWidget {
     required this.themeViewModel,
     required this.onReconnect,
     required this.onDisconnect,
+    this.reviewViewModelFactory,
     super.key,
   });
 
@@ -41,6 +43,7 @@ class HomeShell extends StatefulWidget {
   final ThemeViewModel themeViewModel;
   final Future<bool> Function() onReconnect;
   final VoidCallback onDisconnect;
+  final ReviewViewModel Function()? reviewViewModelFactory;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -162,6 +165,7 @@ class _HomeShellState extends State<HomeShell> {
                   voiceViewModel: widget.voiceViewModel,
                   onOpenFork: (forked) =>
                       setState(() => _selectedSession = forked),
+                  reviewViewModelFactory: widget.reviewViewModelFactory,
                 ),
                 _ => const _EmptyMasterDetail(),
               },
@@ -242,6 +246,7 @@ class _HomeShellState extends State<HomeShell> {
           capabilitiesViewModel: widget.capabilitiesViewModel,
           voiceViewModel: widget.voiceViewModel,
           onOpenFork: (forked) => _replaceConversation(context, forked),
+          reviewViewModelFactory: widget.reviewViewModelFactory,
         ),
       ),
     );
@@ -258,6 +263,7 @@ class _HomeShellState extends State<HomeShell> {
           capabilitiesViewModel: widget.capabilitiesViewModel,
           voiceViewModel: widget.voiceViewModel,
           onOpenFork: (forked) => _replaceConversation(context, forked),
+          reviewViewModelFactory: widget.reviewViewModelFactory,
         ),
       ),
     );
