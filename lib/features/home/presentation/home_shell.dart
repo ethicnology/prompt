@@ -176,6 +176,13 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
+  Future<void> _reconcileAfterReload() async {
+    await Future.wait([
+      widget.sessionsViewModel.load(widget.profile),
+      widget.capabilitiesViewModel.load(widget.profile),
+    ]);
+  }
+
   double _catalogWidthFor(double totalWidth) {
     final maximum = (totalWidth - 640).clamp(240.0, double.infinity);
     final width = _catalogWidth ?? (totalWidth * .2).clamp(280.0, 400.0);
@@ -197,6 +204,7 @@ class _HomeShellState extends State<HomeShell> {
           themeViewModel: widget.themeViewModel,
           onReconnect: widget.onReconnect,
           onDisconnect: widget.onDisconnect,
+          onReloadReconciled: _reconcileAfterReload,
         ),
       ),
     );

@@ -5,6 +5,7 @@ import '../../../core/platform/local_notification_service.dart';
 import '../../settings/settings.dart';
 import '../../connection/connection.dart';
 import '../domain/diagnostics_snapshot.dart';
+import '../domain/diagnostics_load_result.dart';
 import 'diagnostics_view_model.dart';
 
 class DiagnosticsScreen extends StatefulWidget {
@@ -15,6 +16,7 @@ class DiagnosticsScreen extends StatefulWidget {
     required this.themeViewModel,
     required this.onReconnect,
     required this.onDisconnect,
+    required this.onReloadReconciled,
     super.key,
   });
 
@@ -24,6 +26,7 @@ class DiagnosticsScreen extends StatefulWidget {
   final ThemeViewModel themeViewModel;
   final Future<bool> Function() onReconnect;
   final VoidCallback onDisconnect;
+  final Future<void> Function() onReloadReconciled;
 
   @override
   State<DiagnosticsScreen> createState() => _DiagnosticsScreenState();
@@ -31,6 +34,7 @@ class DiagnosticsScreen extends StatefulWidget {
 
 class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   bool _reconnecting = false;
+  bool _reloading = false;
 
   @override
   void initState() {
@@ -52,6 +56,52 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _reload() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reload OpenCode?'),
+        content: const Text(
+          'Active generations across this server will stop. All project '
+          'instances will be recreated, and configuration, skills, and MCP '
+          'will reload. Sessions remain available. The OpenCode server '
+          'process itself will not be restarted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Reload OpenCode'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || _reloading) {
+      return;
+    }
+    setState(() => _reloading = true);
+    final result = await widget.viewModel.reload();
+    if (result is DiagnosticsReloaded) {
+      await widget.onReloadReconciled();
+    }
+    if (!mounted) return;
+    setState(() => _reloading = false);
+    final message = switch (result) {
+      DiagnosticsReloaded() => 'OpenCode reloaded',
+      DiagnosticsReloadFailed(:final failure) => switch (failure) {
+        DiagnosticsFailure.unavailable => 'OpenCode is unavailable',
+        DiagnosticsFailure.unauthorized => 'OpenCode authorization failed',
+        DiagnosticsFailure.unexpectedResponse => 'Unable to reload OpenCode',
+      },
+    };
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -152,6 +202,23 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                       onRetry: widget.viewModel.refresh,
                     ),
                   },
+                  const SizedBox(height: 16),
+                  Card(
+                    child: ListTile(
+                      leading: _reloading
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync_rounded),
+                      title: const Text('Reload OpenCode'),
+                      subtitle: const Text(
+                        'Reload configuration, skills, and MCP on this server',
+                      ),
+                      onTap: _reloading ? null : _reload,
+                    ),
+                  ),
                 ],
               ),
             ),

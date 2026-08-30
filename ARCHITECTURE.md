@@ -141,6 +141,7 @@ This makes dependencies inspectable and test replacement straightforward without
 - `ChatRepository` is the single source of truth for the active conversation. It reconciles REST message snapshots with SSE events, replays only events newer than an in-flight snapshot, applies removals immediately, and publishes one consolidated state to the view model and queue coordinator.
 - `QueueSendCoordinator` owns dispatch, reconnect gating, and queue transitions, but forwards conversation events to `ChatRepository` instead of reducing a second transcript state.
 - On reconnect, repositories fetch authoritative REST snapshots before declaring state synchronized.
+- Server settings expose an explicit OpenCode reload operation. After confirmation, diagnostics invokes `POST /global/dispose`; OpenCode synchronously disposes all project instances while the HTTP server process remains alive. A successful boolean `true` response refreshes diagnostics, sessions, and capabilities for the active profile, lazily recreating the instances they need with the current configuration, skills, and MCP definitions. Active generations stop, sessions remain available, and no process restart is attempted.
 - The app closes SSE when inactive. It never maintains a background connection or aggressive reconnect loop.
 - Message history is cursor-paginated where the server supports it. Repositories never request an unbounded transcript or tool output to render a mobile screen.
 - Pending permissions and questions are re-fetched before queued work resumes after reconnect or app restart.

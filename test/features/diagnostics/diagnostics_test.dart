@@ -123,6 +123,46 @@ void main() {
     );
   });
 
+  test('reload posts to global dispose and accepts only true', () async {
+    String? method;
+    String? path;
+    final result = await repositoryFor(
+      MockClient((request) async {
+        method = request.method;
+        path = request.url.path;
+        return http.Response('true', 200);
+      }),
+    ).reload(profile);
+
+    expect(method, 'POST');
+    expect(path, '/global/dispose');
+    expect(result, isA<DiagnosticsReloaded>());
+  });
+
+  test('maps an invalid reload response to a typed failure', () async {
+    final result = await repositoryFor(
+      MockClient((_) async => http.Response('false', 200)),
+    ).reload(profile);
+
+    expect(result, isA<DiagnosticsReloadFailed>());
+    expect(
+      (result as DiagnosticsReloadFailed).failure,
+      DiagnosticsFailure.unexpectedResponse,
+    );
+  });
+
+  test('maps an unauthorized reload to a typed failure', () async {
+    final result = await repositoryFor(
+      MockClient((_) async => http.Response('', 401)),
+    ).reload(profile);
+
+    expect(result, isA<DiagnosticsReloadFailed>());
+    expect(
+      (result as DiagnosticsReloadFailed).failure,
+      DiagnosticsFailure.unauthorized,
+    );
+  });
+
   test(
     'view model exposes loading result and refreshes the active profile',
     () async {
@@ -150,6 +190,51 @@ void main() {
       await viewModel.refresh();
       expect(viewModel.value, isA<DiagnosticsReady>());
       expect(calls, 8);
+      viewModel.dispose();
+    },
+  );
+
+  test(
+    'successful reload refreshes diagnostics for the active profile',
+    () async {
+      var mcpCalls = 0;
+      var reloadCalls = 0;
+      final viewModel = DiagnosticsViewModel(
+        repositoryFor(
+          MockClient((request) async {
+            if (request.url.path == '/global/dispose') {
+              reloadCalls++;
+              return http.Response('true', 200);
+            }
+            return switch (request.url.path) {
+              '/global/health' => http.Response(
+                jsonEncode({'healthy': true, 'version': '1.2.3'}),
+                200,
+              ),
+              '/mcp' => http.Response(
+                jsonEncode(
+                  mcpCalls++ == 0
+                      ? <String, dynamic>{}
+                      : {
+                          'reloaded': {'status': 'connected'},
+                        },
+                ),
+                200,
+              ),
+              '/lsp' || '/formatter' => http.Response('[]', 200),
+              _ => http.Response('', 404),
+            };
+          }),
+        ),
+      );
+
+      await viewModel.load(profile);
+      expect((viewModel.value as DiagnosticsReady).snapshot.mcp.total, 0);
+      final result = await viewModel.reload();
+
+      expect(result, isA<DiagnosticsReloaded>());
+      expect(reloadCalls, 1);
+      expect((viewModel.value as DiagnosticsReady).snapshot.mcp.connected, 1);
       viewModel.dispose();
     },
   );
@@ -209,6 +294,7 @@ void main() {
           themeViewModel: themeViewModel(),
           onReconnect: () async => true,
           onDisconnect: () {},
+          onReloadReconciled: () async {},
         ),
       ),
     );
@@ -222,6 +308,74 @@ void main() {
     expect(find.text('private-formatter'), findsNothing);
     viewModel.dispose();
   });
+
+  testWidgets(
+    'confirms and executes reload once, then invokes reconciliation',
+    (tester) async {
+      var disposeCalls = 0;
+      var reconciliationCalls = 0;
+      final viewModel = DiagnosticsViewModel(
+        repositoryFor(
+          MockClient((request) async {
+            if (request.url.path == '/global/dispose') {
+              disposeCalls++;
+              return http.Response('true', 200);
+            }
+            return switch (request.url.path) {
+              '/global/health' => http.Response(
+                jsonEncode({'healthy': true, 'version': '1.2.3'}),
+                200,
+              ),
+              '/mcp' => http.Response('{}', 200),
+              '/lsp' || '/formatter' => http.Response('[]', 200),
+              _ => http.Response('', 404),
+            };
+          }),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DiagnosticsScreen(
+            profile: profile,
+            viewModel: viewModel,
+            localNotificationService: LocalNotificationService(
+              const _UnavailableNotifications(),
+            ),
+            themeViewModel: themeViewModel(),
+            onReconnect: () async => true,
+            onDisconnect: () {},
+            onReloadReconciled: () async => reconciliationCalls++,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Reload OpenCode'),
+        400,
+        scrollable: find.byType(Scrollable),
+      );
+      await tester.tap(find.widgetWithText(ListTile, 'Reload OpenCode'));
+      await tester.pump();
+
+      expect(
+        find.textContaining('Active generations across this server will stop.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'The OpenCode server process itself will not be restarted.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Reload OpenCode'));
+      await tester.pumpAndSettle();
+
+      expect(disposeCalls, 1);
+      expect(reconciliationCalls, 1);
+      expect(find.text('OpenCode reloaded'), findsOneWidget);
+      viewModel.dispose();
+    },
+  );
 
   testWidgets('refreshes server settings with pull to refresh', (tester) async {
     var calls = 0;
@@ -252,6 +406,7 @@ void main() {
           themeViewModel: themeViewModel(),
           onReconnect: () async => true,
           onDisconnect: () {},
+          onReloadReconciled: () async {},
         ),
       ),
     );
@@ -294,6 +449,7 @@ void main() {
           themeViewModel: theme,
           onReconnect: () async => true,
           onDisconnect: () {},
+          onReloadReconciled: () async {},
         ),
       ),
     );

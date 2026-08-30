@@ -56,4 +56,18 @@ class DiagnosticsViewModel extends ValueNotifier<DiagnosticsUiState> {
       await load(profile);
     }
   }
+
+  Future<DiagnosticsReloadResult> reload() async {
+    final profile = _profile;
+    if (profile == null) {
+      return const DiagnosticsReloadFailed(
+        DiagnosticsFailure.unexpectedResponse,
+      );
+    }
+    final result = await _repository.reload(profile);
+    if (result is DiagnosticsReloaded) {
+      await load(profile);
+    }
+    return result;
+  }
 }

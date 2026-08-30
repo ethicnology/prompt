@@ -17,3 +17,17 @@ class DiagnosticsLoadFailed extends DiagnosticsLoadResult {
 }
 
 enum DiagnosticsFailure { unavailable, unauthorized, unexpectedResponse }
+
+sealed class DiagnosticsReloadResult {
+  const DiagnosticsReloadResult();
+}
+
+class DiagnosticsReloaded extends DiagnosticsReloadResult {
+  const DiagnosticsReloaded();
+}
+
+class DiagnosticsReloadFailed extends DiagnosticsReloadResult {
+  const DiagnosticsReloadFailed(this.failure);
+
+  final DiagnosticsFailure failure;
+}

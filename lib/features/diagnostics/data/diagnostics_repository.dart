@@ -34,4 +34,31 @@ class DiagnosticsRepository {
       return const DiagnosticsLoadFailed(DiagnosticsFailure.unexpectedResponse);
     }
   }
+
+  Future<DiagnosticsReloadResult> reload(ServerProfile profile) async {
+    try {
+      final password = await _credentialsStore.readPassword(profile.id);
+      await _service.disposeGlobalInstances(profile, password);
+      return const DiagnosticsReloaded();
+    } on OpenCodeHttpFailure catch (failure) {
+      return DiagnosticsReloadFailed(_httpFailure(failure.statusCode));
+    } on TimeoutException {
+      return const DiagnosticsReloadFailed(DiagnosticsFailure.unavailable);
+    } on InvalidOpenCodeOrigin {
+      return const DiagnosticsReloadFailed(
+        DiagnosticsFailure.unexpectedResponse,
+      );
+    } on http.ClientException {
+      return const DiagnosticsReloadFailed(DiagnosticsFailure.unavailable);
+    } on FormatException {
+      return const DiagnosticsReloadFailed(
+        DiagnosticsFailure.unexpectedResponse,
+      );
+    }
+  }
+
+  DiagnosticsFailure _httpFailure(int statusCode) =>
+      statusCode == 401 || statusCode == 403
+      ? DiagnosticsFailure.unauthorized
+      : DiagnosticsFailure.unexpectedResponse;
 }

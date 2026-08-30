@@ -31,6 +31,24 @@ class OpenCodeDiagnosticsService {
     );
   }
 
+  Future<void> disposeGlobalInstances(
+    ServerProfile profile,
+    String? password,
+  ) async {
+    final response = await _transport.post(
+      profile,
+      password,
+      '/global/dispose',
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw OpenCodeHttpFailure(response.statusCode);
+    }
+    final value = jsonDecode(response.body);
+    if (value != true) {
+      throw const FormatException('Global dispose response is malformed.');
+    }
+  }
+
   Future<http.Response> _get(
     ServerProfile profile,
     String? password,
