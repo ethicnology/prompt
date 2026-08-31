@@ -53,15 +53,11 @@ class ReviewSnapshot {
     if (files.isEmpty) {
       throw const ReviewValidationException('The session diff is empty.');
     }
-    if (files.length > 20) {
-      throw const ReviewValidationException(
-        'The session diff has too many files.',
-      );
-    }
-    if (files.fold<int>(0, (sum, file) => sum + file.patch.length) > 200000) {
-      throw const ReviewValidationException('The session diff is too large.');
-    }
   }
+
+  /// Reopens a persisted snapshot, including a server response with no files.
+  ReviewSnapshot.stored({required this.target, required List<ReviewFile> files})
+    : files = List.unmodifiable(files);
   final ReviewTarget target;
   final List<ReviewFile> files;
   String get fullDiff => files

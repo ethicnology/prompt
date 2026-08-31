@@ -64,10 +64,58 @@ class OpenCodeProviderRecord {
 }
 
 class OpenCodeModelRecord {
-  const OpenCodeModelRecord({required this.id, required this.name});
+  const OpenCodeModelRecord({
+    required this.id,
+    required this.name,
+    this.pricing,
+    this.limits,
+    this.releaseDate,
+    this.status,
+    this.capabilities = const [],
+  });
 
   final String id;
   final String name;
+  final OpenCodeModelPricingRecord? pricing;
+  final OpenCodeModelLimitsRecord? limits;
+  final String? releaseDate;
+  final String? status;
+  final List<String> capabilities;
+}
+
+class OpenCodeModelPricingRecord {
+  const OpenCodeModelPricingRecord({
+    this.input,
+    this.output,
+    this.cacheRead,
+    this.cacheWrite,
+    this.tiers = const [],
+    this.experimentalOver200K = false,
+  });
+  final double? input;
+  final double? output;
+  final double? cacheRead;
+  final double? cacheWrite;
+  final List<OpenCodeModelPricingTierRecord> tiers;
+  final bool experimentalOver200K;
+}
+
+class OpenCodeModelPricingTierRecord {
+  const OpenCodeModelPricingTierRecord({
+    required this.contextOver,
+    this.input,
+    this.output,
+  });
+  final int contextOver;
+  final double? input;
+  final double? output;
+}
+
+class OpenCodeModelLimitsRecord {
+  const OpenCodeModelLimitsRecord({this.context, this.input, this.output});
+  final int? context;
+  final int? input;
+  final int? output;
 }
 
 class OpenCodeAgentRecord {
@@ -140,8 +188,72 @@ OpenCodeModelRecord _parseModel(String id, Object? value) {
   if (value is! Map<String, dynamic> || value['name'] is! String) {
     throw const FormatException('Model is malformed.');
   }
-  return OpenCodeModelRecord(id: id, name: value['name'] as String);
+  return OpenCodeModelRecord(
+    id: id,
+    name: value['name'] as String,
+    pricing: _parsePricing(value['cost']),
+    limits: _parseLimits(value['limit']),
+    releaseDate: value['releaseDate'] is String
+        ? value['releaseDate'] as String
+        : null,
+    status: value['status'] is String ? value['status'] as String : null,
+    capabilities: _parseStrings(value['capabilities']),
+  );
 }
+
+double? _price(Object? value) {
+  final number = value is num ? value.toDouble() : null;
+  return number != null && number.isFinite && number > 0 ? number : null;
+}
+
+OpenCodeModelPricingRecord? _parsePricing(Object? value) {
+  if (value is! Map<String, dynamic>) return null;
+  final tiers = <OpenCodeModelPricingTierRecord>[];
+  if (value['tiers'] is List) {
+    for (final item in value['tiers'] as List) {
+      if (item is Map<String, dynamic> && item['contextOver'] is num) {
+        tiers.add(
+          OpenCodeModelPricingTierRecord(
+            contextOver: (item['contextOver'] as num).toInt(),
+            input: _price(item['input']),
+            output: _price(item['output']),
+          ),
+        );
+      }
+    }
+  }
+  final cache = value['cache'];
+  final cacheMap = cache is Map<String, dynamic>
+      ? cache
+      : const <String, dynamic>{};
+  return OpenCodeModelPricingRecord(
+    input: _price(value['input']),
+    output: _price(value['output']),
+    cacheRead: _price(cacheMap['read']),
+    cacheWrite: _price(cacheMap['write']),
+    tiers: List.unmodifiable(tiers),
+    experimentalOver200K:
+        value['experimentalOver200K'] is bool &&
+        value['experimentalOver200K'] as bool,
+  );
+}
+
+OpenCodeModelLimitsRecord? _parseLimits(Object? value) {
+  if (value is! Map<String, dynamic>) return null;
+  int? positive(Object? candidate) =>
+      candidate is num && candidate.isFinite && candidate > 0
+      ? candidate.toInt()
+      : null;
+  return OpenCodeModelLimitsRecord(
+    context: positive(value['context']),
+    input: positive(value['input']),
+    output: positive(value['output']),
+  );
+}
+
+List<String> _parseStrings(Object? value) => value is List
+    ? value.whereType<String>().toList(growable: false)
+    : const [];
 
 List<OpenCodeAgentRecord> _parseAgents(Object? value) {
   if (value is! List) {

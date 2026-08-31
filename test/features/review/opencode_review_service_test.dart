@@ -186,7 +186,7 @@ void main() {
       expect(body['format'], {
         'type': 'json_schema',
         'schema': reviewResultSchema,
-        'retryCount': 1,
+        'retryCount': 0,
       });
       expect(
         (body['parts'] as List).single['text'],

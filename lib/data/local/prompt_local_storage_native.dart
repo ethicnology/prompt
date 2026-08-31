@@ -11,6 +11,7 @@ import '../../core/security/database_key_store.dart';
 import '../../core/security/secure_database_key_store.dart';
 import '../../features/connection/connection.dart';
 import '../../features/queue/queue.dart';
+import '../../features/review/review.dart';
 import 'database_open_failure.dart';
 import 'prompt_database.dart';
 import 'prompt_local_storage_handle.dart';
@@ -98,6 +99,7 @@ openPromptLocalStorage({
     PromptLocalStorageHandle(
       serverProfiles: DriftServerProfileStore(database),
       queuedPrompts: DriftQueuePromptsDao(database),
+      reviewHistory: DriftReviewHistoryStore(database),
       closeHandle: database.close,
     ),
   );

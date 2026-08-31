@@ -6,6 +6,7 @@ import 'package:prompt/app/app_dependencies.dart';
 import 'package:prompt/data/local/prompt_local_storage_handle.dart';
 import 'package:prompt/features/connection/connection.dart';
 import 'package:prompt/features/queue/queue.dart';
+import 'package:prompt/features/review/review.dart';
 import 'package:prompt/features/settings/settings.dart';
 
 void main() {
@@ -20,6 +21,7 @@ void main() {
         return PromptLocalStorageHandle(
           serverProfiles: serverProfiles,
           queuedPrompts: queuedPrompts,
+          reviewHistory: InMemoryReviewHistoryStore(),
           closeHandle: () async {},
         );
       },
@@ -57,6 +59,7 @@ void main() {
         PromptLocalStorageHandle(
           serverProfiles: InMemoryServerProfileStore(),
           queuedPrompts: InMemoryQueuePromptsDao(),
+          reviewHistory: InMemoryReviewHistoryStore(),
           closeHandle: () async {},
         ),
       );
@@ -77,6 +80,7 @@ void main() {
         return PromptLocalStorageHandle(
           serverProfiles: InMemoryServerProfileStore(),
           queuedPrompts: InMemoryQueuePromptsDao(),
+          reviewHistory: InMemoryReviewHistoryStore(),
           closeHandle: () async {},
         );
       },
@@ -105,6 +109,7 @@ void main() {
         PromptLocalStorageHandle(
           serverProfiles: InMemoryServerProfileStore(),
           queuedPrompts: InMemoryQueuePromptsDao(),
+          reviewHistory: InMemoryReviewHistoryStore(),
           closeHandle: () async => closes++,
         ),
       );
@@ -128,6 +133,7 @@ void main() {
       PromptLocalStorageHandle(
         serverProfiles: InMemoryServerProfileStore(),
         queuedPrompts: InMemoryQueuePromptsDao(),
+        reviewHistory: InMemoryReviewHistoryStore(),
         closeHandle: () async {},
       ),
     );

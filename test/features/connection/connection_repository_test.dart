@@ -124,6 +124,9 @@ class _FakeCredentialsStore implements CredentialsStore {
 
 class _FakeServerProfileStore implements ServerProfileStore {
   @override
+  Future<ServerProfile?> load(String id) async => null;
+
+  @override
   Future<ServerProfile?> loadLast() async => null;
 
   @override

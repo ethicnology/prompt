@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../features/connection/connection.dart';
 import '../../features/queue/queue.dart';
+import '../../features/review/review.dart';
 
 /// A resolved local-storage backend for the current platform, bundling the
 /// stores the composition root wires into repositories together with how
@@ -21,12 +22,14 @@ class PromptLocalStorageHandle {
   const PromptLocalStorageHandle({
     required this.serverProfiles,
     required this.queuedPrompts,
+    required this.reviewHistory,
     required Future<void> Function() closeHandle,
     // ignore: prefer_initializing_formals
   }) : _closeHandle = closeHandle;
 
   final ServerProfileStore serverProfiles;
   final QueuePromptsDao queuedPrompts;
+  final ReviewHistoryStore reviewHistory;
   final Future<void> Function() _closeHandle;
 
   Future<void> close() => _closeHandle();

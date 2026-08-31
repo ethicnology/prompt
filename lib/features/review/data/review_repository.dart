@@ -9,8 +9,8 @@ abstract interface class ReviewRepository {
   Future<ReviewRun> start(
     ReviewTarget target,
     List<ReviewReviewerConfiguration> configurations, {
-    Duration timeout = const Duration(seconds: 120),
-    Duration globalTimeout = const Duration(seconds: 240),
+    Duration timeout = const Duration(minutes: 30),
+    Duration globalTimeout = const Duration(minutes: 35),
   });
   Future<void> cancel();
   Future<void> dispose();
@@ -43,8 +43,8 @@ class InMemoryReviewRepository implements ReviewRepository {
   Future<ReviewRun> start(
     ReviewTarget target,
     List<ReviewReviewerConfiguration> configurations, {
-    Duration timeout = const Duration(seconds: 120),
-    Duration globalTimeout = const Duration(seconds: 240),
+    Duration timeout = const Duration(minutes: 30),
+    Duration globalTimeout = const Duration(minutes: 35),
   }) async {
     if (configurations.length < 2 ||
         configurations.length > ReviewRole.values.length ||

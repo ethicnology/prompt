@@ -79,12 +79,17 @@ class AppDependencies {
       OpenCodeChatService(resolvedTransport),
       credentials,
     );
+    late AppDependencies dependencies;
     final sessionsRepository = SessionsRepository(
       OpenCodeSessionsService(resolvedTransport),
       credentials,
+      onSessionsDeleted: (profile, ids) async =>
+          (await dependencies.ensureStorage()).reviewHistory.deleteForSessions(
+            profile.id,
+            ids,
+          ),
     );
 
-    late AppDependencies dependencies;
     dependencies = AppDependencies._(
       connectionViewModel: ConnectionViewModel(
         ConnectionRepository(
@@ -170,6 +175,7 @@ class AppDependencies {
     InMemoryReviewRepository(
       OpenCodeReviewService(transport, credentialsStore: credentialsStore),
     ),
+    historyStoreProvider: () async => (await ensureStorage()).reviewHistory,
   );
 
   PromptLocalStorageHandle? _storage;

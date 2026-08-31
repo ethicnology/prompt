@@ -173,10 +173,10 @@ void main() {
     );
   });
 
-  test('uses the 120 second default pass timeout', () async {
+  test('uses the 30 minute default pass timeout', () async {
     final fake = FakeReviewService();
     await InMemoryReviewRepository(fake).start(target(), configs(2));
-    expect(fake.timeouts, everyElement(const Duration(seconds: 120)));
+    expect(fake.timeouts, everyElement(const Duration(minutes: 30)));
   });
 
   test('rejects an overlapping run on the same repository', () async {

@@ -33,7 +33,7 @@ void main() {
 
     final row = await _readPrompt(database!);
 
-    await _expectVersion4(database!);
+    await _expectVersion6(database!);
     expect(row.id, 'legacy-v1-prompt');
     expect(row.serverProfileId, 'legacy-profile');
     expect(row.sessionId, 'legacy-session');
@@ -53,14 +53,14 @@ void main() {
   });
 
   test(
-    'migrates v2 to v4 and preserves model options with default operation fields',
+    'migrates v2 to v6 and preserves model options with default operation fields',
     () async {
       _createFixture(databaseFile, version: 2);
       database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
 
       final row = await _readPrompt(database!);
 
-      await _expectVersion4(database!);
+      await _expectVersion6(database!);
       expect(row.id, 'legacy-v2-prompt');
       expect(row.serverProfileId, 'legacy-profile');
       expect(row.sessionId, 'legacy-session');
@@ -81,14 +81,14 @@ void main() {
   );
 
   test(
-    'migrates v3 to v4 and preserves operation fields with nullable attachments',
+    'migrates v3 to v6 and preserves operation fields with nullable attachments',
     () async {
       _createFixture(databaseFile, version: 3);
       database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
 
       final row = await _readPrompt(database!);
 
-      await _expectVersion4(database!);
+      await _expectVersion6(database!);
       expect(row.id, 'legacy-v3-prompt');
       expect(row.serverProfileId, 'legacy-profile');
       expect(row.sessionId, 'legacy-session');
@@ -107,17 +107,46 @@ void main() {
       expect(row.attachmentsJson, isNull);
     },
   );
+
+  test('migrates v4 to v6 with review tables and foreign keys enabled', () async {
+    _createFixture(databaseFile, version: 4);
+    database = PromptDatabase.forTesting(NativeDatabase(databaseFile));
+    expect((await _readPrompt(database!)).id, 'legacy-v4-prompt');
+    await _expectVersion6(database!);
+    final foreignKeys = await database!
+        .customSelect('PRAGMA foreign_keys')
+        .getSingle();
+    expect(foreignKeys.data['foreign_keys'], 1);
+    final tables = await database!
+        .customSelect(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'review_%'",
+        )
+        .get();
+    expect(
+      tables.map((table) => table.data['name']),
+      containsAll(<String>[
+        'review_runs',
+        'review_files',
+        'review_passes',
+        'review_opinions',
+        'review_findings',
+        'review_evidence_entries',
+        'review_disagreements',
+        'review_disagreement_sources',
+      ]),
+    );
+  });
 }
 
 Future<QueuedPrompt> _readPrompt(PromptDatabase database) {
   return (database.select(database.queuedPrompts)..limit(1)).getSingle();
 }
 
-Future<void> _expectVersion4(PromptDatabase database) async {
+Future<void> _expectVersion6(PromptDatabase database) async {
   final version = await database
       .customSelect('PRAGMA user_version')
       .getSingle();
-  expect(version.data['user_version'], 4);
+  expect(version.data['user_version'], 6);
 }
 
 void _createFixture(File file, {required int version}) {

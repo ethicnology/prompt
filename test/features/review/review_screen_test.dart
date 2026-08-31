@@ -13,6 +13,7 @@ import 'package:prompt/features/capabilities/domain/open_code_model.dart';
 import 'package:prompt/features/capabilities/presentation/capabilities_view_model.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/review/data/review_repository.dart';
+import 'package:prompt/features/review/data/review_history_store.dart';
 import 'package:prompt/features/review/domain/review_entities.dart';
 import 'package:prompt/features/review/presentation/review_screen.dart';
 import 'package:prompt/features/review/presentation/review_view_model.dart';
@@ -111,6 +112,7 @@ CapabilitiesViewModel _capabilities(List<OpenCodeModel> models) {
 Widget _screen(ReviewViewModel review, CapabilitiesViewModel capabilities) =>
     MaterialApp(
       home: ReviewScreen(
+        key: UniqueKey(),
         target: _target,
         viewModel: review,
         capabilitiesViewModel: capabilities,
@@ -159,6 +161,37 @@ ReviewOpinion _opinion(ReviewRole role, {bool finding = true}) => ReviewOpinion(
           ),
         ]
       : const [],
+);
+
+ReviewRun _historyRun() => ReviewRun(
+  state: ReviewRunState.partiallyFailed,
+  snapshot: ReviewSnapshot.stored(
+    target: _target,
+    files: const [
+      ReviewFile(path: 'a.dart', status: 'modified', patch: 'patch'),
+      ReviewFile(path: 'b.dart', status: 'added', patch: 'patch'),
+    ],
+  ),
+  passes: [
+    _pass(
+      ReviewRole.correctness,
+      ReviewPassState.succeeded,
+      opinion: _opinion(ReviewRole.correctness),
+    ),
+    _pass(
+      ReviewRole.security,
+      ReviewPassState.failed,
+      opinion: _opinion(ReviewRole.security),
+    ),
+  ],
+);
+
+StoredReview _stored(String id, ReviewRun run) => StoredReview(
+  id: id,
+  serverProfileId: _target.profile.id,
+  sessionId: _target.session.id,
+  createdAt: DateTime.utc(2026),
+  run: run,
 );
 
 void main() {
@@ -467,4 +500,141 @@ void main() {
       );
     },
   );
+
+  testWidgets('renders each history state explicitly', (tester) async {
+    final vm = ReviewViewModel(_FakeRepository(_snapshot));
+    await tester.pumpWidget(_screen(vm, _capabilities(_models)));
+    await tester.pump();
+    for (final stateAndText in <(ReviewHistoryState, String)>[
+      (const ReviewHistoryLoading(), 'Loading review history…'),
+      (const ReviewHistoryEmpty(), 'No stored reviews yet.'),
+      (const ReviewHistoryFailed(), 'Review history is unavailable.'),
+    ]) {
+      vm.historyState.value = stateAndText.$1;
+      await tester.pump();
+      expect(find.text(stateAndText.$2), findsOneWidget);
+    }
+  });
+
+  testWidgets('history rows show counts and open/delete safely', (
+    tester,
+  ) async {
+    final store = InMemoryReviewHistoryStore();
+    await store.save(_stored('history', _historyRun()));
+    final repository = _FakeRepository(_snapshot);
+    final vm = ReviewViewModel(
+      repository,
+      historyStoreProvider: () async => store,
+    );
+    await tester.pumpWidget(_screen(vm, _capabilities(_models)));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('2 files · 2 reviewers · 2 hypotheses'), findsOneWidget);
+    await tester.tap(find.byTooltip('Open stored review'));
+    await tester.pump();
+    expect(find.text('Review partially failed'), findsOneWidget);
+    expect(repository.started, isEmpty);
+    await tester.tap(find.text('New review'));
+    await tester.pump();
+    expect(find.text('Contingent review'), findsOneWidget);
+    await tester.tap(find.byTooltip('Delete stored review'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pump();
+    expect(await store.load('history'), isNotNull);
+    await tester.tap(find.byTooltip('Delete stored review'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+    expect(await store.load('history'), isNull);
+  });
+
+  testWidgets(
+    'cost card uses typed pricing, limits, and updates with reviewers',
+    (tester) async {
+      final models = [
+        for (var i = 0; i < 3; i++)
+          OpenCodeModel(
+            providerId: 'provider$i',
+            id: 'model$i',
+            name: 'Model $i',
+            isProviderConnected: true,
+            pricing: const OpenCodeModelPricing(input: 2),
+            limits: const OpenCodeModelLimits(input: 1),
+          ),
+      ];
+      final vm = ReviewViewModel(_FakeRepository(_snapshot));
+      await tester.pumpWidget(_screen(vm, _capabilities(models)));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('review-cost-estimate')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('input tokens'), findsOneWidget);
+      expect(
+        find.textContaining('Theoretical minimum input: USD'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Context/input limit warning'), findsWidgets);
+      await tester.tap(find.text('Add reviewer'));
+      await tester.pump();
+      expect(find.textContaining('input tokens'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('remove-reviewer-testsAndRegressions')),
+      );
+      await tester.pump();
+
+      final unknownVm = ReviewViewModel(_FakeRepository(_snapshot));
+      await tester.pumpWidget(_screen(unknownVm, _capabilities(_models)));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('USD: unavailable'), findsOneWidget);
+      expect(find.textContaining('Unknown pricing:'), findsOneWidget);
+    },
+  );
+
+  testWidgets('review diff keeps raw file paths and independent controls', (
+    tester,
+  ) async {
+    final snapshot = ReviewSnapshot.stored(
+      target: _target,
+      files: const [
+        ReviewFile(
+          path: 'lib/first.dart',
+          status: 'modified',
+          patch: '@@ -1 +1 @@\n-old\n+new',
+        ),
+        ReviewFile(
+          path: 'lib/second.dart',
+          status: 'added',
+          patch: '@@ -1 +1 @@\n-old2\n+new2',
+        ),
+      ],
+    );
+    final vm = ReviewViewModel(_FakeRepository(snapshot));
+    await tester.pumpWidget(_screen(vm, _capabilities(_models)));
+    await tester.pump();
+    vm.value = ReviewRun(state: ReviewRunState.completed, snapshot: snapshot);
+    await tester.pump();
+    final diffTab = find.text('Diff').first;
+    await tester.ensureVisible(diffTab);
+    await tester.tap(diffTab);
+    await tester.pump();
+    final diffPanel = find.text('Diff').last;
+    await tester.ensureVisible(diffPanel);
+    await tester.tap(diffPanel);
+    await tester.pump();
+    expect(find.text('lib/first.dart'), findsOneWidget);
+    expect(find.text('lib/second.dart'), findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsWidgets);
+    final toggles = find.byIcon(Icons.expand_less);
+    expect(toggles, findsNWidgets(2));
+    final firstToggle = find.ancestor(
+      of: toggles.first,
+      matching: find.byType(IconButton),
+    );
+    tester.widget<IconButton>(firstToggle).onPressed!();
+    await tester.pump();
+    expect(find.text('new'), findsNothing);
+    expect(find.text('new2'), findsOneWidget);
+  });
 }

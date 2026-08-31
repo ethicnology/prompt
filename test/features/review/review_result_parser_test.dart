@@ -128,18 +128,18 @@ void main() {
       throwsA(isA<ReviewValidationException>()),
     );
     expect(
-      () => ReviewSnapshot(
+      ReviewSnapshot(
         target: target,
         files: List.generate(21, (_) => file()),
-      ),
-      throwsA(isA<ReviewValidationException>()),
+      ).files.length,
+      21,
     );
     expect(
-      () => ReviewSnapshot(
+      ReviewSnapshot(
         target: target,
         files: [ReviewFile(path: 'x', status: 'modified', patch: 'x' * 200001)],
-      ),
-      throwsA(isA<ReviewValidationException>()),
+      ).files.single.patch.length,
+      200001,
     );
   });
 }

@@ -14,10 +14,19 @@ import '../domain/session_activity.dart';
 import 'opencode_sessions_service.dart';
 
 class SessionsRepository {
-  SessionsRepository(this._sessionsService, this._credentialsStore);
+  SessionsRepository(
+    this._sessionsService,
+    this._credentialsStore, {
+    this.onSessionsDeleted,
+  });
 
   final OpenCodeSessionsService _sessionsService;
   final CredentialsStore _credentialsStore;
+  final Future<void> Function(
+    ServerProfile profile,
+    Iterable<String> sessionIds,
+  )?
+  onSessionsDeleted;
 
   Future<SessionLoadResult> load(ServerProfile profile) async {
     try {
@@ -277,18 +286,35 @@ class SessionsRepository {
         }
       }
 
+      final deletedIds = <String>[];
       Future<void> deleteTree(OpenCodeSession target) async {
         for (final child in byParent[target.id] ?? const []) {
           await deleteTree(_toDomain(child));
         }
         await _sessionsService.abortSession(profile, password, target);
         await _sessionsService.deleteSession(profile, password, target);
+        deletedIds.add(target.id);
       }
 
       // Deleting a busy session alone does not guarantee that its running
       // process is stopped. Descendants are independent OpenCode sessions, so
       // delete them first and let OpenCode cascade each session's DB records.
-      await deleteTree(session);
+      try {
+        await deleteTree(session);
+      } catch (_) {
+        // Preserve history for nodes whose remote deletion did not complete,
+        // while cleaning the descendants already confirmed by the server.
+        try {
+          await onSessionsDeleted?.call(profile, deletedIds);
+        } catch (_) {}
+        rethrow;
+      }
+      try {
+        await onSessionsDeleted?.call(profile, deletedIds);
+      } catch (_) {
+        // Remote deletion succeeded; local cleanup is best effort and must not
+        // turn a successful server mutation into a false remote failure.
+      }
     });
   }
 

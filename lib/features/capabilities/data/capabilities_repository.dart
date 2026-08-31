@@ -32,6 +32,35 @@ class CapabilitiesRepository {
                   id: model.id,
                   name: model.name,
                   isProviderConnected: provider.isConnected,
+                  pricing: model.pricing == null
+                      ? null
+                      : OpenCodeModelPricing(
+                          input: model.pricing!.input,
+                          output: model.pricing!.output,
+                          cacheRead: model.pricing!.cacheRead,
+                          cacheWrite: model.pricing!.cacheWrite,
+                          experimentalOver200K:
+                              model.pricing!.experimentalOver200K,
+                          tiers: model.pricing!.tiers
+                              .map(
+                                (tier) => OpenCodeModelPricingTier(
+                                  contextOver: tier.contextOver,
+                                  input: tier.input,
+                                  output: tier.output,
+                                ),
+                              )
+                              .toList(growable: false),
+                        ),
+                  limits: model.limits == null
+                      ? null
+                      : OpenCodeModelLimits(
+                          context: model.limits!.context,
+                          input: model.limits!.input,
+                          output: model.limits!.output,
+                        ),
+                  releaseDate: model.releaseDate,
+                  status: model.status,
+                  capabilities: model.capabilities,
                 ),
           ],
           agents: record.agents.map(_toAgent).toList(growable: false),

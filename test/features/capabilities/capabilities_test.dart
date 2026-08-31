@@ -139,6 +139,62 @@ void main() {
   });
 
   test(
+    'retains model pricing and limits while treating invalid prices as unknown',
+    () async {
+      final client = MockClient(
+        (request) async => switch (request.url.path) {
+          '/provider' => http.Response(
+            jsonEncode({
+              'all': [
+                {
+                  'id': 'catalog',
+                  'models': {
+                    'known': {
+                      'name': 'Known',
+                      'cost': {
+                        'input': 1.25,
+                        'output': 2,
+                        'cache': {'read': 0.1, 'write': 0.2},
+                        'experimentalOver200K': true,
+                      },
+                      'limit': {'context': 100, 'input': 80},
+                      'releaseDate': '2026-01-01',
+                      'status': 'active',
+                      'capabilities': ['reasoning'],
+                    },
+                    'unknown': {
+                      'name': 'Unknown',
+                      'cost': {'input': 0, 'output': 'bad', 'cache': null},
+                      'limit': {'input': 'bad'},
+                    },
+                  },
+                },
+              ],
+              'connected': ['catalog'],
+            }),
+            200,
+          ),
+          '/agent' => http.Response('[]', 200),
+          '/command' => http.Response('[]', 200),
+          _ => http.Response('', 404),
+        },
+      );
+      final record = await OpenCodeCapabilitiesService(
+        OpenCodeTransport(client),
+      ).fetch(profile, null);
+      final known = record.providers.single.models.first;
+      final unknown = record.providers.single.models.last;
+      expect(known.pricing, isA<OpenCodeModelPricingRecord>());
+      expect(known.pricing!.input, 1.25);
+      expect(known.limits!.context, 100);
+      expect(known.capabilities, ['reasoning']);
+      expect(unknown.pricing!.input, isNull);
+      expect(unknown.pricing!.output, isNull);
+      expect(record.providers.single.isConnected, isTrue);
+    },
+  );
+
+  test(
     'ignores unsupported commands without hiding models and agents',
     () async {
       final client = MockClient((request) async {

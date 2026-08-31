@@ -7,6 +7,7 @@ abstract interface class ServerProfileStore {
   Future<void> save(ServerProfile profile);
 
   Future<ServerProfile?> loadLast();
+  Future<ServerProfile?> load(String id);
 }
 
 class LazyServerProfileStore implements ServerProfileStore {
@@ -28,6 +29,9 @@ class LazyServerProfileStore implements ServerProfileStore {
   Future<ServerProfile?> loadLast() async {
     return (await _resolve()).loadLast();
   }
+
+  @override
+  Future<ServerProfile?> load(String id) async => (await _resolve()).load(id);
 }
 
 /// Web's memory-only default: never persists past the current page
@@ -43,6 +47,10 @@ class InMemoryServerProfileStore implements ServerProfileStore {
 
   @override
   Future<ServerProfile?> loadLast() async => _last;
+
+  @override
+  Future<ServerProfile?> load(String id) async =>
+      _last?.id == id ? _last : null;
 }
 
 class DriftServerProfileStore implements ServerProfileStore {
@@ -81,5 +89,17 @@ class DriftServerProfileStore implements ServerProfileStore {
       return null;
     }
     return ServerProfile(origin: origin, username: row.username);
+  }
+
+  @override
+  Future<ServerProfile?> load(String id) async {
+    final row = await (_database.select(
+      _database.serverProfiles,
+    )..where((table) => table.id.equals(id))).getSingleOrNull();
+    if (row == null) return null;
+    final origin = Uri.tryParse(row.origin);
+    return origin == null
+        ? null
+        : ServerProfile(origin: origin, username: row.username);
   }
 }

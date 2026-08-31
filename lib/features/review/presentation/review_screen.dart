@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../capabilities/capabilities.dart';
+import '../../diff/diff.dart';
 import '../domain/review_entities.dart';
 import 'review_view_model.dart';
 
@@ -31,6 +32,12 @@ class _ReviewScreenState extends State<ReviewScreen> {
   void initState() {
     super.initState();
     unawaited(widget.viewModel.loadSnapshot(widget.target));
+    unawaited(
+      widget.viewModel.history(
+        widget.target.profile.id,
+        widget.target.session.id,
+      ),
+    );
     widget.capabilitiesViewModel.addListener(_selectDefaults);
     _selectDefaults();
   }
@@ -157,9 +164,17 @@ class _ReviewScreenState extends State<ReviewScreen> {
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 960),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: _body(run),
+              child: SizedBox(
+                width: constraints.maxWidth,
+                child: run.state != ReviewRunState.idle && _tab == 5
+                    ? Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: _body(run),
+                      )
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.all(16),
+                        child: _body(run),
+                      ),
               ),
             ),
           ),
@@ -208,6 +223,87 @@ class _ReviewScreenState extends State<ReviewScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        ValueListenableBuilder<ReviewHistoryState>(
+          valueListenable: widget.viewModel.historyState,
+          builder: (context, historyState, _) {
+            if (historyState is ReviewHistoryLoading) {
+              return const _HistoryState(message: 'Loading review history…');
+            }
+            if (historyState is ReviewHistoryEmpty) {
+              return const _HistoryState(message: 'No stored reviews yet.');
+            }
+            if (historyState is ReviewHistoryFailed) {
+              return const _HistoryState(
+                message: 'Review history is unavailable.',
+              );
+            }
+            final summaries = (historyState as ReviewHistoryReady).items;
+            return Column(
+              children: [
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Review history'),
+                ),
+                for (final summary in summaries)
+                  ListTile(
+                    key: ValueKey('review-history-${summary.id}'),
+                    title: Text(
+                      '${summary.state.name} · ${summary.createdAt.toLocal()}',
+                    ),
+                    subtitle: Text(
+                      '${summary.fileCount} ${summary.fileCount == 1 ? 'file' : 'files'} · '
+                      '${summary.passCount} ${summary.passCount == 1 ? 'reviewer' : 'reviewers'} · '
+                      '${summary.findingCount} ${summary.findingCount == 1 ? 'hypothesis' : 'hypotheses'}',
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.open_in_new),
+                          tooltip: 'Open stored review',
+                          onPressed: () =>
+                              widget.viewModel.loadHistory(summary.id),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: 'Delete stored review',
+                          onPressed: () async {
+                            if (!context.mounted) return;
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: const Text('Delete review?'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, false),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, true),
+                                    child: const Text('Delete'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirmed == true) {
+                              await widget.viewModel.deleteHistory(
+                                summary.id,
+                                profileId: widget.target.profile.id,
+                                sessionId: widget.target.session.id,
+                              );
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                const Divider(),
+              ],
+            );
+          },
+        ),
         Text(
           'Contingent review',
           style: Theme.of(context).textTheme.headlineSmall,
@@ -307,9 +403,61 @@ class _ReviewScreenState extends State<ReviewScreen> {
           icon: const Icon(Icons.play_arrow),
           label: const Text('Start review'),
         ),
+        if (_valid) _costCard(snapshot, models),
         const SizedBox(height: 24),
         _diff(snapshot),
       ],
+    );
+  }
+
+  Widget _costCard(ReviewSnapshot snapshot, List<OpenCodeModel> models) {
+    final selected = models
+        .where((model) => _selection.values.contains(_modelKey(model)))
+        .toList();
+    final configurations = [
+      for (final role in _roles)
+        ReviewReviewerConfiguration(
+          role: role,
+          model: ReviewModelConfiguration(
+            providerId: _selection[role]!.split('\u0000').first,
+            modelId: _selection[role]!.split('\u0000').skip(1).join('\u0000'),
+          ),
+        ),
+    ];
+    final estimate = widget.viewModel.estimate(
+      snapshot,
+      selected,
+      configurations,
+    );
+    if (estimate == null) return const SizedBox.shrink();
+    final usd = estimate.totalUsdRange;
+    return Card(
+      key: const ValueKey('review-cost-estimate'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Approximate input estimate (not a quote)'),
+            Text(
+              '${estimate.totalTokenRange.lower}–${estimate.totalTokenRange.upper} input tokens',
+            ),
+            Text(
+              usd == null
+                  ? 'Theoretical minimum USD: unavailable (model pricing unknown).'
+                  : 'Theoretical minimum input: USD ${usd.lower.toStringAsFixed(4)}–${usd.upper.toStringAsFixed(4)}.',
+            ),
+            if (estimate.unavailableModelIds.isNotEmpty)
+              Text(
+                'Unknown pricing: ${estimate.unavailableModelIds.join(', ')}',
+              ),
+            for (final violation in estimate.violations)
+              Text(
+                'Context/input limit warning for ${violation.modelId}: estimated upper bound ${violation.estimatedUpperBound}, limit ${violation.limit}.',
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -334,6 +482,11 @@ class _ReviewScreenState extends State<ReviewScreen> {
               OutlinedButton(
                 onPressed: widget.viewModel.cancel,
                 child: const Text('Cancel'),
+              ),
+            if (run.state != ReviewRunState.running)
+              TextButton(
+                onPressed: () => widget.viewModel.loadSnapshot(widget.target),
+                child: const Text('New review'),
               ),
           ],
         ),
@@ -494,17 +647,14 @@ class _ReviewScreenState extends State<ReviewScreen> {
     children: [
       SizedBox(
         height: 320,
-        child: ListView.builder(
-          itemCount: snapshot.files.length,
-          itemBuilder: (context, index) {
-            final file = snapshot.files[index];
-            return Padding(
-              padding: const EdgeInsets.all(12),
-              child: SelectableText(
-                '${file.path} (${file.status})\n${file.patch}',
-              ),
-            );
-          },
+        child: DiffViewer(
+          document: DiffDocument(
+            files: [
+              for (final file in snapshot.files)
+                ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
+            ],
+            warnings: const [],
+          ),
         ),
       ),
     ],
@@ -534,4 +684,13 @@ class _ReviewScreenState extends State<ReviewScreen> {
     ReviewRunState.cancelled => 'Review cancelled',
     _ => 'Review',
   };
+}
+
+class _HistoryState extends StatelessWidget {
+  const _HistoryState({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) =>
+      Padding(padding: const EdgeInsets.only(bottom: 12), child: Text(message));
 }

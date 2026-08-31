@@ -617,6 +617,97 @@ void main() {
       ['/session/grandchild', '/session/child', '/session/session-1'],
     );
   });
+
+  test(
+    'reports exact profile and descendant-first IDs to local cleanup',
+    () async {
+      ServerProfile? cleanedProfile;
+      List<String>? cleanedIds;
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(
+          OpenCodeTransport(
+            MockClient((request) async {
+              if (request.method == 'GET') {
+                return http.Response(
+                  '[${_sessionJson('child', parentId: 'session-1')}]',
+                  200,
+                );
+              }
+              return http.Response('true', 200);
+            }),
+          ),
+        ),
+        const _PasswordStore('secret'),
+        onSessionsDeleted: (value, ids) async {
+          cleanedProfile = value;
+          cleanedIds = ids.toList();
+        },
+      );
+      final result = await repository.delete(profile, _session());
+      expect(result, isA<Ok<void, SessionsFailure>>());
+      expect(cleanedProfile?.id, profile.id);
+      expect(cleanedIds, ['child', 'session-1']);
+    },
+  );
+
+  test(
+    'cleans only remotely deleted descendants when a later delete fails',
+    () async {
+      List<String>? cleanedIds;
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(
+          OpenCodeTransport(
+            MockClient((request) async {
+              if (request.method == 'GET') {
+                return http.Response(
+                  '[${_sessionJson('child', parentId: 'session-1')},${_sessionJson('grandchild', parentId: 'child')}]',
+                  200,
+                );
+              }
+              if (request.method == 'DELETE' &&
+                  request.url.path.endsWith('/grandchild')) {
+                return http.Response('true', 200);
+              }
+              if (request.method == 'DELETE') return http.Response('', 500);
+              return http.Response('false', 200);
+            }),
+          ),
+        ),
+        const _PasswordStore('secret'),
+        onSessionsDeleted: (_, ids) async => cleanedIds = ids.toList(),
+      );
+      final result = await repository.delete(profile, _session());
+      expect(result, isA<Err<void, SessionsFailure>>());
+      expect(cleanedIds, ['grandchild']);
+    },
+  );
+
+  test(
+    'local cleanup failure does not convert successful remote deletion',
+    () async {
+      var cleanupCalls = 0;
+      final repository = SessionsRepository(
+        OpenCodeSessionsService(
+          OpenCodeTransport(
+            MockClient((request) async {
+              if (request.method == 'GET') return http.Response('[]', 200);
+              return request.url.path.endsWith('/abort')
+                  ? http.Response('false', 200)
+                  : http.Response('true', 200);
+            }),
+          ),
+        ),
+        const _PasswordStore('secret'),
+        onSessionsDeleted: (_, _) async {
+          cleanupCalls++;
+          throw StateError('local database unavailable');
+        },
+      );
+      final result = await repository.delete(profile, _session());
+      expect(result, isA<Ok<void, SessionsFailure>>());
+      expect(cleanupCalls, 1);
+    },
+  );
 }
 
 OpenCodeSession _session() => OpenCodeSession(
