@@ -57,4 +57,18 @@ void main() {
       );
     });
   });
+
+  test('review demo loads a profile', () async {
+    final repository = ReviewDemoProfileRepository(
+      (uri, headers) async => 'Alice',
+    );
+
+    final profile = await repository.loadProfile(
+      serverOrigin: Uri.parse('http://100.64.0.1:4096'),
+      userId: 'alice',
+      accessToken: 'test-token',
+    );
+
+    expect(profile, isNotEmpty);
+  });
 }

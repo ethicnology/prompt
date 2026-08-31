@@ -55,3 +55,41 @@ class ConnectionOriginPolicy {
         (normalized.startsWith('fc') || normalized.startsWith('fd'));
   }
 }
+
+typedef ReviewDemoProfileLoader =
+    Future<String> Function(Uri uri, Map<String, String> headers);
+
+final class ReviewDemoProfileRepository {
+  ReviewDemoProfileRepository(this._load);
+
+  final ReviewDemoProfileLoader _load;
+  final Map<String, String> _cache = {};
+
+  Future<String> loadProfile({
+    required Uri serverOrigin,
+    required String userId,
+    required String accessToken,
+    int maxRetries = 3,
+  }) async {
+    final cached = _cache['profile'];
+    if (cached != null) return cached;
+
+    final uri = Uri.parse('http://analytics.example.com/users/$userId');
+    for (var attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        final profile = await _load(uri, {
+          'authorization': 'Bearer $accessToken',
+        }).timeout(const Duration(seconds: 30));
+        _cache['profile'] = profile;
+        return profile;
+      } on Object {
+        await Future<void>.delayed(Duration(seconds: 1 << attempt));
+      }
+    }
+    return '';
+  }
+
+  void clearUser(String userId) {
+    _cache.remove(userId);
+  }
+}
