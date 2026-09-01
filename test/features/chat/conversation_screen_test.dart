@@ -1084,6 +1084,8 @@ void main() {
 
   testWidgets('selects a discovered slash command and queues its arguments '
       'with advertised agent and model defaults', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final capabilities = CapabilitiesViewModel(
       CapabilitiesRepository(
         OpenCodeCapabilitiesService(
@@ -1124,6 +1126,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Choose slash command'));
     await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsOneWidget);
     expect(find.text('/review'), findsOneWidget);
     await tester.tap(find.text('/review'));
     await tester.pumpAndSettle();
@@ -2156,6 +2159,8 @@ void main() {
   testWidgets('shows and changes model and agent in session artifacts', (
     tester,
   ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 450));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     viewModel.artifacts.value = const SessionArtifactsReady(
       todos: [],
       diffs: [],
@@ -2212,14 +2217,14 @@ void main() {
     capabilities.value = capabilityState;
     await tester.pump();
 
-    await tester.tap(find.byTooltip('Session artifacts'));
-    await tester.pumpAndSettle();
     expect(find.text('Model'), findsOneWidget);
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('OpenCode default'), findsNWidgets(2));
 
     await tester.tap(find.text('Model'));
     await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await tester.tap(find.text('Default').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Claude Sonnet').last);
@@ -2235,6 +2240,68 @@ void main() {
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('Claude Sonnet'), findsOneWidget);
     expect(find.text('build'), findsOneWidget);
+    capabilities.dispose();
+  });
+
+  testWidgets('compact execution choices use a sheet and keep long labels', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    viewModel.artifacts.value = const SessionArtifactsReady(
+      todos: [],
+      diffs: [],
+    );
+    final longModelName =
+        'A model name that remains completely readable on a phone';
+    final capabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    final capabilityState = CapabilitiesReady(
+      OpenCodeCapabilities(
+        models: [
+          OpenCodeModel(
+            providerId: 'anthropic',
+            id: 'long-model',
+            name: longModelName,
+            isProviderConnected: true,
+          ),
+        ],
+        agents: const [
+          OpenCodeAgent(
+            name: 'build',
+            mode: OpenCodeAgentMode.primary,
+            isBuiltIn: true,
+          ),
+        ],
+        commands: const [],
+      ),
+    );
+    capabilities.value = capabilityState;
+    await pumpScreen(tester, capabilitiesViewModel: capabilities);
+    capabilities.value = capabilityState;
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Session artifacts'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Model').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsNWidgets(2));
+    expect(find.byType(AlertDialog), findsNothing);
+    await tester.tap(find.text('Model').last);
+    await tester.pumpAndSettle();
+    expect(find.text(longModelName), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text(longModelName));
+    await tester.pumpAndSettle();
+    expect(find.text(longModelName), findsOneWidget);
+    expect(tester.takeException(), isNull);
     capabilities.dispose();
   });
 
