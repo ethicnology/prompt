@@ -160,23 +160,14 @@ class _ReviewScreenState extends State<ReviewScreen> {
       body: ValueListenableBuilder<ReviewRun>(
         valueListenable: widget.viewModel,
         builder: (context, run, _) => LayoutBuilder(
-          builder: (context, constraints) => Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 960),
-              child: SizedBox(
-                width: constraints.maxWidth,
-                child: run.state != ReviewRunState.idle && _tab == 5
-                    ? Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: _body(run),
-                      )
-                    : SingleChildScrollView(
-                        padding: const EdgeInsets.all(16),
-                        child: _body(run),
-                      ),
-              ),
-            ),
+          builder: (context, constraints) => SizedBox(
+            width: constraints.maxWidth,
+            child: run.state != ReviewRunState.idle && _tab == 5
+                ? Padding(padding: const EdgeInsets.all(16), child: _body(run))
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: _body(run),
+                  ),
           ),
         ),
       ),

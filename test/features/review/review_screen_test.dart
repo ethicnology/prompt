@@ -195,6 +195,34 @@ StoredReview _stored(String id, ReviewRun run) => StoredReview(
 );
 
 void main() {
+  testWidgets('desktop review content grows when the window is resized', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = _FakeRepository(_snapshot);
+    await tester.pumpWidget(
+      _screen(ReviewViewModel(repository), _capabilities(_models)),
+    );
+    await tester.pump();
+
+    final bodyScroll = find.byWidgetPredicate(
+      (widget) =>
+          widget is SingleChildScrollView &&
+          widget.scrollDirection == Axis.vertical,
+    );
+    final narrowWidth = tester.getSize(bodyScroll).width;
+
+    tester.view.physicalSize = const Size(1600, 900);
+    await tester.pump();
+    final wideWidth = tester.getSize(bodyScroll).width;
+
+    expect(narrowWidth, greaterThan(1100));
+    expect(wideWidth, greaterThan(narrowWidth + 300));
+  });
+
   testWidgets(
     'loads setup with two defaults and starts two distinct configurations',
     (tester) async {
