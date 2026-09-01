@@ -66,6 +66,7 @@ class Transcript extends StatelessWidget {
                 message: message,
                 showRevert: index == 0,
                 onRevert: () => onRevert(message),
+                desktop: desktop,
               );
               return desktop
                   ? bubble
@@ -217,12 +218,14 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.showRevert,
     required this.onRevert,
+    required this.desktop,
     super.key,
   });
 
   final ChatMessage message;
   final bool showRevert;
   final VoidCallback onRevert;
+  final bool desktop;
 
   @override
   Widget build(BuildContext context) {
@@ -236,83 +239,82 @@ class _MessageBubble extends StatelessWidget {
         ? tokens.userMessageForeground
         : theme.colorScheme.onSurface;
 
-    return Align(
-      alignment: userMessage ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: background,
-            borderRadius: BorderRadius.circular(userMessage ? 18 : 0),
-            border: userMessage
-                ? Border.all(color: tokens.userMessageBorder)
-                : null,
-          ),
-          child: Padding(
-            padding: EdgeInsets.all(userMessage ? 14 : 0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (!userMessage)
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.auto_awesome_outlined,
-                        size: 15,
-                        color: tokens.subtle,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'OpenCode',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: tokens.subtle,
-                        ),
-                      ),
-                    ],
+    final content = DecoratedBox(
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(userMessage ? 18 : 0),
+        border: userMessage
+            ? Border.all(color: tokens.userMessageBorder)
+            : null,
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(userMessage ? 14 : 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!userMessage)
+              Row(
+                children: [
+                  Icon(
+                    Icons.auto_awesome_outlined,
+                    size: 15,
+                    color: tokens.subtle,
                   ),
-                if (message.details.isNotEmpty) ...[
-                  if (!userMessage) const SizedBox(height: 10),
-                  for (final detail in message.details)
-                    _MessageDetailCard(detail: detail),
-                ],
-                if (message.text.trim().isNotEmpty) ...[
-                  if (!userMessage || message.details.isNotEmpty)
-                    const SizedBox(height: 10),
-                  BasicMarkdownText(
-                    text: message.text,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: foreground,
-                    ),
-                    onBlockTap: (text) {
-                      Clipboard.setData(ClipboardData(text: text));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Text copied')),
-                      );
-                    },
-                  ),
-                ],
-                // Once OpenCode has produced a visible response, the prompt is
-                // treated and this transcript action no longer needs space.
-                if (showRevert && userMessage && message.id.isNotEmpty)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Tooltip(
-                      message: 'Revert to this message',
-                      child: TextButton.icon(
-                        onPressed: onRevert,
-                        style: TextButton.styleFrom(
-                          foregroundColor: foreground,
-                        ),
-                        icon: const Icon(Icons.undo_rounded, size: 17),
-                        label: const Text('Revert'),
-                      ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'OpenCode',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: tokens.subtle,
                     ),
                   ),
-              ],
-            ),
-          ),
+                ],
+              ),
+            if (message.details.isNotEmpty) ...[
+              if (!userMessage) const SizedBox(height: 10),
+              for (final detail in message.details)
+                _MessageDetailCard(detail: detail),
+            ],
+            if (message.text.trim().isNotEmpty) ...[
+              if (!userMessage || message.details.isNotEmpty)
+                const SizedBox(height: 10),
+              BasicMarkdownText(
+                text: message.text,
+                style: theme.textTheme.bodyLarge?.copyWith(color: foreground),
+                onBlockTap: (text) {
+                  Clipboard.setData(ClipboardData(text: text));
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('Text copied')));
+                },
+              ),
+            ],
+            // Once OpenCode has produced a visible response, the prompt is
+            // treated and this transcript action no longer needs space.
+            if (showRevert && userMessage && message.id.isNotEmpty)
+              Align(
+                alignment: Alignment.centerRight,
+                child: Tooltip(
+                  message: 'Revert to this message',
+                  child: TextButton.icon(
+                    onPressed: onRevert,
+                    style: TextButton.styleFrom(foregroundColor: foreground),
+                    icon: const Icon(Icons.undo_rounded, size: 17),
+                    label: const Text('Revert'),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
+    );
+    return Align(
+      alignment: userMessage ? Alignment.centerRight : Alignment.centerLeft,
+      child: !userMessage && desktop
+          ? SizedBox(width: double.infinity, child: content)
+          : ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: content,
+            ),
     );
   }
 }

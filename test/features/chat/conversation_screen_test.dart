@@ -497,6 +497,38 @@ void main() {
     },
   );
 
+  testWidgets('desktop assistant transcript grows with the available width', (
+    tester,
+  ) async {
+    final text = 'Transcript width probe ${'content ' * 200}';
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'resizable-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime(2024),
+        text: text,
+      ),
+    ]);
+    await tester.binding.setSurfaceSize(const Size(1100, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpScreen(tester);
+    await tester.tap(find.byTooltip('Hide session details'));
+    await tester.pump();
+
+    final renderedText = find.byWidgetPredicate(
+      (widget) =>
+          widget is SelectableText && widget.textSpan?.toPlainText() == text,
+    );
+    final narrowWidth = tester.getSize(renderedText).width;
+
+    await tester.binding.setSurfaceSize(const Size(1600, 900));
+    await tester.pump();
+    final wideWidth = tester.getSize(renderedText).width;
+
+    expect(narrowWidth, greaterThan(900));
+    expect(wideWidth, greaterThan(narrowWidth + 400));
+  });
+
   testWidgets('short height keeps approval, queue, and composer reachable', (
     tester,
   ) async {
