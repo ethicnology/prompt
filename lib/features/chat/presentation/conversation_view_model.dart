@@ -92,6 +92,56 @@ class ConversationViewModel {
   QueuePromptsRepository? _queueRepository;
   QueueSendCoordinator? _queueCoordinator;
 
+  // Drafts can contain private prompt text, so they remain memory-only. The
+  // view model outlives individual conversation screens and keeps one buffer
+  // per server session until the user submits it or the view model is disposed.
+  final Map<(String, String), _SessionInputMemory> _sessionInputMemories = {};
+
+  PromptExecutionOptions executionOptionsFor(
+    ServerProfile profile,
+    OpenCodeSession session,
+  ) {
+    final remembered =
+        _sessionInputMemories[(profile.id, session.id)]?.executionOptions;
+    return remembered ??
+        PromptExecutionOptions(
+          modelProviderId: session.modelProviderId,
+          modelId: session.modelId,
+          agentName: session.agentName,
+        );
+  }
+
+  void rememberExecutionOptions(
+    ServerProfile profile,
+    OpenCodeSession session,
+    PromptExecutionOptions options,
+  ) {
+    final memory = _sessionInputMemories.putIfAbsent((
+      profile.id,
+      session.id,
+    ), _SessionInputMemory.new);
+    memory.executionOptions = options;
+  }
+
+  String draftFor(ServerProfile profile, OpenCodeSession session) =>
+      _sessionInputMemories[(profile.id, session.id)]?.draft ?? '';
+
+  void rememberDraft(
+    ServerProfile profile,
+    OpenCodeSession session,
+    String draft,
+  ) {
+    final key = (profile.id, session.id);
+    final memory = _sessionInputMemories.putIfAbsent(
+      key,
+      _SessionInputMemory.new,
+    );
+    memory.draft = draft;
+    if (draft.isEmpty && memory.executionOptions == null) {
+      _sessionInputMemories.remove(key);
+    }
+  }
+
   /// The read-only message transcript, refreshed by [open] and [reload].
   final ValueNotifier<ConversationUiState> messages = ValueNotifier(
     const ConversationLoading(),
@@ -768,6 +818,7 @@ class ConversationViewModel {
     _detachRemoteConnectionState();
     _detachHistoryListener();
     _artifactGeneration++;
+    _sessionInputMemories.clear();
     await _queueCoordinator?.deactivate();
     messages.dispose();
     artifacts.dispose();
@@ -830,6 +881,11 @@ class ConversationViewModel {
       failure: failure ?? state.failure,
     );
   }
+}
+
+class _SessionInputMemory {
+  PromptExecutionOptions? executionOptions;
+  String draft = '';
 }
 
 void _releaseAttachments(Iterable<PromptAttachment> attachments) {

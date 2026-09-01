@@ -190,6 +190,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
   int removeCallCount = 0;
   int sendNowCallCount = 0;
   final List<String> enqueuedTexts = <String>[];
+  PromptExecutionOptions? lastPromptOptions;
   int enqueueCommandCallCount = 0;
   String? lastCommandName;
   String? lastCommandArguments;
@@ -250,6 +251,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
   }) async {
     enqueueCallCount++;
     enqueuedTexts.add(text);
+    lastPromptOptions = executionOptions;
     queue.value = [
       ...queue.value,
       _prompt('prompt-${_nextId++}', text, QueuedPromptState.queued),
@@ -388,6 +390,7 @@ void main() {
     ThemeData? theme,
     double textScale = 1.0,
     double viewInsetsBottom = 0,
+    OpenCodeSession? activeSession,
   }) async {
     // Default to a settled, empty transcript unless a test seeds its own:
     // the loading state renders an indeterminate `CircularProgressIndicator`,
@@ -407,8 +410,9 @@ void main() {
           child: child!,
         ),
         home: ConversationScreen(
+          key: ValueKey('conversation:${(activeSession ?? session).id}'),
           profile: profile,
-          session: session,
+          session: activeSession ?? session,
           viewModel: viewModel,
           capabilitiesViewModel: capabilitiesViewModel,
           reviewViewModelFactory: reviewViewModelFactory,
@@ -2185,7 +2189,7 @@ void main() {
       ),
     );
     await pumpScreen(tester, capabilitiesViewModel: capabilities);
-    capabilities.value = const CapabilitiesReady(
+    const capabilityState = CapabilitiesReady(
       OpenCodeCapabilities(
         models: [
           OpenCodeModel(
@@ -2205,6 +2209,7 @@ void main() {
         commands: [],
       ),
     );
+    capabilities.value = capabilityState;
     await tester.pump();
 
     await tester.tap(find.byTooltip('Session artifacts'));
@@ -2231,6 +2236,145 @@ void main() {
     expect(find.text('Claude Sonnet'), findsOneWidget);
     expect(find.text('build'), findsOneWidget);
     capabilities.dispose();
+  });
+
+  testWidgets('restores the model and unsent draft for each session', (
+    tester,
+  ) async {
+    viewModel.artifacts.value = const SessionArtifactsReady(
+      todos: [],
+      diffs: [],
+    );
+    final firstSession = OpenCodeSession(
+      id: 'session-first',
+      projectId: 'project-1',
+      directory: '/workspace/project',
+      title: 'First session',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
+      modelProviderId: 'anthropic',
+      modelId: 'claude-fable-5',
+      agentName: 'codex',
+    );
+    final secondSession = OpenCodeSession(
+      id: 'session-second',
+      projectId: 'project-1',
+      directory: '/workspace/project',
+      title: 'Second session',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(2000),
+      modelProviderId: 'anthropic',
+      modelId: 'claude-fable-5',
+      agentName: 'codex',
+    );
+    final capabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    const capabilityState = CapabilitiesReady(
+      OpenCodeCapabilities(
+        models: [
+          OpenCodeModel(
+            providerId: 'anthropic',
+            id: 'claude-fable-5',
+            name: 'Fable',
+            isProviderConnected: true,
+          ),
+          OpenCodeModel(
+            providerId: 'openai',
+            id: 'gpt-5.6-sol',
+            name: 'GPT-5.6 Sol',
+            isProviderConnected: true,
+          ),
+        ],
+        agents: [
+          OpenCodeAgent(
+            name: 'codex',
+            mode: OpenCodeAgentMode.primary,
+            isBuiltIn: true,
+          ),
+        ],
+        commands: [],
+      ),
+    );
+    capabilities.value = capabilityState;
+
+    await pumpScreen(
+      tester,
+      activeSession: firstSession,
+      capabilitiesViewModel: capabilities,
+    );
+    capabilities.value = capabilityState;
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'Unsent first draft');
+    await tester.tap(find.byTooltip('Session artifacts'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Model'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fable').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('GPT-5.6 Sol').last);
+    await tester.ensureVisible(find.text('Apply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pumpAndSettle();
+
+    await pumpScreen(tester, activeSession: secondSession);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
+    await tester.enterText(find.byType(TextField), 'Unsent second draft');
+
+    final restoredCapabilities = CapabilitiesViewModel(
+      CapabilitiesRepository(
+        OpenCodeCapabilitiesService(
+          OpenCodeTransport(MockClient((_) async => http.Response('', 404))),
+        ),
+        const _StaticPasswordStore(),
+      ),
+    );
+    restoredCapabilities.value = capabilityState;
+    await pumpScreen(
+      tester,
+      activeSession: firstSession,
+      capabilitiesViewModel: restoredCapabilities,
+    );
+    restoredCapabilities.value = capabilityState;
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Unsent first draft',
+    );
+    await tester.tap(find.byTooltip('Session artifacts'));
+    await tester.pumpAndSettle();
+    expect(find.text('GPT-5.6 Sol'), findsOneWidget);
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Queue this prompt'));
+    await tester.pump();
+    expect(viewModel.enqueuedTexts.last, 'Unsent first draft');
+    expect(viewModel.lastPromptOptions?.modelProviderId, 'openai');
+    expect(viewModel.lastPromptOptions?.modelId, 'gpt-5.6-sol');
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
+
+    await pumpScreen(tester, activeSession: secondSession);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Unsent second draft',
+    );
+    capabilities.dispose();
+    restoredCapabilities.dispose();
   });
 
   testWidgets('opens artifacts in a scrollable sheet on a narrow layout', (

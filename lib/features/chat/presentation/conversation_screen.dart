@@ -95,12 +95,14 @@ class _ConversationScreenState extends State<ConversationScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _executionOptions = ValueNotifier(
-      PromptExecutionOptions(
-        modelProviderId: widget.session.modelProviderId,
-        modelId: widget.session.modelId,
-        agentName: widget.session.agentName,
-      ),
+      widget.viewModel.executionOptionsFor(widget.profile, widget.session),
     );
+    final draft = widget.viewModel.draftFor(widget.profile, widget.session);
+    _composerController.value = TextEditingValue(
+      text: draft,
+      selection: TextSelection.collapsed(offset: draft.length),
+    );
+    _composerController.addListener(_rememberComposerDraft);
     _transcriptController.addListener(_updateJumpToLatestVisibility);
     widget.viewModel.open(widget.profile, widget.session);
     widget.capabilitiesViewModel?.load(widget.profile);
@@ -132,6 +134,7 @@ class _ConversationScreenState extends State<ConversationScreen>
     _transcriptErrorSubscription?.cancel();
     widget.voiceViewModel?.state.removeListener(_applyVoiceState);
     unawaited(widget.voiceViewModel?.cancel());
+    _composerController.removeListener(_rememberComposerDraft);
     _composerController.dispose();
     _executionOptions.dispose();
     _transcriptController
@@ -139,6 +142,14 @@ class _ConversationScreenState extends State<ConversationScreen>
       ..dispose();
     widget.viewModel.leaveSession(widget.session);
     super.dispose();
+  }
+
+  void _rememberComposerDraft() {
+    widget.viewModel.rememberDraft(
+      widget.profile,
+      widget.session,
+      _composerController.text,
+    );
   }
 
   @override
@@ -355,6 +366,11 @@ class _ConversationScreenState extends State<ConversationScreen>
     );
     if (selected != null && mounted) {
       _executionOptions.value = selected;
+      widget.viewModel.rememberExecutionOptions(
+        widget.profile,
+        widget.session,
+        selected,
+      );
     }
   }
 
