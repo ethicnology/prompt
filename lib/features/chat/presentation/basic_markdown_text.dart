@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/link.dart';
 
@@ -84,110 +85,110 @@ class BasicMarkdownText extends StatelessWidget {
     };
     return base?.copyWith(color: style?.color);
   }
+}
 
-  List<InlineSpan> _inlineSpans(
-    BuildContext context,
-    String text,
-    TextStyle? style,
-  ) {
-    final spans = <InlineSpan>[];
-    var index = 0;
-    while (index < text.length) {
-      if (text.startsWith('`', index)) {
-        final end = text.indexOf('`', index + 1);
-        if (end != -1) {
-          spans.add(
-            TextSpan(
-              text: text.substring(index + 1, end),
-              style: (style ?? const TextStyle()).copyWith(
-                fontFamily: 'monospace',
-                backgroundColor: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHigh,
-              ),
+List<InlineSpan> _inlineSpans(
+  BuildContext context,
+  String text,
+  TextStyle? style,
+) {
+  final spans = <InlineSpan>[];
+  var index = 0;
+  while (index < text.length) {
+    if (text.startsWith('`', index)) {
+      final end = text.indexOf('`', index + 1);
+      if (end != -1) {
+        spans.add(
+          TextSpan(
+            text: text.substring(index + 1, end),
+            style: (style ?? const TextStyle()).copyWith(
+              fontFamily: 'monospace',
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHigh,
             ),
-          );
-          index = end + 1;
-          continue;
-        }
+          ),
+        );
+        index = end + 1;
+        continue;
       }
-      if (text.startsWith('**', index)) {
-        final end = text.indexOf('**', index + 2);
-        if (end != -1) {
-          spans.add(
-            TextSpan(
-              text: text.substring(index + 2, end),
-              style: (style ?? const TextStyle()).copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+    }
+    if (text.startsWith('**', index)) {
+      final end = text.indexOf('**', index + 2);
+      if (end != -1) {
+        spans.add(
+          TextSpan(
+            text: text.substring(index + 2, end),
+            style: (style ?? const TextStyle()).copyWith(
+              fontWeight: FontWeight.bold,
             ),
-          );
-          index = end + 2;
-          continue;
-        }
+          ),
+        );
+        index = end + 2;
+        continue;
       }
-      if (text.startsWith('[', index)) {
-        final labelEnd = text.indexOf('](', index + 1);
-        if (labelEnd != -1) {
-          final urlEnd = text.indexOf(')', labelEnd + 2);
-          if (urlEnd != -1) {
-            final url = _safeHttpUri(text.substring(labelEnd + 2, urlEnd));
-            if (url != null) {
-              spans.add(
-                _linkSpan(
-                  context,
-                  text.substring(index + 1, labelEnd),
-                  url,
-                  style,
-                ),
-              );
-              index = urlEnd + 1;
-              continue;
-            }
+    }
+    if (text.startsWith('[', index)) {
+      final labelEnd = text.indexOf('](', index + 1);
+      if (labelEnd != -1) {
+        final urlEnd = text.indexOf(')', labelEnd + 2);
+        if (urlEnd != -1) {
+          final url = _safeHttpUri(text.substring(labelEnd + 2, urlEnd));
+          if (url != null) {
+            spans.add(
+              _linkSpan(
+                context,
+                text.substring(index + 1, labelEnd),
+                url,
+                style,
+              ),
+            );
+            index = urlEnd + 1;
+            continue;
           }
         }
       }
-      final bareUrl = _bareUrlAt(text, index);
-      if (bareUrl != null) {
-        spans.add(_linkSpan(context, bareUrl.text, bareUrl.uri, style));
-        index += bareUrl.text.length;
-        continue;
-      }
-      final next = _nextMarkup(text, index + 1);
-      spans.add(TextSpan(text: text.substring(index, next)));
-      index = next;
     }
-    return spans;
+    final bareUrl = _bareUrlAt(text, index);
+    if (bareUrl != null) {
+      spans.add(_linkSpan(context, bareUrl.text, bareUrl.uri, style));
+      index += bareUrl.text.length;
+      continue;
+    }
+    final next = _nextMarkup(text, index + 1);
+    spans.add(TextSpan(text: text.substring(index, next)));
+    index = next;
   }
+  return spans;
+}
 
-  WidgetSpan _linkSpan(
-    BuildContext context,
-    String label,
-    Uri uri,
-    TextStyle? style,
-  ) {
-    final linkStyle = (style ?? const TextStyle()).copyWith(
-      color: Theme.of(context).colorScheme.primary,
-      decoration: TextDecoration.underline,
-      decorationColor: Theme.of(context).colorScheme.primary,
-    );
-    return WidgetSpan(
-      alignment: PlaceholderAlignment.baseline,
-      baseline: TextBaseline.alphabetic,
-      child: Link(
-        uri: uri,
-        target: LinkTarget.blank,
-        builder: (context, followLink) => Semantics(
-          link: true,
-          label: '$label, link',
-          child: InkWell(
-            onTap: followLink,
-            child: Text(label, style: linkStyle),
-          ),
+WidgetSpan _linkSpan(
+  BuildContext context,
+  String label,
+  Uri uri,
+  TextStyle? style,
+) {
+  final linkStyle = (style ?? const TextStyle()).copyWith(
+    color: Theme.of(context).colorScheme.primary,
+    decoration: TextDecoration.underline,
+    decorationColor: Theme.of(context).colorScheme.primary,
+  );
+  return WidgetSpan(
+    alignment: PlaceholderAlignment.baseline,
+    baseline: TextBaseline.alphabetic,
+    child: Link(
+      uri: uri,
+      target: LinkTarget.blank,
+      builder: (context, followLink) => Semantics(
+        link: true,
+        label: '$label, link',
+        child: InkWell(
+          onTap: followLink,
+          child: Text(label, style: linkStyle),
         ),
       ),
-    );
-  }
+    ),
+  );
 }
 
 sealed class _MarkdownBlock {
@@ -223,7 +224,7 @@ class _TableBlock extends _MarkdownBlock {
 
 enum _TableAlignment { left, center, right }
 
-class _MarkdownTable extends StatelessWidget {
+class _MarkdownTable extends StatefulWidget {
   const _MarkdownTable({
     required this.headers,
     required this.alignments,
@@ -237,10 +238,26 @@ class _MarkdownTable extends StatelessWidget {
   final TextStyle? style;
 
   @override
+  State<_MarkdownTable> createState() => _MarkdownTableState();
+}
+
+class _MarkdownTableState extends State<_MarkdownTable> {
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final widths = List<double>.generate(headers.length, (column) => 112);
-    for (final row in [headers, ...rows]) {
+    final widths = List<double>.generate(
+      widget.headers.length,
+      (column) => 112,
+    );
+    for (final row in [widget.headers, ...widget.rows]) {
       for (var column = 0; column < row.length; column++) {
         widths[column] = math.min(
           280,
@@ -250,32 +267,67 @@ class _MarkdownTable extends StatelessWidget {
     }
     return Semantics(
       label: 'Markdown table',
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Table(
-          columnWidths: {
-            for (var index = 0; index < widths.length; index++)
-              index: FixedColumnWidth(widths[index]),
-          },
-          border: TableBorder.all(color: theme.colorScheme.outlineVariant),
-          children: [
-            TableRow(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHigh,
-              ),
-              children: [
-                for (var column = 0; column < headers.length; column++)
-                  _tableCell(context, headers[column], column, bold: true),
-              ],
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Scrollbar(
+          controller: _scrollController,
+          thumbVisibility: true,
+          interactive: true,
+          scrollbarOrientation: ScrollbarOrientation.bottom,
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(
+              dragDevices: const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+                PointerDeviceKind.stylus,
+                PointerDeviceKind.trackpad,
+              },
             ),
-            for (final row in rows)
-              TableRow(
+            child: SingleChildScrollView(
+              controller: _scrollController,
+              scrollDirection: Axis.horizontal,
+              child: Table(
+                columnWidths: {
+                  for (var index = 0; index < widths.length; index++)
+                    index: FixedColumnWidth(widths[index]),
+                },
+                border: TableBorder.all(
+                  color: theme.colorScheme.outlineVariant,
+                ),
                 children: [
-                  for (var column = 0; column < headers.length; column++)
-                    _tableCell(context, row[column], column),
+                  TableRow(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHigh,
+                    ),
+                    children: [
+                      for (
+                        var column = 0;
+                        column < widget.headers.length;
+                        column++
+                      )
+                        _tableCell(
+                          context,
+                          widget.headers[column],
+                          column,
+                          bold: true,
+                        ),
+                    ],
+                  ),
+                  for (final row in widget.rows)
+                    TableRow(
+                      children: [
+                        for (
+                          var column = 0;
+                          column < widget.headers.length;
+                          column++
+                        )
+                          _tableCell(context, row[column], column),
+                      ],
+                    ),
                 ],
               ),
-          ],
+            ),
+          ),
         ),
       ),
     );
@@ -287,19 +339,19 @@ class _MarkdownTable extends StatelessWidget {
     int column, {
     bool bold = false,
   }) {
-    final alignment = switch (alignments[column]) {
+    final alignment = switch (widget.alignments[column]) {
       _TableAlignment.left => TextAlign.left,
       _TableAlignment.center => TextAlign.center,
       _TableAlignment.right => TextAlign.right,
     };
+    final textStyle = (widget.style ?? Theme.of(context).textTheme.bodyLarge)
+        ?.copyWith(fontWeight: bold ? FontWeight.bold : null);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       child: SelectableText.rich(
         TextSpan(
-          style: (style ?? Theme.of(context).textTheme.bodyLarge)?.copyWith(
-            fontWeight: bold ? FontWeight.bold : null,
-          ),
-          text: text,
+          style: textStyle,
+          children: _inlineSpans(context, text, textStyle),
         ),
         textAlign: alignment,
       ),

@@ -681,20 +681,10 @@ class _GenericToolDetailCard extends StatelessWidget {
                   Text(label, style: theme.textTheme.labelLarge),
                   const SizedBox(height: 4),
                 ],
-                if ((block.kind == ChatToolBlockKind.code ||
-                        block.kind == ChatToolBlockKind.diff) &&
-                    !block.text.trimLeft().startsWith('```'))
-                  SelectableText(
-                    block.text,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontFamily: 'monospace',
-                    ),
-                  )
-                else
-                  BasicMarkdownText(
-                    text: block.text,
-                    style: theme.textTheme.bodySmall,
-                  ),
+                BasicMarkdownText(
+                  text: block.text,
+                  style: theme.textTheme.bodySmall,
+                ),
               ],
             ),
           ),

@@ -1531,6 +1531,60 @@ void main() {
     expect(find.byType(ExpansionTile), findsNothing);
   });
 
+  testWidgets('renders Markdown in unfenced code and diff tool output', (
+    tester,
+  ) async {
+    viewModel.messages.value = ConversationReady([
+      ChatMessage(
+        id: 'tool-message',
+        role: ChatMessageRole.assistant,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        text: '',
+        details: const [
+          ChatToolDetail(
+            id: 'tool',
+            tool: 'execute',
+            status: 'completed',
+            presentation: ChatGenericToolPresentation(
+              title: 'Execute',
+              blocks: [
+                ChatToolBlock(
+                  kind: ChatToolBlockKind.code,
+                  text: '**Rendered output**',
+                ),
+                ChatToolBlock(
+                  kind: ChatToolBlockKind.diff,
+                  text: '[Rendered link](https://example.com)',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ]);
+    await pumpScreen(tester);
+    await tester.tap(find.text('Execute'));
+    await tester.pumpAndSettle();
+
+    final renderedOutput = tester.widget<SelectableText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText() == 'Rendered output',
+      ),
+    );
+    expect(
+      _findStyledSpan(
+        renderedOutput.textSpan!,
+        text: 'Rendered output',
+        weight: FontWeight.bold,
+      ),
+      isNotNull,
+    );
+    expect(find.text('**Rendered output**'), findsNothing);
+    expect(find.byType(Link), findsOneWidget);
+  });
+
   testWidgets('counts a one-line fenced code block as one direct line', (
     tester,
   ) async {
@@ -1882,41 +1936,74 @@ void main() {
     },
   );
 
-  testWidgets('renders GFM tables with cells and horizontal scrolling', (
+  testWidgets('renders GFM tables with Markdown and desktop scrolling', (
     tester,
   ) async {
+    final wideCell = 'wide table cell ${'content ' * 40}';
     viewModel.messages.value = ConversationReady([
       ChatMessage(
         id: 'table',
         role: ChatMessageRole.assistant,
         createdAt: DateTime.fromMillisecondsSinceEpoch(0),
         text:
-            '| Name | Count | Note |\n'
+            '| **Name** | Count | Note |\n'
             '| :--- | ---: | :---: |\n'
-            '| Alice | 12 | a \\| b |\n'
-            '| Bob | 345 | |',
+            '| [Alice](https://example.com) | `12` | $wideCell |\n'
+            '| Bob | 345 | a \\| b |',
       ),
     ]);
+    await tester.binding.setSurfaceSize(const Size(900, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     await pumpScreen(tester);
 
     expect(find.text('Name'), findsOneWidget);
     expect(find.text('345'), findsOneWidget);
     expect(find.text('a | b'), findsOneWidget);
-    expect(
+    expect(find.text('**Name**'), findsNothing);
+    expect(find.byType(Link), findsOneWidget);
+    final renderedHeader = tester.widget<SelectableText>(
       find.byWidgetPredicate(
         (widget) =>
-            widget is Semantics && widget.properties.label == 'Markdown table',
+            widget is SelectableText &&
+            widget.textSpan?.toPlainText() == 'Name',
       ),
-      findsOneWidget,
     );
     expect(
-      find.byWidgetPredicate(
+      _findStyledSpan(
+        renderedHeader.textSpan!,
+        text: 'Name',
+        weight: FontWeight.bold,
+      ),
+      isNotNull,
+    );
+    final table = find.byWidgetPredicate(
+      (widget) =>
+          widget is Semantics && widget.properties.label == 'Markdown table',
+    );
+    expect(table, findsOneWidget);
+    expect(
+      find.descendant(of: table, matching: find.byType(Scrollbar)),
+      findsOneWidget,
+    );
+    final horizontalScroll = find.descendant(
+      of: table,
+      matching: find.byWidgetPredicate(
         (widget) =>
             widget is SingleChildScrollView &&
             widget.scrollDirection == Axis.horizontal,
       ),
-      findsOneWidget,
     );
+    final scrollView = tester.widget<SingleChildScrollView>(horizontalScroll);
+    expect(scrollView.controller, isNotNull);
+    expect(scrollView.controller!.position.maxScrollExtent, greaterThan(0));
+
+    await tester.drag(
+      horizontalScroll,
+      const Offset(-240, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(scrollView.controller!.offset, greaterThan(0));
   });
 
   testWidgets('uses a card for one-line reasoning and an expansion for prose', (
