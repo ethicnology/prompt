@@ -138,6 +138,54 @@ void main() {
     },
   );
 
+  test(
+    'Drift round-trips the provider failure kind without a schema change',
+    () async {
+      final database = db.PromptDatabase.forTesting(NativeDatabase.memory());
+      final profile = ServerProfile(origin: Uri.parse('http://profile-review'));
+      await database
+          .into(database.serverProfiles)
+          .insert(
+            db.ServerProfilesCompanion.insert(
+              id: profile.id,
+              origin: profile.origin.toString(),
+              lastAccessedAtMillis: 1,
+            ),
+          );
+      final failure = const ReviewProviderFailure(
+        'Access to this model is denied. Check access, region, or opt-in.',
+        kind: ReviewProviderFailureKind.accessDenied,
+      );
+      final review = _stored(
+        'failure-kind',
+        profile.id,
+        'session',
+        state: ReviewRunState.failed,
+        run: ReviewRun(
+          state: ReviewRunState.partiallyFailed,
+          passes: [
+            ReviewPass(
+              configuration: const ReviewReviewerConfiguration(
+                role: ReviewRole.security,
+                model: ReviewModelConfiguration(providerId: 'p', modelId: 'm'),
+              ),
+              state: ReviewPassState.failed,
+              error: failure,
+            ),
+          ],
+        ),
+      );
+      final store = DriftReviewHistoryStore(database);
+      await store.save(review);
+
+      final loaded = await store.load('failure-kind');
+      final loadedFailure =
+          loaded!.run.passes.single.error! as ReviewProviderFailure;
+      expect(loadedFailure.kind, ReviewProviderFailureKind.accessDenied);
+      await database.close();
+    },
+  );
+
   test('Drift scoped deletion isolates profile and session history', () async {
     final database = db.PromptDatabase.forTesting(NativeDatabase.memory());
     final profile = ServerProfile(origin: Uri.parse('http://profile-a'));

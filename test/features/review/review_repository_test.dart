@@ -10,11 +10,13 @@ class FakeReviewService implements ReviewExecutionService {
     this.timeoutRole,
     this.waitRole,
     this.abortFailures = 0,
+    this.failure,
   });
   final ReviewRole? failRole;
   final ReviewRole? timeoutRole;
   final ReviewRole? waitRole;
   final int abortFailures;
+  final ReviewProviderFailure? failure;
   final calls = <String>[];
   final aborted = <String>[];
   final timeouts = <Duration>[];
@@ -54,8 +56,9 @@ class FakeReviewService implements ReviewExecutionService {
     if (timeoutRole == config.role) {
       return Future.error(const ReviewTimeoutFailure('timed out'));
     }
-    if (failRole == config.role) {
-      return Future.error(const ReviewProviderFailure('failed'));
+    if (failRole == config.role ||
+        failure != null && config.role == ReviewRole.security) {
+      return Future.error(failure ?? const ReviewProviderFailure('failed'));
     }
     final opinion = ReviewOpinion(
       role: config.role,
@@ -171,6 +174,32 @@ void main() {
           .error,
       isA<ReviewProviderFailure>(),
     );
+  });
+
+  test('preserves typed provider failure and its observed metrics', () async {
+    final failure = ReviewProviderFailure(
+      'Model access is denied. Check access, region, or opt-in.',
+      kind: ReviewProviderFailureKind.accessDenied,
+      metrics: const ReviewPassMetrics(
+        outputTokens: 5,
+        cost: .25,
+        duration: Duration(seconds: 2),
+      ),
+    );
+    final run = await InMemoryReviewRepository(
+      FakeReviewService(failure: failure),
+    ).start(target(), configs(2));
+    final pass = run.passes[1];
+
+    expect(pass.error, same(failure));
+    expect(pass.error, isA<ReviewProviderFailure>());
+    expect(
+      (pass.error! as ReviewProviderFailure).kind,
+      ReviewProviderFailureKind.accessDenied,
+    );
+    expect(pass.metrics.outputTokens, 5);
+    expect(pass.metrics.cost, .25);
+    expect(pass.metrics.duration, const Duration(seconds: 2));
   });
 
   test('uses the 30 minute default pass timeout', () async {

@@ -188,34 +188,34 @@ class OpenCodeReviewService implements ReviewExecutionService {
           throw OpenCodeHttpFailure(completed.statusCode);
         }
         final info = _assistantInfo(jsonDecode(completed.body));
+        final metrics = _metrics(info, started);
         if (info['error'] != null) {
-          throw const ReviewProviderFailure('Reviewer returned an error.');
+          throw ReviewProviderFailure(
+            _providerErrorMessage(info['error']),
+            kind: _providerErrorKind(info['error']),
+            metrics: metrics,
+          );
         }
-        final opinion = parseReviewResult(
-          info['structured'],
-          config.role,
-          snapshot.files,
-        );
-        final tokens = info['tokens'] is Map ? info['tokens'] as Map : const {};
-        int number(String key) => (tokens[key] as num?)?.toInt() ?? 0;
-        final cache = tokens['cache'];
-        final cacheTokens = cache is Map
-            ? (cache['read'] as num? ?? 0).toInt() +
-                  (cache['write'] as num? ?? 0).toInt()
-            : (cache as num?)?.toInt() ?? 0;
+        late final ReviewOpinion opinion;
+        try {
+          final structured = info['structured'];
+          if (structured == null) {
+            throw const FormatException('Structured review result is missing.');
+          }
+          opinion = parseReviewResult(structured, config.role, snapshot.files);
+        } on FormatException {
+          throw ReviewProviderFailure(
+            'The model returned invalid structured output. Choose another model.',
+            kind: ReviewProviderFailureKind.structuredOutputInvalid,
+            metrics: metrics,
+          );
+        }
         return ReviewPass(
           configuration: config,
           state: ReviewPassState.succeeded,
           childSessionId: childId,
           opinion: opinion,
-          metrics: ReviewPassMetrics(
-            inputTokens: number('input'),
-            outputTokens: number('output'),
-            reasoningTokens: number('reasoning'),
-            cacheTokens: cacheTokens,
-            cost: (info['cost'] as num?)?.toDouble() ?? 0,
-            duration: DateTime.now().difference(started),
-          ),
+          metrics: metrics,
         );
       }
     }
@@ -269,6 +269,62 @@ class OpenCodeReviewService implements ReviewExecutionService {
       }
     }
     return info;
+  }
+
+  ReviewPassMetrics _metrics(Map<String, dynamic> info, DateTime started) {
+    final tokens = info['tokens'] is Map ? info['tokens'] as Map : const {};
+    int number(String key) => (tokens[key] as num?)?.toInt() ?? 0;
+    final cache = tokens['cache'];
+    final cacheTokens = cache is Map
+        ? (cache['read'] as num? ?? 0).toInt() +
+              (cache['write'] as num? ?? 0).toInt()
+        : (cache as num?)?.toInt() ?? 0;
+    return ReviewPassMetrics(
+      inputTokens: number('input'),
+      outputTokens: number('output'),
+      reasoningTokens: number('reasoning'),
+      cacheTokens: cacheTokens,
+      cost: (info['cost'] as num?)?.toDouble() ?? 0,
+      duration: DateTime.now().difference(started),
+    );
+  }
+
+  ReviewProviderFailureKind _providerErrorKind(Object? error) {
+    if (error is! Map) return ReviewProviderFailureKind.unknown;
+    final name = error['name'];
+    final data = error['data'];
+    final status = data is Map ? (data['statusCode'] as num?)?.toInt() : null;
+    if (name == 'StructuredOutputError') {
+      return ReviewProviderFailureKind.structuredOutputFailed;
+    }
+    if (status == 401 || status == 403) {
+      return ReviewProviderFailureKind.accessDenied;
+    }
+    if (status == 429) return ReviewProviderFailureKind.rateLimited;
+    if (status == 404 || status != null && status >= 500) {
+      return ReviewProviderFailureKind.unavailable;
+    }
+    if (data is Map && data['isRetryable'] == true) {
+      return ReviewProviderFailureKind.unavailable;
+    }
+    return ReviewProviderFailureKind.unknown;
+  }
+
+  String _providerErrorMessage(Object? error) {
+    switch (_providerErrorKind(error)) {
+      case ReviewProviderFailureKind.structuredOutputFailed:
+        return 'The model did not produce the structured output required for review. Choose another model.';
+      case ReviewProviderFailureKind.accessDenied:
+        return 'Access to this model is denied. Check access, region, or opt-in.';
+      case ReviewProviderFailureKind.rateLimited:
+        return 'The model is rate limited. Try again later.';
+      case ReviewProviderFailureKind.unavailable:
+        return 'The model is temporarily unavailable. Try again later.';
+      case ReviewProviderFailureKind.structuredOutputInvalid:
+        return 'The model returned invalid structured output. Choose another model.';
+      case ReviewProviderFailureKind.unknown:
+        return 'The model provider returned an error. Try another model.';
+    }
   }
 }
 

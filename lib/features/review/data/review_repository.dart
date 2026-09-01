@@ -218,6 +218,17 @@ class InMemoryReviewRepository implements ReviewRepository {
       if (!_globalTimedOut) {
         _setPass(current, update, index, ReviewPassState.cancelled, error);
       }
+    } on ReviewProviderFailure catch (error) {
+      if (!_globalTimedOut) {
+        _setPass(
+          current,
+          update,
+          index,
+          ReviewPassState.failed,
+          error,
+          error.metrics,
+        );
+      }
     } catch (_) {
       if (!_globalTimedOut) {
         _setPass(
@@ -236,10 +247,15 @@ class InMemoryReviewRepository implements ReviewRepository {
     void Function(ReviewRun) update,
     int index,
     ReviewPassState state,
-    ReviewFailure error,
-  ) {
+    ReviewFailure error, [
+    ReviewPassMetrics metrics = const ReviewPassMetrics(),
+  ]) {
     final passes = [...current().passes];
-    passes[index] = passes[index].copyWith(state: state, error: error);
+    passes[index] = passes[index].copyWith(
+      state: state,
+      error: error,
+      metrics: metrics,
+    );
     update(current().copyWith(passes: passes));
   }
 

@@ -240,26 +240,30 @@ void main() {
     },
   );
 
-  test(
-    'runPass maps assistant errors and malformed structured results',
-    () async {
-      Future<ReviewPass> run(Object structured) {
-        final service = OpenCodeReviewService(
-          OpenCodeTransport(
-            MockClient((request) async {
-              return http.Response(
-                jsonEncode({
-                  'info': {'role': 'assistant', ...structured as Map},
-                  'parts': [],
-                }),
-                200,
-              );
-            }),
+  test('runPass maps provider errors to safe actionable failures', () async {
+    Future<Object> failureFor(Map<String, dynamic> error) async {
+      final service = OpenCodeReviewService(
+        OpenCodeTransport(
+          MockClient(
+            (request) async => http.Response(
+              jsonEncode({
+                'info': {
+                  'role': 'assistant',
+                  'error': error,
+                  'tokens': {'input': 4, 'output': 5},
+                  'cost': 0.25,
+                },
+                'parts': [],
+              }),
+              200,
+            ),
           ),
-          credentialsStore: MemoryCredentials(),
-          pollInterval: Duration.zero,
-        );
-        return service.runPass(
+        ),
+        credentialsStore: MemoryCredentials(),
+        pollInterval: Duration.zero,
+      );
+      try {
+        await service.runPass(
           snapshot(),
           'child',
           const ReviewReviewerConfiguration(
@@ -267,14 +271,119 @@ void main() {
             model: ReviewModelConfiguration(providerId: 'p', modelId: 'm'),
           ),
         );
+        fail('expected provider failure');
+      } on ReviewProviderFailure catch (error) {
+        return error;
       }
+    }
 
-      expect(run({'error': 'provider'}), throwsA(isA<ReviewProviderFailure>()));
-      expect(
-        run({
-          'structured': {'unexpected': true},
-        }),
-        throwsA(isA<FormatException>()),
+    final structured =
+        await failureFor({
+              'name': 'StructuredOutputError',
+              'data': {'message': 'raw model text and URL'},
+            })
+            as ReviewProviderFailure;
+    expect(structured.kind, ReviewProviderFailureKind.structuredOutputFailed);
+    expect(structured.message, contains('Choose another model'));
+    expect(structured.message, isNot(contains('raw model text')));
+    expect(structured.metrics.outputTokens, 5);
+    expect(structured.metrics.cost, .25);
+    expect(structured.metrics.duration, isNotNull);
+
+    final denied =
+        await failureFor({
+              'name': 'APIError',
+              'data': {
+                'statusCode': 403,
+                'message': 'raw URL and region restriction',
+                'responseBody': 'secret details',
+              },
+            })
+            as ReviewProviderFailure;
+    expect(denied.kind, ReviewProviderFailureKind.accessDenied);
+    expect(denied.message, contains('Access to this model is denied'));
+    expect(denied.message, isNot(contains('raw URL')));
+    expect(denied.message, isNot(contains('secret details')));
+
+    for (final testCase in [
+      (
+        error: {
+          'name': 'APIError',
+          'data': {'statusCode': 429},
+        },
+        kind: ReviewProviderFailureKind.rateLimited,
+        text: 'rate limited',
+      ),
+      (
+        error: {
+          'name': 'APIError',
+          'data': {'statusCode': 404},
+        },
+        kind: ReviewProviderFailureKind.unavailable,
+        text: 'temporarily unavailable',
+      ),
+      (
+        error: {
+          'name': 'APIError',
+          'data': {'statusCode': 503},
+        },
+        kind: ReviewProviderFailureKind.unavailable,
+        text: 'temporarily unavailable',
+      ),
+      (
+        error: {
+          'name': 'APIError',
+          'data': {'isRetryable': true},
+        },
+        kind: ReviewProviderFailureKind.unavailable,
+        text: 'temporarily unavailable',
+      ),
+    ]) {
+      final failure = await failureFor(testCase.error) as ReviewProviderFailure;
+      expect(failure.kind, testCase.kind);
+      expect(failure.message, contains(testCase.text));
+      expect(failure.message, isNot(contains('statusCode')));
+    }
+  });
+
+  test(
+    'runPass converts malformed structured output to a safe failure',
+    () async {
+      final service = OpenCodeReviewService(
+        OpenCodeTransport(
+          MockClient(
+            (request) async => http.Response(
+              jsonEncode({
+                'info': {
+                  'role': 'assistant',
+                  'structured': {'unexpected': true},
+                  'tokens': {'output': 5},
+                },
+                'parts': [],
+              }),
+              200,
+            ),
+          ),
+        ),
+        credentialsStore: MemoryCredentials(),
+        pollInterval: Duration.zero,
+      );
+      await expectLater(
+        service.runPass(
+          snapshot(),
+          'child',
+          const ReviewReviewerConfiguration(
+            role: ReviewRole.security,
+            model: ReviewModelConfiguration(providerId: 'p', modelId: 'm'),
+          ),
+        ),
+        throwsA(
+          isA<ReviewProviderFailure>().having(
+            (failure) => failure.kind,
+            'kind',
+            ReviewProviderFailureKind.structuredOutputInvalid,
+          ),
+        ),
       );
     },
   );

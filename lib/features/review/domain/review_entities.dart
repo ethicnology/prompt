@@ -235,8 +235,24 @@ class ReviewValidationFailure extends ReviewFailure {
   const ReviewValidationFailure(super.message);
 }
 
+enum ReviewProviderFailureKind {
+  structuredOutputFailed,
+  structuredOutputInvalid,
+  accessDenied,
+  rateLimited,
+  unavailable,
+  unknown,
+}
+
 class ReviewProviderFailure extends ReviewFailure {
-  const ReviewProviderFailure(super.message);
+  const ReviewProviderFailure(
+    super.message, {
+    this.kind = ReviewProviderFailureKind.unknown,
+    this.metrics = const ReviewPassMetrics(),
+  });
+
+  final ReviewProviderFailureKind kind;
+  final ReviewPassMetrics metrics;
 }
 
 class ReviewTimeoutFailure extends ReviewFailure {

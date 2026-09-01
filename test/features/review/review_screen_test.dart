@@ -341,7 +341,10 @@ void main() {
           _pass(
             ReviewRole.security,
             ReviewPassState.failed,
-            error: const ReviewProviderFailure('Pass failed'),
+            error: const ReviewProviderFailure(
+              'The model is rate limited. Try again later.',
+              kind: ReviewProviderFailureKind.rateLimited,
+            ),
           ),
           _pass(
             ReviewRole.testsAndRegressions,
@@ -352,7 +355,21 @@ void main() {
       );
       await tester.pump();
       expect(find.text('Review partially failed'), findsOneWidget);
-      expect(find.textContaining('Pass failed'), findsOneWidget);
+      expect(
+        find.text('Reason: The model is rate limited. Try again later.'),
+        findsOneWidget,
+      );
+
+      vm.value = ReviewRun(
+        state: ReviewRunState.failed,
+        snapshot: _snapshot,
+        passes: [_pass(ReviewRole.security, ReviewPassState.failed)],
+      );
+      await tester.pump();
+      expect(
+        find.text('Reason: The provider returned no failure details.'),
+        findsOneWidget,
+      );
     },
   );
 

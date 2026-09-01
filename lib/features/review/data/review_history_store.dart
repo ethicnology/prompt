@@ -653,13 +653,28 @@ class DriftReviewHistoryStore implements ReviewHistoryStore {
   }
 }
 
-String? _failureType(ReviewFailure? failure) => failure?.runtimeType.toString();
+String? _failureType(ReviewFailure? failure) {
+  if (failure == null) return null;
+  if (failure case final ReviewProviderFailure provider) {
+    return '${provider.runtimeType}:${provider.kind.name}';
+  }
+  return failure.runtimeType.toString();
+}
+
 ReviewFailure? _failure(String? type, String? message) {
   if (type == null || message == null) return null;
   if (type.contains('Cancelled')) return ReviewCancelledFailure(message);
   if (type.contains('Timeout')) return ReviewTimeoutFailure(message);
   if (type.contains('Validation')) return ReviewValidationFailure(message);
-  return ReviewProviderFailure(message);
+  final separator = type.indexOf(':');
+  final kindName = separator < 0 ? null : type.substring(separator + 1);
+  final kind = kindName == null
+      ? ReviewProviderFailureKind.unknown
+      : ReviewProviderFailureKind.values.firstWhere(
+          (value) => value.name == kindName,
+          orElse: () => ReviewProviderFailureKind.unknown,
+        );
+  return ReviewProviderFailure(message, kind: kind);
 }
 
 String _findingId(String reviewId, int passIndex, int ordinal) =>

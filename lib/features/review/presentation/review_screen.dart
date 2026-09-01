@@ -491,21 +491,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
           ],
         ),
         const SizedBox(height: 12),
-        for (final pass in run.passes)
-          ListTile(
-            leading: Icon(_icon(pass.state)),
-            title: Text(_role(pass.configuration.role)),
-            subtitle: Text(
-              '${pass.configuration.model.providerId} · ${pass.configuration.model.modelId}'
-              '${pass.error == null ? '' : '\n${pass.error!.message}'}',
-            ),
-            trailing: Semantics(
-              label:
-                  '${_role(pass.configuration.role)}: ${_passState(pass.state)}',
-              liveRegion: true,
-              child: Text(_passState(pass.state)),
-            ),
-          ),
+        for (final pass in run.passes) _passTile(pass),
         const SizedBox(height: 8),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -534,6 +520,48 @@ class _ReviewScreenState extends State<ReviewScreen> {
         },
       ],
     );
+  }
+
+  Widget _passTile(ReviewPass pass) {
+    final reason = _failureReason(pass);
+    return ListTile(
+      leading: Icon(_icon(pass.state)),
+      title: Text(_role(pass.configuration.role)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${pass.configuration.model.providerId} · ${pass.configuration.model.modelId}',
+          ),
+          if (reason != null)
+            Text(
+              'Reason: $reason',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+        ],
+      ),
+      trailing: Semantics(
+        label: '${_role(pass.configuration.role)}: ${_passState(pass.state)}',
+        liveRegion: true,
+        child: Text(_passState(pass.state)),
+      ),
+    );
+  }
+
+  String? _failureReason(ReviewPass pass) {
+    if (pass.state != ReviewPassState.failed &&
+        pass.state != ReviewPassState.timedOut &&
+        pass.state != ReviewPassState.cancelled) {
+      return null;
+    }
+    final message = pass.error?.message.trim();
+    if (message != null && message.isNotEmpty) return message;
+    return switch (pass.state) {
+      ReviewPassState.failed => 'The provider returned no failure details.',
+      ReviewPassState.timedOut => 'The reviewer timed out.',
+      ReviewPassState.cancelled => 'The reviewer was cancelled.',
+      _ => null,
+    };
   }
 
   Widget _overview(ReviewRun run, List<ReviewFinding> findings) {
