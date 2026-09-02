@@ -1177,14 +1177,59 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 }
 
-class _ExecutionIndicator extends StatelessWidget {
+class _ExecutionIndicator extends StatefulWidget {
   const _ExecutionIndicator({required this.state});
 
   final SessionExecutionState state;
 
   @override
+  State<_ExecutionIndicator> createState() => _ExecutionIndicatorState();
+}
+
+class _ExecutionIndicatorState extends State<_ExecutionIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    duration: const Duration(milliseconds: 1200),
+    vsync: this,
+  );
+
+  bool get _isActive =>
+      widget.state is SessionBusy || widget.state is SessionRetrying;
+
+  void _updateAnimation() {
+    final shouldAnimate = _isActive && !MediaQuery.disableAnimationsOf(context);
+    if (shouldAnimate) {
+      if (!_controller.isAnimating) _controller.repeat();
+    } else {
+      _controller
+        ..stop()
+        ..reset();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _updateAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ExecutionIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state.runtimeType != widget.state.runtimeType) {
+      _updateAnimation();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final (label, icon) = switch (state) {
+    final (label, icon) = switch (widget.state) {
       SessionBusy() => ('Working', Icons.sync_rounded),
       SessionIdle() => ('Idle', Icons.check_circle_outline_rounded),
       SessionRetrying() => ('Retrying', Icons.replay_rounded),
@@ -1198,7 +1243,11 @@ class _ExecutionIndicator extends StatelessWidget {
         child: Semantics(
           liveRegion: true,
           label: 'Execution status: $label',
-          child: Icon(icon, size: 22),
+          child: RotationTransition(
+            key: const ValueKey('conversation-execution-spin'),
+            turns: _controller,
+            child: Icon(icon, size: 22),
+          ),
         ),
       ),
     );

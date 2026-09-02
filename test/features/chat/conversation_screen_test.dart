@@ -395,6 +395,7 @@ void main() {
     ThemeData? theme,
     double textScale = 1.0,
     double viewInsetsBottom = 0,
+    bool disableAnimations = false,
     OpenCodeSession? activeSession,
   }) async {
     // Default to a settled, empty transcript unless a test seeds its own:
@@ -411,6 +412,7 @@ void main() {
             size: tester.binding.renderViews.first.constraints.biggest,
             textScaler: TextScaler.linear(textScale),
             viewInsets: EdgeInsets.only(bottom: viewInsetsBottom),
+            disableAnimations: disableAnimations,
           ),
           child: child!,
         ),
@@ -1361,6 +1363,79 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('animates the execution icon while busy and stops when idle', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpScreen(tester);
+
+    viewModel.executionState.value = const SessionBusy();
+    await tester.pump();
+    final rotation = tester.widget<RotationTransition>(
+      find.byKey(const ValueKey('conversation-execution-spin')),
+    );
+    final initialTurns = rotation.turns.value;
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(
+      tester
+          .widget<RotationTransition>(
+            find.byKey(const ValueKey('conversation-execution-spin')),
+          )
+          .turns
+          .value,
+      isNot(closeTo(initialTurns, 0.001)),
+    );
+
+    viewModel.executionState.value = const SessionIdle();
+    await tester.pump();
+    final stoppedTurns = tester
+        .widget<RotationTransition>(
+          find.byKey(const ValueKey('conversation-execution-spin')),
+        )
+        .turns
+        .value;
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(
+      tester
+          .widget<RotationTransition>(
+            find.byKey(const ValueKey('conversation-execution-spin')),
+          )
+          .turns
+          .value,
+      closeTo(stoppedTurns, 0.001),
+    );
+  });
+
+  testWidgets(
+    'does not animate the execution icon when animations are disabled',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(600, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await pumpScreen(tester, disableAnimations: true);
+
+      viewModel.executionState.value = const SessionBusy();
+      await tester.pump();
+      final initialTurns = tester
+          .widget<RotationTransition>(
+            find.byKey(const ValueKey('conversation-execution-spin')),
+          )
+          .turns
+          .value;
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(
+        tester
+            .widget<RotationTransition>(
+              find.byKey(const ValueKey('conversation-execution-spin')),
+            )
+            .turns
+            .value,
+        closeTo(initialTurns, 0.001),
+      );
+    },
+  );
 
   testWidgets('keeps a compact selectable user message legible in dark theme', (
     tester,
