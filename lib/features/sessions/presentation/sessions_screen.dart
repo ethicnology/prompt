@@ -72,7 +72,14 @@ class _SessionsScreenState extends State<SessionsScreen> {
   @override
   Widget build(BuildContext context) {
     final body = _buildBody();
-    if (widget.embedded) return body;
+    if (widget.embedded) {
+      return Column(
+        children: [
+          _buildEmbeddedHeader(context),
+          Expanded(child: body),
+        ],
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 72,
@@ -103,69 +110,109 @@ class _SessionsScreenState extends State<SessionsScreen> {
           // No refresh action here: the session list is pull-to-refresh.
           // Secondary destinations live in one menu so a phone-width app bar
           // keeps a single, reachable primary action.
-          PopupMenuButton<_CatalogAction>(
-            tooltip: 'More actions',
-            onSelected: (action) {
-              switch (action) {
-                case _CatalogAction.workspace:
-                  final state = widget.viewModel.value;
-                  if (state case SessionsReady(:final projects)) {
-                    widget.onOpenWorkspace(projects);
-                  }
-                case _CatalogAction.terminal:
-                  widget.onOpenTerminal();
-                case _CatalogAction.diagnostics:
-                  widget.onOpenDiagnostics();
-                case _CatalogAction.voiceSettings:
-                  widget.onOpenVoiceSettings();
-                case _CatalogAction.disconnect:
-                  widget.onDisconnect();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: _CatalogAction.workspace,
-                enabled: widget.viewModel.value is SessionsReady,
-                child: const ListTile(
-                  leading: Icon(Icons.folder_open_outlined),
-                  title: Text('Browse workspace'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.terminal,
-                child: ListTile(
-                  leading: Icon(Icons.terminal_outlined),
-                  title: Text('Remote terminal'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.diagnostics,
-                child: ListTile(
-                  leading: Icon(Icons.settings_outlined),
-                  title: Text('Server settings'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.voiceSettings,
-                child: ListTile(
-                  leading: Icon(Icons.mic_none_outlined),
-                  title: Text('Voice settings'),
-                ),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: _CatalogAction.disconnect,
-                child: ListTile(
-                  leading: Icon(Icons.power_settings_new_rounded),
-                  title: Text('Disconnect'),
-                ),
-              ),
-            ],
-          ),
+          _buildCatalogMenu(),
           const SizedBox(width: 4),
         ],
       ),
       body: body,
+    );
+  }
+
+  Widget _buildEmbeddedHeader(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: kMinInteractiveDimension),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.only(left: 16, right: 4),
+        child: Row(
+          children: [
+            const _OnlineDot(),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                widget.profile.displayOrigin,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                semanticsLabel:
+                    'Connected server ${widget.profile.displayOrigin}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+            _buildCatalogMenu(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _onCatalogAction(_CatalogAction action) {
+    switch (action) {
+      case _CatalogAction.workspace:
+        final state = widget.viewModel.value;
+        if (state case SessionsReady(:final projects)) {
+          widget.onOpenWorkspace(projects);
+        }
+      case _CatalogAction.terminal:
+        widget.onOpenTerminal();
+      case _CatalogAction.diagnostics:
+        widget.onOpenDiagnostics();
+      case _CatalogAction.voiceSettings:
+        widget.onOpenVoiceSettings();
+      case _CatalogAction.disconnect:
+        widget.onDisconnect();
+    }
+  }
+
+  PopupMenuButton<_CatalogAction> _buildCatalogMenu() {
+    return PopupMenuButton<_CatalogAction>(
+      tooltip: 'More actions',
+      onSelected: _onCatalogAction,
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: _CatalogAction.workspace,
+          enabled: widget.viewModel.value is SessionsReady,
+          child: const ListTile(
+            leading: Icon(Icons.folder_open_outlined),
+            title: Text('Browse workspace'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.terminal,
+          child: ListTile(
+            leading: Icon(Icons.terminal_outlined),
+            title: Text('Remote terminal'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.diagnostics,
+          child: ListTile(
+            leading: Icon(Icons.settings_outlined),
+            title: Text('Server settings'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.voiceSettings,
+          child: ListTile(
+            leading: Icon(Icons.mic_none_outlined),
+            title: Text('Voice settings'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: _CatalogAction.disconnect,
+          child: ListTile(
+            leading: Icon(Icons.power_settings_new_rounded),
+            title: Text('Disconnect'),
+          ),
+        ),
+      ],
     );
   }
 

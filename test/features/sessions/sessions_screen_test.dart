@@ -389,6 +389,89 @@ void main() {
     viewModel.dispose();
   });
 
+  testWidgets('embedded catalog exposes destinations and server origin', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response(
+          '[{"id":"project","worktree":"/srv/project"}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session') {
+        return http.Response(
+          '[{"id":"session","projectID":"project","directory":"/srv/project",'
+          '"title":"Session","time":{"created":1000,"updated":1000}}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session/status') {
+        return http.Response('{}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    var workspaces = 0;
+    var terminals = 0;
+    var diagnostics = 0;
+    var voiceSettings = 0;
+    var disconnects = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionsScreen(
+            embedded: true,
+            profile: profile,
+            viewModel: viewModel,
+            onOpenSession: (_) {},
+            onOpenWorkspace: (_) => workspaces++,
+            onOpenTerminal: () => terminals++,
+            onOpenDiagnostics: () => diagnostics++,
+            onOpenVoiceSettings: () => voiceSettings++,
+            onDisconnect: () => disconnects++,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text(profile.displayOrigin), findsOneWidget);
+    expect(find.byTooltip('More actions'), findsOneWidget);
+    final menu = find.byTooltip('More actions');
+    for (final label in [
+      'Browse workspace',
+      'Remote terminal',
+      'Server settings',
+      'Voice settings',
+      'Disconnect',
+    ]) {
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+    expect(workspaces, 1);
+    expect(terminals, 1);
+    expect(diagnostics, 1);
+    expect(voiceSettings, 1);
+    expect(disconnects, 1);
+    viewModel.dispose();
+  });
+
   testWidgets('offers known project paths before the server search', (
     tester,
   ) async {

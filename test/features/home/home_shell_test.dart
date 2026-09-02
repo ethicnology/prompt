@@ -144,6 +144,16 @@ void main() {
       );
       expect(find.byType(SessionsScreen), findsOneWidget);
       expect(find.text('Start a conversation'), findsNothing);
+      expect(find.byTooltip('More actions'), findsOneWidget);
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Browse workspace'), findsOneWidget);
+      expect(find.text('Remote terminal'), findsOneWidget);
+      expect(find.text('Server settings'), findsOneWidget);
+      expect(find.text('Voice settings'), findsOneWidget);
+      expect(find.text('Disconnect'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
 
       final catalogBefore = tester.getRect(find.byType(SessionsScreen)).width;
       await tester.drag(
