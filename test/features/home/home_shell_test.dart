@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -238,4 +239,71 @@ void main() {
       expect(find.byType(SessionsScreen), findsOneWidget);
     },
   );
+
+  testWidgets('desktop pane splitter is reachable by pointer and keyboard', (
+    tester,
+  ) async {
+    final deps = await dependencies();
+    final conversation = _FakeConversationViewModel();
+    await tester.binding.setSurfaceSize(const Size(1100, 700));
+    addTearDown(() async {
+      await deps.dispose();
+      await conversation.dispose();
+      await tester.binding.setSurfaceSize(null);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: HomeShell(
+            profile: profile,
+            sessionsViewModel: deps.sessionsViewModel,
+            conversationViewModel: conversation,
+            capabilitiesViewModel: deps.capabilitiesViewModel,
+            workspaceViewModel: deps.workspaceViewModel,
+            terminalViewModel: deps.terminalViewModel,
+            diagnosticsViewModel: deps.diagnosticsViewModel,
+            voiceViewModel: deps.voiceViewModel,
+            localNotificationService: deps.localNotificationService,
+            themeViewModel: deps.themeViewModel,
+            onReconnect: () async => true,
+            onDisconnect: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final splitter = find.byKey(const ValueKey('home-session-catalog-divider'));
+    // WCAG 2.5.8 Target Size (Minimum), Level AA.
+    expect(tester.getRect(splitter).width, greaterThanOrEqualTo(24));
+
+    final focusNode = tester
+        .widget<FocusableActionDetector>(
+          find.descendant(
+            of: splitter,
+            matching: find.byType(FocusableActionDetector),
+          ),
+        )
+        .focusNode!;
+    focusNode.requestFocus();
+    await tester.pump();
+    expect(focusNode.hasFocus, isTrue);
+
+    final widened = tester.getRect(find.byType(SessionsScreen)).width;
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(
+      tester.getRect(find.byType(SessionsScreen)).width,
+      greaterThan(widened),
+    );
+
+    final narrowed = tester.getRect(find.byType(SessionsScreen)).width;
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pump();
+    expect(
+      tester.getRect(find.byType(SessionsScreen)).width,
+      lessThan(narrowed),
+    );
+    expect(tester.takeException(), isNull);
+  });
 }
