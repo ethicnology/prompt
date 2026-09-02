@@ -25,6 +25,7 @@ import 'package:prompt/features/chat/domain/session_artifacts.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/chat/presentation/conversation_screen.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
+import 'package:prompt/features/chat/presentation/widgets/composer.dart';
 import 'package:prompt/features/chat/presentation/widgets/session_artifacts_panel.dart';
 import 'package:prompt/features/capabilities/data/capabilities_repository.dart';
 import 'package:prompt/features/capabilities/data/opencode_capabilities_service.dart';
@@ -856,6 +857,74 @@ void main() {
     expect(find.text('Hold to talk'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('honors the reduced-motion preference in voice mode', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(480, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = TextEditingController();
+    final attachments = ValueNotifier<List<PromptAttachment>>([]);
+    final voiceState = ValueNotifier<VoiceUiState>(const VoiceReady());
+    addTearDown(() {
+      controller.dispose();
+      attachments.dispose();
+      voiceState.dispose();
+    });
+
+    Future<void> pumpComposer({required bool disableAnimations}) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(disableAnimations: disableAnimations),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Composer(
+              controller: controller,
+              command: null,
+              attachments: attachments,
+              onRemoveAttachment: (_) {},
+              onSubmit: () async {},
+              voiceState: voiceState,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    List<Duration> voiceAnimationDurations() {
+      final animations = find.descendant(
+        of: find.byType(Composer),
+        matching: find.byType(AnimatedContainer),
+      );
+      return [
+        for (final animation in tester.widgetList<AnimatedContainer>(
+          animations,
+        ))
+          animation.duration,
+      ];
+    }
+
+    await pumpComposer(disableAnimations: false);
+    expect(
+      voiceAnimationDurations(),
+      unorderedEquals(<Duration>[
+        const Duration(milliseconds: 180),
+        const Duration(milliseconds: 140),
+      ]),
+    );
+
+    await pumpComposer(disableAnimations: true);
+    expect(
+      voiceAnimationDurations(),
+      unorderedEquals(<Duration>[Duration.zero, Duration.zero]),
+    );
   });
 
   testWidgets('push to talk supports a held keyboard key and ignores repeats', (
