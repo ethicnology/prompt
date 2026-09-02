@@ -389,6 +389,89 @@ void main() {
     viewModel.dispose();
   });
 
+  testWidgets('embedded catalog exposes destinations and server origin', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response(
+          '[{"id":"project","worktree":"/srv/project"}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session') {
+        return http.Response(
+          '[{"id":"session","projectID":"project","directory":"/srv/project",'
+          '"title":"Session","time":{"created":1000,"updated":1000}}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session/status') {
+        return http.Response('{}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    var workspaces = 0;
+    var terminals = 0;
+    var diagnostics = 0;
+    var voiceSettings = 0;
+    var disconnects = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionsScreen(
+            embedded: true,
+            profile: profile,
+            viewModel: viewModel,
+            onOpenSession: (_) {},
+            onOpenWorkspace: (_) => workspaces++,
+            onOpenTerminal: () => terminals++,
+            onOpenDiagnostics: () => diagnostics++,
+            onOpenVoiceSettings: () => voiceSettings++,
+            onDisconnect: () => disconnects++,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text(profile.displayOrigin), findsOneWidget);
+    expect(find.byTooltip('More actions'), findsOneWidget);
+    final menu = find.byTooltip('More actions');
+    for (final label in [
+      'Browse workspace',
+      'Remote terminal',
+      'Server settings',
+      'Voice settings',
+      'Disconnect',
+    ]) {
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+    expect(workspaces, 1);
+    expect(terminals, 1);
+    expect(diagnostics, 1);
+    expect(voiceSettings, 1);
+    expect(disconnects, 1);
+    viewModel.dispose();
+  });
+
   testWidgets('offers known project paths before the server search', (
     tester,
   ) async {
@@ -568,6 +651,70 @@ void main() {
     expect(find.text('a-very-long-project-name'), findsWidgets);
     expect(tester.takeException(), isNull);
     viewModel.dispose();
+  });
+
+  testWidgets('reloads the catalog when the app regains focus', (tester) async {
+    var sessionRequests = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response('[{"id":"project","worktree":"/srv/p"}]', 200);
+      }
+      if (request.url.path == '/session') {
+        sessionRequests += 1;
+        return http.Response(_renameSessionJson, 200);
+      }
+      if (request.url.path == '/session/status') {
+        return http.Response('{}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    addTearDown(viewModel.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SessionsScreen(
+          profile: profile,
+          viewModel: viewModel,
+          onOpenSession: (_) {},
+          onOpenWorkspace: (_) {},
+          onOpenTerminal: () {},
+          onOpenDiagnostics: () {},
+          onOpenVoiceSettings: () {},
+          onDisconnect: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // One load fans out to several /session calls: one global, one per project
+    // directory. Compare load cycles rather than a raw request count.
+    final afterInitialLoad = sessionRequests;
+    expect(afterInitialLoad, greaterThan(0));
+
+    // Losing and regaining focus is what a desktop window does on alt-tab.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    // The cooldown suppresses the reload this soon after the initial load.
+    expect(sessionRequests, afterInitialLoad);
+
+    await tester.pump(const Duration(seconds: 20));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    expect(sessionRequests, greaterThan(afterInitialLoad));
+    expect(tester.takeException(), isNull);
   });
 }
 

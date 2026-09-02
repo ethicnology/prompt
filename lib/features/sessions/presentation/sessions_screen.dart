@@ -48,23 +48,52 @@ class SessionsScreen extends StatefulWidget {
   State<SessionsScreen> createState() => _SessionsScreenState();
 }
 
+/// Shortest delay between two focus-triggered reloads of the catalog.
+///
+/// Regaining focus is a good moment to refresh, but it fires again on every
+/// alt-tab. This keeps a burst of window switches from turning into a burst of
+/// requests, which the product's data and battery budget does not allow.
+const _focusRefreshCooldown = Duration(seconds: 15);
+
 class _SessionsScreenState extends State<SessionsScreen> {
   final _searchController = TextEditingController();
   String? _selectedProjectId;
+  late final AppLifecycleListener _lifecycleListener;
+  Timer? _focusCooldown;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
-    widget.viewModel.load(widget.profile);
+    _lifecycleListener = AppLifecycleListener(onResume: _refreshOnResume);
+    unawaited(_load());
   }
 
   @override
   void dispose() {
+    _focusCooldown?.cancel();
+    _lifecycleListener.dispose();
     _searchController
       ..removeListener(_onSearchChanged)
       ..dispose();
     super.dispose();
+  }
+
+  Future<void> _load() {
+    _focusCooldown?.cancel();
+    _focusCooldown = Timer(_focusRefreshCooldown, () {});
+    return widget.viewModel.load(widget.profile);
+  }
+
+  /// Reloads the catalog when the window or app regains focus.
+  ///
+  /// The catalog has no live subscription: sessions created or renamed
+  /// elsewhere would otherwise stay stale until a manual refresh. Polling on a
+  /// timer would keep fetching while nobody is looking, so the refresh is tied
+  /// to the moment the user comes back instead.
+  void _refreshOnResume() {
+    if (_focusCooldown?.isActive ?? false) return;
+    unawaited(_load());
   }
 
   void _onSearchChanged() => setState(() {});
@@ -72,7 +101,14 @@ class _SessionsScreenState extends State<SessionsScreen> {
   @override
   Widget build(BuildContext context) {
     final body = _buildBody();
-    if (widget.embedded) return body;
+    if (widget.embedded) {
+      return Column(
+        children: [
+          _buildEmbeddedHeader(context),
+          Expanded(child: body),
+        ],
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 72,
@@ -103,69 +139,109 @@ class _SessionsScreenState extends State<SessionsScreen> {
           // No refresh action here: the session list is pull-to-refresh.
           // Secondary destinations live in one menu so a phone-width app bar
           // keeps a single, reachable primary action.
-          PopupMenuButton<_CatalogAction>(
-            tooltip: 'More actions',
-            onSelected: (action) {
-              switch (action) {
-                case _CatalogAction.workspace:
-                  final state = widget.viewModel.value;
-                  if (state case SessionsReady(:final projects)) {
-                    widget.onOpenWorkspace(projects);
-                  }
-                case _CatalogAction.terminal:
-                  widget.onOpenTerminal();
-                case _CatalogAction.diagnostics:
-                  widget.onOpenDiagnostics();
-                case _CatalogAction.voiceSettings:
-                  widget.onOpenVoiceSettings();
-                case _CatalogAction.disconnect:
-                  widget.onDisconnect();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: _CatalogAction.workspace,
-                enabled: widget.viewModel.value is SessionsReady,
-                child: const ListTile(
-                  leading: Icon(Icons.folder_open_outlined),
-                  title: Text('Browse workspace'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.terminal,
-                child: ListTile(
-                  leading: Icon(Icons.terminal_outlined),
-                  title: Text('Remote terminal'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.diagnostics,
-                child: ListTile(
-                  leading: Icon(Icons.settings_outlined),
-                  title: Text('Server settings'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _CatalogAction.voiceSettings,
-                child: ListTile(
-                  leading: Icon(Icons.mic_none_outlined),
-                  title: Text('Voice settings'),
-                ),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: _CatalogAction.disconnect,
-                child: ListTile(
-                  leading: Icon(Icons.power_settings_new_rounded),
-                  title: Text('Disconnect'),
-                ),
-              ),
-            ],
-          ),
+          _buildCatalogMenu(),
           const SizedBox(width: 4),
         ],
       ),
       body: body,
+    );
+  }
+
+  Widget _buildEmbeddedHeader(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: kMinInteractiveDimension),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.only(left: 16, right: 4),
+        child: Row(
+          children: [
+            const _OnlineDot(),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                widget.profile.displayOrigin,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                semanticsLabel:
+                    'Connected server ${widget.profile.displayOrigin}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+            _buildCatalogMenu(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _onCatalogAction(_CatalogAction action) {
+    switch (action) {
+      case _CatalogAction.workspace:
+        final state = widget.viewModel.value;
+        if (state case SessionsReady(:final projects)) {
+          widget.onOpenWorkspace(projects);
+        }
+      case _CatalogAction.terminal:
+        widget.onOpenTerminal();
+      case _CatalogAction.diagnostics:
+        widget.onOpenDiagnostics();
+      case _CatalogAction.voiceSettings:
+        widget.onOpenVoiceSettings();
+      case _CatalogAction.disconnect:
+        widget.onDisconnect();
+    }
+  }
+
+  PopupMenuButton<_CatalogAction> _buildCatalogMenu() {
+    return PopupMenuButton<_CatalogAction>(
+      tooltip: 'More actions',
+      onSelected: _onCatalogAction,
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: _CatalogAction.workspace,
+          enabled: widget.viewModel.value is SessionsReady,
+          child: const ListTile(
+            leading: Icon(Icons.folder_open_outlined),
+            title: Text('Browse workspace'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.terminal,
+          child: ListTile(
+            leading: Icon(Icons.terminal_outlined),
+            title: Text('Remote terminal'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.diagnostics,
+          child: ListTile(
+            leading: Icon(Icons.settings_outlined),
+            title: Text('Server settings'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _CatalogAction.voiceSettings,
+          child: ListTile(
+            leading: Icon(Icons.mic_none_outlined),
+            title: Text('Voice settings'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: _CatalogAction.disconnect,
+          child: ListTile(
+            leading: Icon(Icons.power_settings_new_rounded),
+            title: Text('Disconnect'),
+          ),
+        ),
+      ],
     );
   }
 
@@ -180,7 +256,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           ),
           SessionsError(:final failure) => _SessionsError(
             failure: failure,
-            onRetry: () => widget.viewModel.load(widget.profile),
+            onRetry: _load,
           ),
           SessionsReady(
             :final sessions,
@@ -249,7 +325,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           selectedProjectId: selectedProjectId,
           onSelectProject: (id) => setState(() => _selectedProjectId = id),
           onCreate: () => _createSession(projects),
-          onRefresh: () => widget.viewModel.load(widget.profile),
+          onRefresh: _load,
         ),
         Expanded(
           child: visibleSessions.isEmpty
@@ -262,7 +338,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                   onCreate: () => _createSession(projects),
                 )
               : RefreshIndicator(
-                  onRefresh: () => widget.viewModel.load(widget.profile),
+                  onRefresh: _load,
                   child: ListView.separated(
                     keyboardDismissBehavior:
                         ScrollViewKeyboardDismissBehavior.onDrag,
