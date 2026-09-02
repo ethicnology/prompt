@@ -248,116 +248,93 @@ class _ConversationScreenState extends State<ConversationScreen>
   }
 
   Future<void> _selectCommand(List<OpenCodeSlashCommand> commands) async {
-    final selectedName = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Slash command'),
-        content: SizedBox(
-          width: 420,
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              ListTile(
-                title: const Text('Message'),
-                subtitle: const Text('Send a regular queued prompt'),
-                onTap: () => Navigator.of(context).pop(''),
-              ),
-              for (final command in commands)
-                ListTile(
-                  title: Text('/${command.name}'),
-                  subtitle: Text(command.description ?? 'Run slash command'),
-                  selected: command.name == _selectedCommand?.name,
-                  onTap: () => Navigator.of(context).pop(command.name),
-                ),
-            ],
+    final selectedName = await _showAdaptiveChoice<String>(
+      title: 'Slash command',
+      builder: (context, controller) => ListView(
+        controller: controller,
+        shrinkWrap: true,
+        children: [
+          ListTile(
+            title: const Text('Message'),
+            subtitle: const Text('Send a regular queued prompt'),
+            onTap: () => Navigator.of(context).pop(const _Selection('')),
           ),
-        ),
+          for (final command in commands)
+            ListTile(
+              title: Text('/${command.name}'),
+              subtitle: Text(command.description ?? 'Run slash command'),
+              selected: command.name == _selectedCommand?.name,
+              onTap: () => Navigator.of(context).pop(_Selection(command.name)),
+            ),
+        ],
       ),
     );
     if (!mounted || selectedName == null) {
       return;
     }
     setState(
-      () => _selectedCommand = selectedName.isEmpty
+      () => _selectedCommand = selectedName.value!.isEmpty
           ? null
-          : commands.firstWhere((command) => command.name == selectedName),
+          : commands.firstWhere(
+              (command) => command.name == selectedName.value,
+            ),
     );
   }
 
   Future<void> _selectExecutionOptions(
     OpenCodeCapabilities capabilities,
   ) async {
-    final selected = await showDialog<PromptExecutionOptions>(
-      context: context,
-      builder: (context) {
+    final selected = await _showAdaptiveChoice<PromptExecutionOptions>(
+      title: 'Prompt execution',
+      builder: (context, controller) {
         var model = _selectedModel(capabilities.models);
         var agent = _selectedAgent(capabilities.agents);
         return StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('Prompt execution'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+          builder: (context, setDialogState) => ListView(
+            controller: controller,
+            shrinkWrap: true,
+            children: [
+              _ExecutionChoice(
+                label: 'Model',
+                value: model?.name ?? 'Default',
+                onTap: () async {
+                  final choice = await _chooseModel(capabilities.models, model);
+                  if (choice != null) {
+                    setDialogState(() => model = choice.value);
+                  }
+                },
+              ),
+              _ExecutionChoice(
+                label: 'Agent',
+                value: agent?.name ?? 'Default',
+                onTap: () async {
+                  final choice = await _chooseAgent(capabilities.agents, agent);
+                  if (choice != null) {
+                    setDialogState(() => agent = choice.value);
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  DropdownButtonFormField<OpenCodeModel?>(
-                    initialValue: model,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Model'),
-                    items: [
-                      const DropdownMenuItem(
-                        value: null,
-                        child: Text('Default'),
-                      ),
-                      ...capabilities.models
-                          .where((candidate) => candidate.isProviderConnected)
-                          .map(
-                            (candidate) => DropdownMenuItem(
-                              value: candidate,
-                              child: Text(
-                                candidate.name,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ),
-                    ],
-                    onChanged: (value) => setDialogState(() => model = value),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
                   ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<OpenCodeAgent?>(
-                    initialValue: agent,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Agent'),
-                    items: [
-                      const DropdownMenuItem(
-                        value: null,
-                        child: Text('Default'),
-                      ),
-                      ...capabilities.agents.map(
-                        (candidate) => DropdownMenuItem(
-                          value: candidate,
-                          child: Text(candidate.name),
+                  FilledButton(
+                    onPressed: () => Navigator.of(context).pop(
+                      _Selection(
+                        PromptExecutionOptions(
+                          modelProviderId: model?.providerId,
+                          modelId: model?.id,
+                          agentName: agent?.name,
                         ),
                       ),
-                    ],
-                    onChanged: (value) => setDialogState(() => agent = value),
+                    ),
+                    child: const Text('Apply'),
                   ),
                 ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(
-                  PromptExecutionOptions(
-                    modelProviderId: model?.providerId,
-                    modelId: model?.id,
-                    agentName: agent?.name,
-                  ),
-                ),
-                child: const Text('Apply'),
               ),
             ],
           ),
@@ -365,14 +342,126 @@ class _ConversationScreenState extends State<ConversationScreen>
       },
     );
     if (selected != null && mounted) {
-      _executionOptions.value = selected;
+      _executionOptions.value = selected.value!;
       widget.viewModel.rememberExecutionOptions(
         widget.profile,
         widget.session,
-        selected,
+        selected.value!,
       );
     }
   }
+
+  Future<_Selection<T>?> _showAdaptiveChoice<T>({
+    required String title,
+    required Widget Function(BuildContext, ScrollController) builder,
+  }) {
+    final isCompact =
+        MediaQuery.sizeOf(context).width < PromptBreakpoints.tablet;
+    if (isCompact) {
+      return showModalBottomSheet<_Selection<T>>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        showDragHandle: true,
+        builder: (sheetContext) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+          ),
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.65,
+            minChildSize: 0.35,
+            maxChildSize: 0.95,
+            builder: (context, controller) => Material(
+              color: Theme.of(context).colorScheme.surface,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
+                    child: Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                  ),
+                  Expanded(child: builder(context, controller)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return showDialog<_Selection<T>>(
+      context: context,
+      builder: (dialogContext) {
+        final usableHeight =
+            MediaQuery.sizeOf(dialogContext).height -
+            MediaQuery.viewInsetsOf(dialogContext).bottom;
+        final contentMaxHeight = (usableHeight - 180).clamp(120.0, 560.0);
+        return AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 420,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: contentMaxHeight),
+              child: builder(dialogContext, ScrollController()),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<_Selection<OpenCodeModel>?> _chooseModel(
+    List<OpenCodeModel> models,
+    OpenCodeModel? selected,
+  ) => _showAdaptiveChoice<OpenCodeModel>(
+    title: 'Model',
+    builder: (context, controller) => ListView(
+      controller: controller,
+      children: [
+        ListTile(
+          title: const Text('Default'),
+          selected: selected == null,
+          onTap: () => Navigator.of(context).pop(const _Selection(null)),
+        ),
+        for (final candidate in models.where(
+          (model) => model.isProviderConnected,
+        ))
+          ListTile(
+            title: Text(candidate.name),
+            selected: candidate == selected,
+            onTap: () => Navigator.of(context).pop(_Selection(candidate)),
+          ),
+      ],
+    ),
+  );
+
+  Future<_Selection<OpenCodeAgent>?> _chooseAgent(
+    List<OpenCodeAgent> agents,
+    OpenCodeAgent? selected,
+  ) => _showAdaptiveChoice<OpenCodeAgent>(
+    title: 'Agent',
+    builder: (context, controller) => ListView(
+      controller: controller,
+      children: [
+        ListTile(
+          title: const Text('Default'),
+          selected: selected == null,
+          onTap: () => Navigator.of(context).pop(const _Selection(null)),
+        ),
+        for (final candidate in agents)
+          ListTile(
+            title: Text(candidate.name),
+            selected: candidate == selected,
+            onTap: () => Navigator.of(context).pop(_Selection(candidate)),
+          ),
+      ],
+    ),
+  );
 
   OpenCodeModel? _selectedModel(List<OpenCodeModel> models) {
     for (final model in models) {
@@ -1112,6 +1201,34 @@ class _ExecutionIndicator extends StatelessWidget {
           child: Icon(icon, size: 22),
         ),
       ),
+    );
+  }
+}
+
+class _Selection<T> {
+  const _Selection(this.value);
+
+  final T? value;
+}
+
+class _ExecutionChoice extends StatelessWidget {
+  const _ExecutionChoice({
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text(label),
+      subtitle: Text(value),
+      trailing: const Icon(Icons.chevron_right_rounded),
+      onTap: onTap,
     );
   }
 }
