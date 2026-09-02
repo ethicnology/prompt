@@ -25,6 +25,7 @@ import 'package:prompt/features/chat/domain/session_artifacts.dart';
 import 'package:prompt/features/chat/domain/session_execution_state.dart';
 import 'package:prompt/features/chat/presentation/conversation_screen.dart';
 import 'package:prompt/features/chat/presentation/conversation_view_model.dart';
+import 'package:prompt/features/chat/presentation/widgets/composer.dart';
 import 'package:prompt/features/chat/presentation/widgets/session_artifacts_panel.dart';
 import 'package:prompt/features/capabilities/data/capabilities_repository.dart';
 import 'package:prompt/features/capabilities/data/opencode_capabilities_service.dart';
@@ -212,6 +213,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
 
   int rejectQuestionCallCount = 0;
   String? lastRejectedRequestId;
+  bool approvalSubmissionSucceeds = true;
   String? lastRevertedMessageId;
 
   int _nextId = 0;
@@ -288,32 +290,35 @@ class _FakeConversationViewModel extends ConversationViewModel {
   }
 
   @override
-  Future<void> respondToPermission(
+  Future<bool> respondToPermission(
     String permissionId,
     PermissionResponse response,
   ) async {
     respondToPermissionCallCount++;
     lastPermissionId = permissionId;
     lastPermissionResponse = response;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
-  Future<void> replyToQuestion(
+  Future<bool> replyToQuestion(
     String requestId,
     List<List<String>> answers,
   ) async {
     replyToQuestionCallCount++;
     lastQuestionRequestId = requestId;
     lastQuestionAnswers = answers;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
-  Future<void> rejectQuestion(String requestId) async {
+  Future<bool> rejectQuestion(String requestId) async {
     rejectQuestionCallCount++;
     lastRejectedRequestId = requestId;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
@@ -852,6 +857,74 @@ void main() {
     expect(find.text('Hold to talk'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('honors the reduced-motion preference in voice mode', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(480, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = TextEditingController();
+    final attachments = ValueNotifier<List<PromptAttachment>>([]);
+    final voiceState = ValueNotifier<VoiceUiState>(const VoiceReady());
+    addTearDown(() {
+      controller.dispose();
+      attachments.dispose();
+      voiceState.dispose();
+    });
+
+    Future<void> pumpComposer({required bool disableAnimations}) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(disableAnimations: disableAnimations),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Composer(
+              controller: controller,
+              command: null,
+              attachments: attachments,
+              onRemoveAttachment: (_) {},
+              onSubmit: () async {},
+              voiceState: voiceState,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    List<Duration> voiceAnimationDurations() {
+      final animations = find.descendant(
+        of: find.byType(Composer),
+        matching: find.byType(AnimatedContainer),
+      );
+      return [
+        for (final animation in tester.widgetList<AnimatedContainer>(
+          animations,
+        ))
+          animation.duration,
+      ];
+    }
+
+    await pumpComposer(disableAnimations: false);
+    expect(
+      voiceAnimationDurations(),
+      unorderedEquals(<Duration>[
+        const Duration(milliseconds: 180),
+        const Duration(milliseconds: 140),
+      ]),
+    );
+
+    await pumpComposer(disableAnimations: true);
+    expect(
+      voiceAnimationDurations(),
+      unorderedEquals(<Duration>[Duration.zero, Duration.zero]),
+    );
   });
 
   testWidgets('push to talk supports a held keyboard key and ignores repeats', (
@@ -2720,6 +2793,31 @@ void main() {
       expect(viewModel.respondToPermissionCallCount, 1);
       expect(viewModel.lastPermissionId, 'perm-1');
       expect(viewModel.lastPermissionResponse, PermissionResponse.once);
+    });
+
+    testWidgets('re-enables permission controls after a failed submission', (
+      tester,
+    ) async {
+      viewModel.approvalSubmissionSucceeds = false;
+      viewModel.pendingApproval.value = const PendingPermissionApproval(
+        sessionId: 'session-1',
+        permissionId: 'perm-failed',
+        toolType: 'bash',
+        title: 'Run a command',
+      );
+
+      await pumpScreen(tester);
+      await tester.tap(find.text('Allow once'));
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Allow once'),
+            )
+            .onPressed,
+        isNotNull,
+      );
     });
 
     testWidgets('always allow and deny call respondToPermission with the '

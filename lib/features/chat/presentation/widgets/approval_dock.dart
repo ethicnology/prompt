@@ -27,11 +27,11 @@ class ApprovalDock extends StatefulWidget {
   });
 
   final PendingApproval approval;
-  final Future<void> Function(String permissionId, PermissionResponse response)
+  final Future<bool> Function(String permissionId, PermissionResponse response)
   onRespondToPermission;
-  final Future<void> Function(String requestId, List<List<String>> answers)
+  final Future<bool> Function(String requestId, List<List<String>> answers)
   onReplyToQuestion;
-  final Future<void> Function(String requestId) onRejectQuestion;
+  final Future<bool> Function(String requestId) onRejectQuestion;
 
   @override
   State<ApprovalDock> createState() => ApprovalDockState();
@@ -173,7 +173,13 @@ class ApprovalDockState extends State<ApprovalDock> {
     PermissionResponse response,
   ) async {
     setState(() => _submitting = true);
-    await widget.onRespondToPermission(permissionId, response);
+    final succeeded = await widget.onRespondToPermission(
+      permissionId,
+      response,
+    );
+    if (mounted && !succeeded) {
+      setState(() => _submitting = false);
+    }
   }
 
   Widget _buildQuestions(
@@ -260,12 +266,21 @@ class ApprovalDockState extends State<ApprovalDock> {
       answers.add(answer);
     }
     setState(() => _submitting = true);
-    await widget.onReplyToQuestion(approval.requestId, answers);
+    final succeeded = await widget.onReplyToQuestion(
+      approval.requestId,
+      answers,
+    );
+    if (mounted && !succeeded) {
+      setState(() => _submitting = false);
+    }
   }
 
   Future<void> _reject(String requestId) async {
     setState(() => _submitting = true);
-    await widget.onRejectQuestion(requestId);
+    final succeeded = await widget.onRejectQuestion(requestId);
+    if (mounted && !succeeded) {
+      setState(() => _submitting = false);
+    }
   }
 }
 

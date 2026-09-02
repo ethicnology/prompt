@@ -489,6 +489,86 @@ void main() {
     expect(opened?.id, 'child-session');
     viewModel.dispose();
   });
+
+  testWidgets('keeps project filter chips at an accessible height', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(800, 800)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response(
+          '[{"id":"project","worktree":"/srv/a-very-long-project-name"}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session') {
+        return http.Response(
+          '[{"id":"one","projectID":"project",'
+          '"directory":"/srv/a-very-long-project-name","title":"One",'
+          '"time":{"created":1000,"updated":1000}}]',
+          200,
+        );
+      }
+      if (request.url.path == '/session/status') {
+        return http.Response('{}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          // Only the text scale is overridden: replacing the whole
+          // MediaQueryData would zero the viewport, and a zero-width
+          // horizontal ListView builds none of its children.
+          builder: (context) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(2)),
+            child: SessionsScreen(
+              profile: profile,
+              viewModel: viewModel,
+              onOpenSession: (_) {},
+              onOpenWorkspace: (_) {},
+              onOpenTerminal: () {},
+              onOpenDiagnostics: () {},
+              onOpenVoiceSettings: () {},
+              onDisconnect: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final chips = find.byType(ChoiceChip);
+    expect(chips, findsNWidgets(2));
+    for (final chip in chips.evaluate()) {
+      final chipFinder = find.byElementPredicate((element) => element == chip);
+      expect(
+        tester.getSize(chipFinder).height,
+        greaterThanOrEqualTo(kMinInteractiveDimension),
+      );
+    }
+    expect(find.text('All'), findsOneWidget);
+    expect(find.text('a-very-long-project-name'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    viewModel.dispose();
+  });
 }
 
 const _sessionJson =

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/platform/local_notification_service.dart';
 import '../../../core/ui/ui.dart';
@@ -141,19 +142,20 @@ class _HomeShellState extends State<HomeShell> {
         );
         if (!desktop) return sessions;
         final catalogWidth = _catalogWidthFor(constraints.maxWidth);
+        final resizeHandle = _DesktopResizeHandle(
+          key: const ValueKey('home-session-catalog-divider'),
+          label: 'Resize session catalog',
+          onDelta: (delta) => setState(() {
+            _catalogWidth = _clampCatalogWidth(
+              _catalogWidthFor(constraints.maxWidth) + delta,
+              constraints.maxWidth,
+            );
+          }),
+        );
         return Row(
           children: [
             SizedBox(width: catalogWidth, child: sessions),
-            _DesktopResizeHandle(
-              key: const ValueKey('home-session-catalog-divider'),
-              label: 'Resize session catalog',
-              onDelta: (delta) => setState(() {
-                _catalogWidth = _clampCatalogWidth(
-                  _catalogWidthFor(constraints.maxWidth) + delta,
-                  constraints.maxWidth,
-                );
-              }),
-            ),
+            resizeHandle,
             Expanded(
               child: switch (_selectedSession) {
                 final session? => ConversationScreen(
@@ -296,7 +298,18 @@ class _EmptyMasterDetail extends StatelessWidget {
   );
 }
 
-class _DesktopResizeHandle extends StatelessWidget {
+/// Width of the pane splitter's interactive area.
+///
+/// The separator itself stays a hairline; this box is what the pointer has to
+/// hit. It is sized from WCAG 2.5.8 (Target Size, Minimum, Level AA), which
+/// asks for 24x24, rather than from Material's 48x48 tap target: the splitter
+/// lives inside the desktop layout, so every extra logical pixel here is taken
+/// from the transcript beside it. Widening it further would have to overlay a
+/// neighbouring pane, and an opaque overlay swallows taps meant for the
+/// session catalog.
+const double _desktopResizeHandleWidth = 24;
+
+class _DesktopResizeHandle extends StatefulWidget {
   const _DesktopResizeHandle({
     required this.label,
     required this.onDelta,
@@ -307,19 +320,76 @@ class _DesktopResizeHandle extends StatelessWidget {
   final ValueChanged<double> onDelta;
 
   @override
+  State<_DesktopResizeHandle> createState() => _DesktopResizeHandleState();
+}
+
+class _ResizeLeftIntent extends Intent {
+  const _ResizeLeftIntent();
+}
+
+class _ResizeRightIntent extends Intent {
+  const _ResizeRightIntent();
+}
+
+class _DesktopResizeHandleState extends State<_DesktopResizeHandle> {
+  late final FocusNode _focusNode = FocusNode(debugLabel: widget.label);
+  bool _showFocusHighlight = false;
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
       child: Semantics(
-        label: label,
-        onIncrease: () => onDelta(24),
-        onDecrease: () => onDelta(-24),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragUpdate: (details) => onDelta(details.delta.dx),
-          child: const SizedBox(
-            width: 9,
-            child: Center(child: VerticalDivider(width: 1)),
+        label: widget.label,
+        onIncrease: () => widget.onDelta(24),
+        onDecrease: () => widget.onDelta(-24),
+        child: FocusableActionDetector(
+          focusNode: _focusNode,
+          onShowFocusHighlight: (show) =>
+              setState(() => _showFocusHighlight = show),
+          shortcuts: const {
+            SingleActivator(LogicalKeyboardKey.arrowLeft): _ResizeLeftIntent(),
+            SingleActivator(LogicalKeyboardKey.arrowRight):
+                _ResizeRightIntent(),
+          },
+          actions: {
+            _ResizeLeftIntent: CallbackAction<_ResizeLeftIntent>(
+              onInvoke: (_) {
+                widget.onDelta(-24);
+                return null;
+              },
+            ),
+            _ResizeRightIntent: CallbackAction<_ResizeRightIntent>(
+              onInvoke: (_) {
+                widget.onDelta(24);
+                return null;
+              },
+            ),
+          },
+          child: DecoratedBox(
+            decoration: _showFocusHighlight
+                ? BoxDecoration(
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.primary,
+                      width: 2,
+                    ),
+                  )
+                : const BoxDecoration(),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (details) =>
+                  widget.onDelta(details.delta.dx),
+              child: const SizedBox(
+                width: _desktopResizeHandleWidth,
+                child: Center(child: VerticalDivider(width: 1)),
+              ),
+            ),
           ),
         ),
       ),

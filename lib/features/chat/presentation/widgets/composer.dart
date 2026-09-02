@@ -52,6 +52,10 @@ KeyEventResult _handleComposerKeyEvent(
   return KeyEventResult.ignored;
 }
 
+Duration _composerAnimationDuration(BuildContext context, Duration duration) {
+  return MediaQuery.disableAnimationsOf(context) ? Duration.zero : duration;
+}
+
 class Composer extends StatelessWidget {
   const Composer({
     required this.controller,
@@ -297,7 +301,10 @@ class _VoiceModeBarState extends State<_VoiceModeBar> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
+        duration: _composerAnimationDuration(
+          context,
+          const Duration(milliseconds: 180),
+        ),
         width: double.infinity,
         decoration: BoxDecoration(
           color: recording
@@ -383,7 +390,10 @@ class _VoiceModeBarState extends State<_VoiceModeBar> {
                         ? null
                         : (_) => unawaited(_endCapture()),
                     child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 140),
+                      duration: _composerAnimationDuration(
+                        context,
+                        const Duration(milliseconds: 140),
+                      ),
                       width: 72,
                       height: 72,
                       decoration: BoxDecoration(

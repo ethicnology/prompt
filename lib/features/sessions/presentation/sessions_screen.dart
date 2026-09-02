@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -726,7 +727,16 @@ class _CatalogControls extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             SizedBox(
-              height: 38,
+              // The horizontal viewport needs a bounded cross-axis extent.
+              // Keep room for the padded tap target and for scaled labels.
+              height: math
+                  .max(
+                    kMinInteractiveDimension,
+                    MediaQuery.textScalerOf(
+                      context,
+                    ).scale(kMinInteractiveDimension),
+                  )
+                  .toDouble(),
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: [
@@ -734,6 +744,7 @@ class _CatalogControls extends StatelessWidget {
                     label: const Text('All'),
                     selected: selectedProjectId == null,
                     onSelected: (_) => onSelectProject(null),
+                    materialTapTargetSize: MaterialTapTargetSize.padded,
                   ),
                   for (final project in projects) ...[
                     const SizedBox(width: 8),
@@ -741,6 +752,7 @@ class _CatalogControls extends StatelessWidget {
                       label: Text(_projectLabel(project)),
                       selected: selectedProjectId == project.id,
                       onSelected: (_) => onSelectProject(project.id),
+                      materialTapTargetSize: MaterialTapTargetSize.padded,
                     ),
                   ],
                 ],
