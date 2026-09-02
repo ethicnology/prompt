@@ -48,23 +48,52 @@ class SessionsScreen extends StatefulWidget {
   State<SessionsScreen> createState() => _SessionsScreenState();
 }
 
+/// Shortest delay between two focus-triggered reloads of the catalog.
+///
+/// Regaining focus is a good moment to refresh, but it fires again on every
+/// alt-tab. This keeps a burst of window switches from turning into a burst of
+/// requests, which the product's data and battery budget does not allow.
+const _focusRefreshCooldown = Duration(seconds: 15);
+
 class _SessionsScreenState extends State<SessionsScreen> {
   final _searchController = TextEditingController();
   String? _selectedProjectId;
+  late final AppLifecycleListener _lifecycleListener;
+  Timer? _focusCooldown;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
-    widget.viewModel.load(widget.profile);
+    _lifecycleListener = AppLifecycleListener(onResume: _refreshOnResume);
+    unawaited(_load());
   }
 
   @override
   void dispose() {
+    _focusCooldown?.cancel();
+    _lifecycleListener.dispose();
     _searchController
       ..removeListener(_onSearchChanged)
       ..dispose();
     super.dispose();
+  }
+
+  Future<void> _load() {
+    _focusCooldown?.cancel();
+    _focusCooldown = Timer(_focusRefreshCooldown, () {});
+    return widget.viewModel.load(widget.profile);
+  }
+
+  /// Reloads the catalog when the window or app regains focus.
+  ///
+  /// The catalog has no live subscription: sessions created or renamed
+  /// elsewhere would otherwise stay stale until a manual refresh. Polling on a
+  /// timer would keep fetching while nobody is looking, so the refresh is tied
+  /// to the moment the user comes back instead.
+  void _refreshOnResume() {
+    if (_focusCooldown?.isActive ?? false) return;
+    unawaited(_load());
   }
 
   void _onSearchChanged() => setState(() {});
@@ -227,7 +256,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           ),
           SessionsError(:final failure) => _SessionsError(
             failure: failure,
-            onRetry: () => widget.viewModel.load(widget.profile),
+            onRetry: _load,
           ),
           SessionsReady(
             :final sessions,
@@ -296,7 +325,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           selectedProjectId: selectedProjectId,
           onSelectProject: (id) => setState(() => _selectedProjectId = id),
           onCreate: () => _createSession(projects),
-          onRefresh: () => widget.viewModel.load(widget.profile),
+          onRefresh: _load,
         ),
         Expanded(
           child: visibleSessions.isEmpty
@@ -309,7 +338,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                   onCreate: () => _createSession(projects),
                 )
               : RefreshIndicator(
-                  onRefresh: () => widget.viewModel.load(widget.profile),
+                  onRefresh: _load,
                   child: ListView.separated(
                     keyboardDismissBehavior:
                         ScrollViewKeyboardDismissBehavior.onDrag,

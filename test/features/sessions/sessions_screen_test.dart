@@ -652,6 +652,70 @@ void main() {
     expect(tester.takeException(), isNull);
     viewModel.dispose();
   });
+
+  testWidgets('reloads the catalog when the app regains focus', (tester) async {
+    var sessionRequests = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/project') {
+        return http.Response('[{"id":"project","worktree":"/srv/p"}]', 200);
+      }
+      if (request.url.path == '/session') {
+        sessionRequests += 1;
+        return http.Response(_renameSessionJson, 200);
+      }
+      if (request.url.path == '/session/status') {
+        return http.Response('{}', 200);
+      }
+      return http.Response('', 404);
+    });
+    final profile = ServerProfile(
+      origin: Uri.parse('http://10.80.0.1:4096'),
+      username: 'opencode',
+    );
+    final viewModel = SessionsViewModel(
+      SessionsRepository(
+        OpenCodeSessionsService(OpenCodeTransport(client)),
+        const _PasswordStore(),
+      ),
+    );
+    addTearDown(viewModel.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SessionsScreen(
+          profile: profile,
+          viewModel: viewModel,
+          onOpenSession: (_) {},
+          onOpenWorkspace: (_) {},
+          onOpenTerminal: () {},
+          onOpenDiagnostics: () {},
+          onOpenVoiceSettings: () {},
+          onDisconnect: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // One load fans out to several /session calls: one global, one per project
+    // directory. Compare load cycles rather than a raw request count.
+    final afterInitialLoad = sessionRequests;
+    expect(afterInitialLoad, greaterThan(0));
+
+    // Losing and regaining focus is what a desktop window does on alt-tab.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    // The cooldown suppresses the reload this soon after the initial load.
+    expect(sessionRequests, afterInitialLoad);
+
+    await tester.pump(const Duration(seconds: 20));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    expect(sessionRequests, greaterThan(afterInitialLoad));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 const _sessionJson =
