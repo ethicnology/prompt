@@ -716,13 +716,13 @@ class ConversationViewModel {
 
   /// Responds to the open session's pending tool-call permission with
   /// [response]. See [QueueSendCoordinator.respondToPermission].
-  Future<void> respondToPermission(
+  Future<bool> respondToPermission(
     String permissionId,
     PermissionResponse response,
   ) async {
     final queueCoordinator = _queueCoordinator;
     if (queueCoordinator == null) {
-      return;
+      return false;
     }
     final result = await queueCoordinator.respondToPermission(
       permissionId,
@@ -730,36 +730,42 @@ class ConversationViewModel {
     );
     if (result case Err<void, QueueApprovalFailure>(:final failure)) {
       _queueErrors.add(failure.message);
+      return false;
     }
+    return true;
   }
 
   /// Answers the open session's pending question request with [answers].
   /// See [QueueSendCoordinator.replyToQuestion].
-  Future<void> replyToQuestion(
+  Future<bool> replyToQuestion(
     String requestId,
     List<List<String>> answers,
   ) async {
     final queueCoordinator = _queueCoordinator;
     if (queueCoordinator == null) {
-      return;
+      return false;
     }
     final result = await queueCoordinator.replyToQuestion(requestId, answers);
     if (result case Err<void, QueueApprovalFailure>(:final failure)) {
       _queueErrors.add(failure.message);
+      return false;
     }
+    return true;
   }
 
   /// Rejects the open session's pending question request outright. See
   /// [QueueSendCoordinator.rejectQuestion].
-  Future<void> rejectQuestion(String requestId) async {
+  Future<bool> rejectQuestion(String requestId) async {
     final queueCoordinator = _queueCoordinator;
     if (queueCoordinator == null) {
-      return;
+      return false;
     }
     final result = await queueCoordinator.rejectQuestion(requestId);
     if (result case Err<void, QueueApprovalFailure>(:final failure)) {
       _queueErrors.add(failure.message);
+      return false;
     }
+    return true;
   }
 
   /// Deactivates queue coordination and stops watching the queue for the

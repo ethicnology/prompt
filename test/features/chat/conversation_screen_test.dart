@@ -212,6 +212,7 @@ class _FakeConversationViewModel extends ConversationViewModel {
 
   int rejectQuestionCallCount = 0;
   String? lastRejectedRequestId;
+  bool approvalSubmissionSucceeds = true;
   String? lastRevertedMessageId;
 
   int _nextId = 0;
@@ -288,32 +289,35 @@ class _FakeConversationViewModel extends ConversationViewModel {
   }
 
   @override
-  Future<void> respondToPermission(
+  Future<bool> respondToPermission(
     String permissionId,
     PermissionResponse response,
   ) async {
     respondToPermissionCallCount++;
     lastPermissionId = permissionId;
     lastPermissionResponse = response;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
-  Future<void> replyToQuestion(
+  Future<bool> replyToQuestion(
     String requestId,
     List<List<String>> answers,
   ) async {
     replyToQuestionCallCount++;
     lastQuestionRequestId = requestId;
     lastQuestionAnswers = answers;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
-  Future<void> rejectQuestion(String requestId) async {
+  Future<bool> rejectQuestion(String requestId) async {
     rejectQuestionCallCount++;
     lastRejectedRequestId = requestId;
-    pendingApproval.value = null;
+    if (approvalSubmissionSucceeds) pendingApproval.value = null;
+    return approvalSubmissionSucceeds;
   }
 
   @override
@@ -2720,6 +2724,31 @@ void main() {
       expect(viewModel.respondToPermissionCallCount, 1);
       expect(viewModel.lastPermissionId, 'perm-1');
       expect(viewModel.lastPermissionResponse, PermissionResponse.once);
+    });
+
+    testWidgets('re-enables permission controls after a failed submission', (
+      tester,
+    ) async {
+      viewModel.approvalSubmissionSucceeds = false;
+      viewModel.pendingApproval.value = const PendingPermissionApproval(
+        sessionId: 'session-1',
+        permissionId: 'perm-failed',
+        toolType: 'bash',
+        title: 'Run a command',
+      );
+
+      await pumpScreen(tester);
+      await tester.tap(find.text('Allow once'));
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Allow once'),
+            )
+            .onPressed,
+        isNotNull,
+      );
     });
 
     testWidgets('always allow and deny call respondToPermission with the '
