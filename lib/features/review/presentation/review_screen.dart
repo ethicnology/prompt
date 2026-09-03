@@ -27,6 +27,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
   final _roles = <ReviewRole>[ReviewRole.correctness, ReviewRole.security];
   final _selection = <ReviewRole, String?>{};
   int _tab = 0;
+  ReviewSnapshot? _parsedSnapshot;
+  List<DiffFile> _parsedFiles = const <DiffFile>[];
 
   @override
   void initState() {
@@ -662,6 +664,22 @@ class _ReviewScreenState extends State<ReviewScreen> {
           },
         );
 
+  /// Parses a snapshot's patches once and reuses the result.
+  ///
+  /// A snapshot is immutable and bounded to 200,000 patch characters, while
+  /// this screen rebuilds on every view-model notification — which arrive
+  /// steadily during a run. Re-parsing that text on each build is work whose
+  /// result cannot differ.
+  List<DiffFile> _diffFiles(ReviewSnapshot snapshot) {
+    if (identical(_parsedSnapshot, snapshot)) return _parsedFiles;
+    _parsedFiles = [
+      for (final file in snapshot.files)
+        ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
+    ];
+    _parsedSnapshot = snapshot;
+    return _parsedFiles;
+  }
+
   /// The diff, shown directly rather than behind an expansion tile.
   ///
   /// [fillAvailableSpace] must be true only where the surrounding column has a
@@ -669,10 +687,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
   /// sits inside a scrolling column, where it must carry its own height and
   /// where an [Expanded] would have no space to claim.
   Widget _diff(ReviewSnapshot snapshot, {required bool fillAvailableSpace}) {
-    final files = [
-      for (final file in snapshot.files)
-        ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
-    ];
+    final files = _diffFiles(snapshot);
     final header = Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
