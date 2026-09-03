@@ -1186,47 +1186,7 @@ class _ExecutionIndicator extends StatefulWidget {
   State<_ExecutionIndicator> createState() => _ExecutionIndicatorState();
 }
 
-class _ExecutionIndicatorState extends State<_ExecutionIndicator>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    duration: const Duration(milliseconds: 1200),
-    vsync: this,
-  );
-
-  bool get _isActive =>
-      widget.state is SessionBusy || widget.state is SessionRetrying;
-
-  void _updateAnimation() {
-    final shouldAnimate = _isActive && !MediaQuery.disableAnimationsOf(context);
-    if (shouldAnimate) {
-      if (!_controller.isAnimating) _controller.repeat();
-    } else {
-      _controller
-        ..stop()
-        ..reset();
-    }
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _updateAnimation();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ExecutionIndicator oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.state.runtimeType != widget.state.runtimeType) {
-      _updateAnimation();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
+class _ExecutionIndicatorState extends State<_ExecutionIndicator> {
   @override
   Widget build(BuildContext context) {
     final (label, icon) = switch (widget.state) {
@@ -1243,10 +1203,12 @@ class _ExecutionIndicatorState extends State<_ExecutionIndicator>
         child: Semantics(
           liveRegion: true,
           label: 'Execution status: $label',
-          child: RotationTransition(
+          child: SpinningIcon(
             key: const ValueKey('conversation-execution-spin'),
-            turns: _controller,
-            child: Icon(icon, size: 22),
+            icon: icon,
+            size: 22,
+            spinning:
+                widget.state is SessionBusy || widget.state is SessionRetrying,
           ),
         ),
       ),

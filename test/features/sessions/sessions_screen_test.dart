@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:prompt/core/security/credentials_store.dart';
+import 'package:prompt/core/ui/ui.dart';
 import 'package:prompt/data/remote/opencode_transport.dart';
 import 'package:prompt/features/connection/domain/server_profile.dart';
 import 'package:prompt/features/sessions/data/opencode_sessions_service.dart';
@@ -306,12 +307,23 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    // A working session spins for as long as it works, so the tree never
+    // settles: pump a bounded number of frames instead.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.text('Working'), findsOneWidget);
     expect(find.text('Idle'), findsOneWidget);
     expect(find.text('Retrying'), findsOneWidget);
     expect(find.text('Status unavailable'), findsOneWidget);
+    // A session working in the list turns, exactly as it does once opened.
+    final spinning = tester
+        .widgetList<SpinningIcon>(
+          find.byKey(const ValueKey('session-activity-spin')),
+        )
+        .where((icon) => icon.spinning)
+        .length;
+    expect(spinning, 2, reason: 'working and retrying both animate');
     expect(
       tester.getSemantics(find.text('Working')).label,
       contains('Session activity: Working'),
@@ -383,7 +395,10 @@ void main() {
     expect(find.text('Idle'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Refresh sessions'));
-    await tester.pumpAndSettle();
+    // A working session spins for as long as it works, so the tree never
+    // settles: pump a bounded number of frames instead.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
     expect(catalogLoads, greaterThan(2));
     expect(find.text('Working'), findsOneWidget);
     viewModel.dispose();

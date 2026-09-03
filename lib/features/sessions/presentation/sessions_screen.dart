@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/async/result.dart';
+import '../../../core/ui/ui.dart';
 import '../../connection/connection.dart';
 import '../domain/open_code_project.dart';
 import '../domain/open_code_session.dart';
@@ -1004,7 +1005,16 @@ class _SessionActivityLabel extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 16),
+          // A session working in the list turns just as it does once opened:
+          // the same signal should not depend on which screen you are on.
+          SpinningIcon(
+            key: const ValueKey('session-activity-spin'),
+            icon: icon,
+            size: 16,
+            spinning:
+                activity == SessionActivity.working ||
+                activity == SessionActivity.retrying,
+          ),
           const SizedBox(width: 5),
           Flexible(
             child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),

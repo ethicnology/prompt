@@ -1373,37 +1373,23 @@ void main() {
 
     viewModel.executionState.value = const SessionBusy();
     await tester.pump();
-    final rotation = tester.widget<RotationTransition>(
-      find.byKey(const ValueKey('conversation-execution-spin')),
-    );
+    final rotation = tester.widget<RotationTransition>(_spin());
     final initialTurns = rotation.turns.value;
     await tester.pump(const Duration(milliseconds: 250));
-    expect(
-      tester
-          .widget<RotationTransition>(
-            find.byKey(const ValueKey('conversation-execution-spin')),
-          )
-          .turns
-          .value,
-      isNot(closeTo(initialTurns, 0.001)),
-    );
+    final spinningTurns = tester
+        .widget<RotationTransition>(_spin())
+        .turns
+        .value;
+    expect(spinningTurns, isNot(closeTo(initialTurns, 0.001)));
+    // Anticlockwise, the way the arrows of the sync and replay glyphs point.
+    expect(spinningTurns, lessThan(initialTurns));
 
     viewModel.executionState.value = const SessionIdle();
     await tester.pump();
-    final stoppedTurns = tester
-        .widget<RotationTransition>(
-          find.byKey(const ValueKey('conversation-execution-spin')),
-        )
-        .turns
-        .value;
+    final stoppedTurns = tester.widget<RotationTransition>(_spin()).turns.value;
     await tester.pump(const Duration(milliseconds: 250));
     expect(
-      tester
-          .widget<RotationTransition>(
-            find.byKey(const ValueKey('conversation-execution-spin')),
-          )
-          .turns
-          .value,
+      tester.widget<RotationTransition>(_spin()).turns.value,
       closeTo(stoppedTurns, 0.001),
     );
   });
@@ -1418,20 +1404,13 @@ void main() {
       viewModel.executionState.value = const SessionBusy();
       await tester.pump();
       final initialTurns = tester
-          .widget<RotationTransition>(
-            find.byKey(const ValueKey('conversation-execution-spin')),
-          )
+          .widget<RotationTransition>(_spin())
           .turns
           .value;
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(
-        tester
-            .widget<RotationTransition>(
-              find.byKey(const ValueKey('conversation-execution-spin')),
-            )
-            .turns
-            .value,
+        tester.widget<RotationTransition>(_spin()).turns.value,
         closeTo(initialTurns, 0.001),
       );
     },
@@ -3113,3 +3092,9 @@ void main() {
     });
   });
 }
+
+/// The rotating layer inside the app bar's execution indicator.
+Finder _spin() => find.descendant(
+  of: find.byKey(const ValueKey('conversation-execution-spin')),
+  matching: find.byType(RotationTransition),
+);
