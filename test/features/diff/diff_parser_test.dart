@@ -14,7 +14,13 @@ void main() {
 +added
 ''',
     );
-    final rows = document.files.single.rows;
+    final all = document.files.single.rows;
+    // Each hunk is introduced by its own header row so a reader can see where
+    // lines were skipped.
+    expect(all.first.kind, DiffRowKind.meta);
+    expect(all.first.content, '@@ -2,2 +2,3 @@ void main() {');
+
+    final rows = all.skip(1).toList();
     expect(rows.map((row) => row.prefix), [' ', '-', '+', '+']);
     expect(rows.map((row) => row.content), ['context', 'old', 'new', 'added']);
     expect(rows[0].oldLine, 2);

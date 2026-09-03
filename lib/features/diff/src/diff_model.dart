@@ -57,7 +57,17 @@ class DiffFile {
        // made rendering a file quadratic in its number of lines.
        rows = List<DiffRow>.unmodifiable(<DiffRow>[
          ...metadata,
-         for (final hunk in hunks) ...hunk.rows,
+         for (final hunk in hunks) ...[
+           // Without this the last line of one hunk butts against the first
+           // line of the next, hiding the fact that lines were skipped.
+           DiffRow(
+             id: '${hunk.id}-header',
+             kind: DiffRowKind.meta,
+             content: hunk.header,
+             prefix: '',
+           ),
+           ...hunk.rows,
+         ],
        ]);
 
   final String id;
