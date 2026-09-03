@@ -141,92 +141,106 @@ class _DiffRowView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final tokens = theme.extension<PromptTokens>();
+    final isMeta = row.kind == DiffRowKind.meta;
     final background = row.kind == DiffRowKind.addition
         ? tokens?.diffAdd ?? Colors.green.withValues(alpha: .12)
         : row.kind == DiffRowKind.deletion
         ? tokens?.diffDelete ?? Colors.red.withValues(alpha: .12)
         : Colors.transparent;
     final base =
-        theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace') ??
-        const TextStyle(fontFamily: 'monospace');
-    final spans = row.kind == DiffRowKind.meta
-        ? <InlineSpan>[TextSpan(text: row.content, style: base)]
-        : <InlineSpan>[
-            TextSpan(text: row.content.isEmpty ? '' : row.content, style: base),
-          ];
-    final source = highlighterForPath(
-      path,
-    ).highlight(row.content, base, theme.colorScheme.primary);
-    return Semantics(
-      container: true,
-      label: '${row.kind.name} line ${row.newLine ?? row.oldLine ?? ''}',
-      hint: wrapped ? 'Tap to unwrap line' : 'Tap to wrap line',
-      customSemanticsActions: {
-        CustomSemanticsAction(label: wrapped ? 'Unwrap line' : 'Wrap line'):
-            onWrap,
-      },
-      child: DecoratedBox(
-        key: ValueKey('diff-row-background-${row.id}'),
-        decoration: BoxDecoration(color: background),
-        child: InkWell(
-          key: ValueKey('diff-row-surface-${row.id}'),
-          onTap: row.kind == DiffRowKind.meta ? null : onWrap,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 42,
-                child: Text(
-                  '${row.oldLine ?? ''}',
-                  textAlign: TextAlign.right,
-                  style: base.copyWith(color: theme.hintColor),
-                ),
+        theme.textTheme.bodySmall?.copyWith(
+          fontFamily: 'monospace',
+          height: 1.3,
+        ) ??
+        const TextStyle(fontFamily: 'monospace', height: 1.3);
+    final hint = theme.hintColor;
+    final spans = isMeta
+        ? <InlineSpan>[
+            TextSpan(
+              text: row.content,
+              style: base.copyWith(color: hint),
+            ),
+          ]
+        : highlighterForPath(
+            path,
+          ).highlight(row.content, base, theme.colorScheme.primary);
+    // One gutter, not two: a line belongs to one side of the change, and the
+    // second column cost width a phone does not have.
+    final number = row.newLine ?? row.oldLine;
+
+    return DecoratedBox(
+      key: ValueKey('diff-row-background-${row.id}'),
+      decoration: BoxDecoration(color: background),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 38,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Text(
+                number?.toString() ?? '',
+                textAlign: TextAlign.right,
+                style: base.copyWith(color: hint),
               ),
-              SizedBox(
-                width: 42,
-                child: Text(
-                  '${row.newLine ?? ''}',
-                  textAlign: TextAlign.right,
-                  style: base.copyWith(color: theme.hintColor),
-                ),
-              ),
-              SizedBox(
-                width: 24,
-                child: Text(
-                  row.prefix,
-                  style: base.copyWith(fontWeight: FontWeight.bold),
-                ),
-              ),
-              Expanded(
-                child: wrapped
-                    ? SelectableText.rich(
-                        TextSpan(
-                          children: row.kind == DiffRowKind.meta
-                              ? spans
-                              : source,
-                        ),
-                      )
-                    : SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: SelectableText.rich(
-                          TextSpan(
-                            children: row.kind == DiffRowKind.meta
-                                ? spans
-                                : source,
-                          ),
-                        ),
-                      ),
-              ),
-              IconButton(
-                key: ValueKey('diff-wrap-${row.id}'),
-                tooltip: wrapped ? 'Unwrap line' : 'Wrap line',
-                icon: Icon(wrapped ? Icons.wrap_text : Icons.notes, size: 18),
-                onPressed: row.kind == DiffRowKind.meta ? null : onWrap,
-              ),
-            ],
+            ),
           ),
-        ),
+          SizedBox(
+            width: 12,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Text(row.prefix, style: base),
+            ),
+          ),
+          Expanded(child: _content(spans)),
+          const SizedBox(width: 4),
+        ],
       ),
+    );
+  }
+
+  Widget _content(List<InlineSpan> spans) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final painter = TextPainter(
+          text: TextSpan(children: spans),
+          maxLines: 1,
+          textDirection: Directionality.of(context),
+        )..layout();
+        final overflows = painter.width > constraints.maxWidth;
+        painter.dispose();
+        final text = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 1),
+          child: Text.rich(
+            TextSpan(children: spans),
+            softWrap: wrapped,
+            maxLines: wrapped ? null : 1,
+            overflow: TextOverflow.clip,
+          ),
+        );
+        // A line that already fits has nothing to wrap, so it offers no action
+        // at all rather than a control that does nothing visible.
+        if (!overflows && !wrapped) return text;
+        return Semantics(
+          container: true,
+          label: '${row.kind.name} line ${row.newLine ?? row.oldLine ?? ''}',
+          hint: wrapped ? 'Tap to unwrap line' : 'Tap to wrap line',
+          customSemanticsActions: {
+            CustomSemanticsAction(label: wrapped ? 'Unwrap line' : 'Wrap line'):
+                onWrap,
+          },
+          child: InkWell(
+            key: ValueKey('diff-row-surface-${row.id}'),
+            onTap: onWrap,
+            child: wrapped
+                ? text
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: text,
+                  ),
+          ),
+        );
+      },
     );
   }
 }
