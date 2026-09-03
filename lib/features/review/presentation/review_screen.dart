@@ -27,6 +27,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
   final _roles = <ReviewRole>[ReviewRole.correctness, ReviewRole.security];
   final _selection = <ReviewRole, String?>{};
   int _tab = 0;
+  ReviewSnapshot? _parsedSnapshot;
+  List<DiffFile> _parsedFiles = const <DiffFile>[];
 
   @override
   void initState() {
@@ -163,7 +165,13 @@ class _ReviewScreenState extends State<ReviewScreen> {
           builder: (context, constraints) => SizedBox(
             width: constraints.maxWidth,
             child: run.state != ReviewRunState.idle && _tab == 5
-                ? Padding(padding: const EdgeInsets.all(16), child: _body(run))
+                // The diff runs to both edges: on a phone a 16px gutter on each
+                // side is width taken from the code. Its own header and tabs
+                // keep their gutter, see _gutter.
+                ? Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: _body(run),
+                  )
                 : SingleChildScrollView(
                     padding: const EdgeInsets.all(16),
                     child: _body(run),
@@ -396,7 +404,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
         ),
         if (_valid) _costCard(snapshot, models),
         const SizedBox(height: 24),
-        _diff(snapshot),
+        _diff(snapshot, fillAvailableSpace: false),
       ],
     );
   }
@@ -452,6 +460,17 @@ class _ReviewScreenState extends State<ReviewScreen> {
     );
   }
 
+  /// Restores the side gutter the diff tab drops from the page padding.
+  ///
+  /// Only the diff itself should reach the screen edges; the run header, the
+  /// pass list and the tab bar still read better inset.
+  Widget _gutter(Widget child) => _tab == 5
+      ? Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: child,
+        )
+      : child;
+
   Widget _results(ReviewRun run) {
     final findings = [
       for (final pass in run.passes)
@@ -461,42 +480,46 @@ class _ReviewScreenState extends State<ReviewScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                _runTitle(run),
-                style: Theme.of(context).textTheme.headlineSmall,
+        _gutter(
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _runTitle(run),
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
               ),
-            ),
-            if (run.state == ReviewRunState.running)
-              OutlinedButton(
-                onPressed: widget.viewModel.cancel,
-                child: const Text('Cancel'),
-              ),
-            if (run.state != ReviewRunState.running)
-              TextButton(
-                onPressed: () => widget.viewModel.loadSnapshot(widget.target),
-                child: const Text('New review'),
-              ),
-          ],
+              if (run.state == ReviewRunState.running)
+                OutlinedButton(
+                  onPressed: widget.viewModel.cancel,
+                  child: const Text('Cancel'),
+                ),
+              if (run.state != ReviewRunState.running)
+                TextButton(
+                  onPressed: () => widget.viewModel.loadSnapshot(widget.target),
+                  child: const Text('New review'),
+                ),
+            ],
+          ),
         ),
         const SizedBox(height: 12),
-        for (final pass in run.passes) _passTile(pass),
+        for (final pass in run.passes) _gutter(_passTile(pass)),
         const SizedBox(height: 8),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SegmentedButton<int>(
-            segments: const [
-              ButtonSegment(value: 0, label: Text('Overview')),
-              ButtonSegment(value: 1, label: Text('Findings')),
-              ButtonSegment(value: 2, label: Text('Opinions')),
-              ButtonSegment(value: 3, label: Text('Disagreements')),
-              ButtonSegment(value: 4, label: Text('Metrics')),
-              ButtonSegment(value: 5, label: Text('Diff')),
-            ],
-            selected: {_tab},
-            onSelectionChanged: (v) => setState(() => _tab = v.first),
+        _gutter(
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 0, label: Text('Overview')),
+                ButtonSegment(value: 1, label: Text('Findings')),
+                ButtonSegment(value: 2, label: Text('Opinions')),
+                ButtonSegment(value: 3, label: Text('Disagreements')),
+                ButtonSegment(value: 4, label: Text('Metrics')),
+                ButtonSegment(value: 5, label: Text('Diff')),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (v) => setState(() => _tab = v.first),
+            ),
           ),
         ),
         const SizedBox(height: 16),
@@ -506,7 +529,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
           2 => _opinions(run),
           3 => _disagreements(run),
           4 => _metrics(run),
-          5 => _diff(run.snapshot!),
+          5 => _diff(run.snapshot!, fillAvailableSpace: true),
           _ => const SizedBox.shrink(),
         },
       ],
@@ -661,23 +684,65 @@ class _ReviewScreenState extends State<ReviewScreen> {
             );
           },
         );
-  Widget _diff(ReviewSnapshot snapshot) => ExpansionTile(
-    title: const Text('Diff'),
-    children: [
-      SizedBox(
-        height: 320,
-        child: DiffViewer(
-          document: DiffDocument(
-            files: [
-              for (final file in snapshot.files)
-                ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
-            ],
-            warnings: const [],
-          ),
-        ),
+
+  /// Parses a snapshot's patches once and reuses the result.
+  ///
+  /// A snapshot is immutable and bounded to 200,000 patch characters, while
+  /// this screen rebuilds on every view-model notification — which arrive
+  /// steadily during a run. Re-parsing that text on each build is work whose
+  /// result cannot differ.
+  List<DiffFile> _diffFiles(ReviewSnapshot snapshot) {
+    if (identical(_parsedSnapshot, snapshot)) return _parsedFiles;
+    _parsedFiles = [
+      for (final file in snapshot.files)
+        ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
+    ];
+    _parsedSnapshot = snapshot;
+    return _parsedFiles;
+  }
+
+  /// The diff, shown directly rather than behind an expansion tile.
+  ///
+  /// [fillAvailableSpace] must be true only where the surrounding column has a
+  /// bounded height, which is the dedicated Diff tab. Everywhere else the diff
+  /// sits inside a scrolling column, where it must carry its own height and
+  /// where an [Expanded] would have no space to claim.
+  Widget _diff(ReviewSnapshot snapshot, {required bool fillAvailableSpace}) {
+    final files = _diffFiles(snapshot);
+    final header = Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        files.length == 1 ? 'Diff · 1 file' : 'Diff · ${files.length} files',
+        style: Theme.of(context).textTheme.titleMedium,
       ),
-    ],
-  );
+    );
+    final viewer = DiffViewer(document: DiffDocument(files: files));
+    if (fillAvailableSpace) {
+      return Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            Expanded(child: viewer),
+          ],
+        ),
+      );
+    }
+    // A preview inside a scrolling page: follow the viewport rather than a
+    // fixed window, which left the diff letterboxed on a desktop pane.
+    final height = (MediaQuery.sizeOf(context).height * 0.62).clamp(
+      280.0,
+      900.0,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        SizedBox(height: height, child: viewer),
+      ],
+    );
+  }
+
   IconData _icon(ReviewPassState state) => switch (state) {
     ReviewPassState.succeeded => Icons.check_circle,
     ReviewPassState.failed => Icons.error,

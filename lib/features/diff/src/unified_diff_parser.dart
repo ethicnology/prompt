@@ -135,51 +135,79 @@ class UnifiedDiffParser {
     );
   }
 
+  /// Parses one file's patch and namespaces every identifier by [path].
+  ///
+  /// [parse] numbers files, hunks and rows from scratch on each call, so a
+  /// caller that parses several patches separately and shows them together —
+  /// which is how a review composes its diff — would give every file the same
+  /// id. Sibling widgets would then carry duplicate keys and the viewer would
+  /// fail to build, and collapsing one file would collapse all of them.
+  ///
+  /// A server patch normally opens with its own `diff --git` header, so the
+  /// path is usually already known; [path] stays authoritative because it is
+  /// the one the snapshot is keyed by.
   static DiffDocument parseFile(String path, String patch) {
     final document = parse(patch);
-    if (document.files.length == 1 &&
-        document.files.first.path == 'Untitled file') {
-      final file = document.files.first;
-      final id = 'file-${path.hashCode}';
-      final rows = [
-        for (final row in file.rows)
-          DiffRow(
-            id: '$id-${row.id.substring(row.id.lastIndexOf('-') + 1)}',
-            kind: row.kind,
-            content: row.content,
-            prefix: row.prefix,
-            oldLine: row.oldLine,
-            newLine: row.newLine,
+    final prefix = 'file-${path.hashCode}';
+    final single = document.files.length == 1;
+    return DiffDocument(
+      files: [
+        for (var index = 0; index < document.files.length; index++)
+          _withNamespacedIds(
+            document.files[index],
+            id: single ? prefix : '$prefix-$index',
+            path: single ? path : document.files[index].path,
           ),
-      ];
-      final rowsByOldId = {
-        for (var i = 0; i < file.rows.length; i++) file.rows[i].id: rows[i],
-      };
-      return DiffDocument(
-        files: [
-          DiffFile(
-            id: id,
-            path: path,
-            oldPath: file.oldPath,
-            metadata: [for (final row in file.metadata) rowsByOldId[row.id]!],
-            hunks: [
-              for (final hunk in file.hunks)
-                DiffHunk(
-                  id: '$id-${hunk.id.substring(hunk.id.lastIndexOf('-') + 1)}',
-                  header: hunk.header,
-                  oldStart: hunk.oldStart,
-                  oldCount: hunk.oldCount,
-                  newStart: hunk.newStart,
-                  newCount: hunk.newCount,
-                  rows: [for (final row in hunk.rows) rowsByOldId[row.id]!],
-                ),
-            ],
+      ],
+      warnings: document.warnings,
+    );
+  }
+
+  static DiffFile _withNamespacedIds(
+    DiffFile file, {
+    required String id,
+    required String path,
+  }) {
+    // Re-key against the parsed source rows rather than the file's display
+    // rows, so this stays correct while the display order also carries
+    // synthesised entries that no hunk owns.
+    final source = <DiffRow>[
+      ...file.metadata,
+      for (final hunk in file.hunks) ...hunk.rows,
+    ];
+    final rows = [
+      for (var index = 0; index < source.length; index++)
+        DiffRow(
+          id: '$id-row-$index',
+          kind: source[index].kind,
+          content: source[index].content,
+          prefix: source[index].prefix,
+          oldLine: source[index].oldLine,
+          newLine: source[index].newLine,
+        ),
+    ];
+    final byOldId = {
+      for (var index = 0; index < source.length; index++)
+        source[index].id: rows[index],
+    };
+    return DiffFile(
+      id: id,
+      path: path,
+      oldPath: file.oldPath,
+      metadata: [for (final row in file.metadata) byOldId[row.id]!],
+      hunks: [
+        for (var index = 0; index < file.hunks.length; index++)
+          DiffHunk(
+            id: '$id-hunk-$index',
+            header: file.hunks[index].header,
+            oldStart: file.hunks[index].oldStart,
+            oldCount: file.hunks[index].oldCount,
+            newStart: file.hunks[index].newStart,
+            newCount: file.hunks[index].newCount,
+            rows: [for (final row in file.hunks[index].rows) byOldId[row.id]!],
           ),
-        ],
-        warnings: document.warnings,
-      );
-    }
-    return document;
+      ],
+    );
   }
 
   static String _pathFromHeader(String line) {

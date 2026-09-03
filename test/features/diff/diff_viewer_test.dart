@@ -13,6 +13,39 @@ void main() {
 +extra
 ''');
 
+  testWidgets('composes several files whose patches carry their own headers', (
+    tester,
+  ) async {
+    // A review composes one parsed document per file, and a real server patch
+    // opens with its own `diff --git` header.
+    const first =
+        'diff --git a/lib/a.dart b/lib/a.dart\n'
+        '--- a/lib/a.dart\n+++ b/lib/a.dart\n@@ -1 +1 @@\n-old\n+new\n';
+    const second =
+        'diff --git a/lib/b.dart b/lib/b.dart\n'
+        '--- a/lib/b.dart\n+++ b/lib/b.dart\n@@ -1 +1 @@\n-old2\n+new2\n';
+    final composed = DiffDocument(
+      files: [
+        ...UnifiedDiffParser.parseFile('lib/a.dart', first).files,
+        ...UnifiedDiffParser.parseFile('lib/b.dart', second).files,
+      ],
+    );
+
+    expect(composed.files, hasLength(2));
+    expect(composed.files.map((file) => file.id).toSet(), hasLength(2));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: DiffViewer(document: composed)),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('lib/a.dart'), findsOneWidget);
+    expect(find.text('lib/b.dart'), findsOneWidget);
+  });
+
   testWidgets(
     'renders lazy rows, semantic controls, backgrounds, and wraps one line',
     (tester) async {
@@ -20,11 +53,6 @@ void main() {
         MaterialApp(home: DiffViewer(document: document)),
       );
       expect(find.byKey(const ValueKey('diff-file-file-1')), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('diff-wrap-file-1-row-1')),
-        findsOneWidget,
-      );
-      expect(find.byTooltip('Wrap line'), findsWidgets);
       expect(find.text('final newValue = 2; // changed'), findsOneWidget);
       final deletionBackground = tester.widget<DecoratedBox>(
         find.byKey(const ValueKey('diff-row-background-file-1-row-0')),
@@ -40,29 +68,47 @@ void main() {
         (additionBackground.decoration as BoxDecoration).color,
         isNot(Colors.transparent),
       );
+      // One selection region covers the whole diff, so a copy can span lines.
+      expect(find.byType(SelectionArea), findsOneWidget);
+      // A line that already fits offers no wrap affordance at all.
+      expect(
+        find.byKey(const ValueKey('diff-row-surface-file-1-row-1')),
+        findsNothing,
+      );
       expect(
         tester
             .widgetList<SingleChildScrollView>(
               find.byType(SingleChildScrollView),
             )
             .any((scroll) => scroll.scrollDirection == Axis.horizontal),
-        isTrue,
-      );
-      final surface = tester.widget<InkWell>(
-        find.byKey(const ValueKey('diff-row-surface-file-1-row-1')),
-      );
-      expect(surface.onTap, isNotNull);
-      await tester.tap(find.byKey(const ValueKey('diff-wrap-file-1-row-1')));
-      await tester.pump();
-      expect(find.byTooltip('Unwrap line'), findsOneWidget);
-      expect(
-        tester.getSemantics(
-          find.byKey(const ValueKey('diff-file-toggle-file-1')),
-        ),
-        isNotNull,
+        isFalse,
       );
     },
   );
+
+  testWidgets('only a line that overflows can be wrapped, by tapping it', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(220, 400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(home: DiffViewer(document: document)));
+    await tester.pump();
+
+    final surface = find.byKey(const ValueKey('diff-row-surface-file-1-row-1'));
+    expect(surface, findsOneWidget);
+    final scrollInRow = find.descendant(
+      of: surface,
+      matching: find.byType(SingleChildScrollView),
+    );
+    expect(scrollInRow, findsOneWidget);
+
+    await tester.tap(surface);
+    await tester.pump();
+
+    // Wrapped, that line no longer scrolls sideways.
+    expect(scrollInRow, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('collapses and expands a file and survives a narrow viewport', (
     tester,
@@ -70,11 +116,11 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(180, 300));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(MaterialApp(home: DiffViewer(document: document)));
-    await tester.tap(find.byTooltip('Collapse file'));
+    // Tapping the header itself toggles the file, not only a small chevron.
+    await tester.tap(find.byKey(const ValueKey('diff-file-file-1')));
     await tester.pump();
     expect(find.text('final newValue = 2; // changed'), findsNothing);
-    expect(find.byTooltip('Expand file'), findsOneWidget);
-    await tester.tap(find.byTooltip('Expand file'));
+    await tester.tap(find.byKey(const ValueKey('diff-file-file-1')));
     await tester.pump();
     expect(find.text('final newValue = 2; // changed'), findsOneWidget);
   });
