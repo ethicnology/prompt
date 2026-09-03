@@ -103,11 +103,11 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(180, 300));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(MaterialApp(home: DiffViewer(document: document)));
-    await tester.tap(find.byTooltip('Collapse file'));
+    // Tapping the header itself toggles the file, not only a small chevron.
+    await tester.tap(find.byKey(const ValueKey('diff-file-file-1')));
     await tester.pump();
     expect(find.text('final newValue = 2; // changed'), findsNothing);
-    expect(find.byTooltip('Expand file'), findsOneWidget);
-    await tester.tap(find.byTooltip('Expand file'));
+    await tester.tap(find.byKey(const ValueKey('diff-file-file-1')));
     await tester.pump();
     expect(find.text('final newValue = 2; // changed'), findsOneWidget);
   });

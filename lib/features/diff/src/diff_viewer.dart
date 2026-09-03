@@ -72,31 +72,54 @@ class _FileHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Semantics(
-          container: true,
-          button: true,
-          toggled: expanded,
-          label: '${file.path}, ${expanded ? 'expanded' : 'collapsed'}',
-          onTap: onToggle,
-          child: ListTile(
-            key: ValueKey('diff-file-${file.id}'),
-            dense: true,
-            title: Text(file.path),
-            subtitle: file.oldPath == null
-                ? null
-                : Text('from ${file.oldPath}'),
-            trailing: IconButton(
-              key: ValueKey('diff-file-toggle-${file.id}'),
-              tooltip: expanded ? 'Collapse file' : 'Expand file',
-              icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
-              onPressed: onToggle,
-            ),
+    final theme = Theme.of(context);
+    // A rename keeps both paths on the single header line rather than adding a
+    // second line under it.
+    // A patch names the other side even when there is no rename: an unchanged
+    // path for a modification, and /dev/null when the file is added.
+    final renamedFrom =
+        file.oldPath != null &&
+            file.oldPath != file.path &&
+            file.oldPath != '/dev/null'
+        ? file.oldPath
+        : null;
+    final title = renamedFrom == null
+        ? file.path
+        : '$renamedFrom → ${file.path}';
+    return Semantics(
+      container: true,
+      button: true,
+      toggled: expanded,
+      label: '${file.path}, ${expanded ? 'expanded' : 'collapsed'}',
+      child: InkWell(
+        key: ValueKey('diff-file-${file.id}'),
+        // The whole header toggles, not just the chevron: aiming for a small
+        // icon is the wrong ask on a phone.
+        onTap: onToggle,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+          child: Row(
+            children: [
+              Icon(
+                expanded ? Icons.expand_less : Icons.expand_more,
+                key: ValueKey('diff-file-toggle-${file.id}'),
+                size: 20,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 }

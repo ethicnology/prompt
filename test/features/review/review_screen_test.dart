@@ -726,13 +726,9 @@ void main() {
     expect(find.text('lib/first.dart'), findsOneWidget);
     expect(find.text('lib/second.dart'), findsOneWidget);
     expect(find.byType(SingleChildScrollView), findsWidgets);
-    final toggles = find.byIcon(Icons.expand_less);
-    expect(toggles, findsNWidgets(2));
-    final firstToggle = find.ancestor(
-      of: toggles.first,
-      matching: find.byType(IconButton),
-    );
-    tester.widget<IconButton>(firstToggle).onPressed!();
+    expect(find.byIcon(Icons.expand_less), findsNWidgets(2));
+    // Tapping a file's header collapses that file and leaves the other alone.
+    await tester.tap(find.text('lib/first.dart'));
     await tester.pump();
     expect(find.text('new'), findsNothing);
     expect(find.text('new2'), findsOneWidget);
