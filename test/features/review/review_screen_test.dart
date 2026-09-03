@@ -664,10 +664,9 @@ void main() {
     await tester.ensureVisible(diffTab);
     await tester.tap(diffTab);
     await tester.pump();
-    final diffPanel = find.text('Diff').last;
-    await tester.ensureVisible(diffPanel);
-    await tester.tap(diffPanel);
-    await tester.pump();
+    // The diff is shown directly: selecting the tab is enough, with no second
+    // tap on an outer expansion tile.
+    expect(find.text('Diff · 2 files'), findsOneWidget);
     expect(find.text('lib/first.dart'), findsOneWidget);
     expect(find.text('lib/second.dart'), findsOneWidget);
     expect(find.byType(SingleChildScrollView), findsWidgets);

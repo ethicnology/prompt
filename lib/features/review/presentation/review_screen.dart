@@ -396,7 +396,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
         ),
         if (_valid) _costCard(snapshot, models),
         const SizedBox(height: 24),
-        _diff(snapshot),
+        _diff(snapshot, fillAvailableSpace: false),
       ],
     );
   }
@@ -506,7 +506,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
           2 => _opinions(run),
           3 => _disagreements(run),
           4 => _metrics(run),
-          5 => _diff(run.snapshot!),
+          5 => _diff(run.snapshot!, fillAvailableSpace: true),
           _ => const SizedBox.shrink(),
         },
       ],
@@ -661,23 +661,52 @@ class _ReviewScreenState extends State<ReviewScreen> {
             );
           },
         );
-  Widget _diff(ReviewSnapshot snapshot) => ExpansionTile(
-    title: const Text('Diff'),
-    children: [
-      SizedBox(
-        height: 320,
-        child: DiffViewer(
-          document: DiffDocument(
-            files: [
-              for (final file in snapshot.files)
-                ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
-            ],
-            warnings: const [],
-          ),
-        ),
+
+  /// The diff, shown directly rather than behind an expansion tile.
+  ///
+  /// [fillAvailableSpace] must be true only where the surrounding column has a
+  /// bounded height, which is the dedicated Diff tab. Everywhere else the diff
+  /// sits inside a scrolling column, where it must carry its own height and
+  /// where an [Expanded] would have no space to claim.
+  Widget _diff(ReviewSnapshot snapshot, {required bool fillAvailableSpace}) {
+    final files = [
+      for (final file in snapshot.files)
+        ...UnifiedDiffParser.parseFile(file.path, file.patch).files,
+    ];
+    final header = Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        files.length == 1 ? 'Diff · 1 file' : 'Diff · ${files.length} files',
+        style: Theme.of(context).textTheme.titleMedium,
       ),
-    ],
-  );
+    );
+    final viewer = DiffViewer(document: DiffDocument(files: files));
+    if (fillAvailableSpace) {
+      return Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            Expanded(child: viewer),
+          ],
+        ),
+      );
+    }
+    // A preview inside a scrolling page: follow the viewport rather than a
+    // fixed window, which left the diff letterboxed on a desktop pane.
+    final height = (MediaQuery.sizeOf(context).height * 0.62).clamp(
+      280.0,
+      900.0,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        SizedBox(height: height, child: viewer),
+      ],
+    );
+  }
+
   IconData _icon(ReviewPassState state) => switch (state) {
     ReviewPassState.succeeded => Icons.check_circle,
     ReviewPassState.failed => Icons.error,
