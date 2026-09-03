@@ -141,8 +141,15 @@ class UnifiedDiffParser {
         document.files.first.path == 'Untitled file') {
       final file = document.files.first;
       final id = 'file-${path.hashCode}';
+      // Re-key against the parsed source rows rather than the file's display
+      // rows, so this stays correct if the display order gains synthesised
+      // entries that no hunk owns.
+      final source = <DiffRow>[
+        ...file.metadata,
+        for (final hunk in file.hunks) ...hunk.rows,
+      ];
       final rows = [
-        for (final row in file.rows)
+        for (final row in source)
           DiffRow(
             id: '$id-${row.id.substring(row.id.lastIndexOf('-') + 1)}',
             kind: row.kind,
@@ -153,7 +160,7 @@ class UnifiedDiffParser {
           ),
       ];
       final rowsByOldId = {
-        for (var i = 0; i < file.rows.length; i++) file.rows[i].id: rows[i],
+        for (var i = 0; i < source.length; i++) source[i].id: rows[i],
       };
       return DiffDocument(
         files: [

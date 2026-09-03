@@ -44,13 +44,21 @@ class DiffHunk {
 
 @immutable
 class DiffFile {
-  const DiffFile({
+  DiffFile({
     required this.id,
     required this.path,
-    required this.hunks,
+    required List<DiffHunk> hunks,
     this.oldPath,
-    this.metadata = const <DiffRow>[],
-  });
+    List<DiffRow> metadata = const <DiffRow>[],
+  }) : hunks = hunks,
+       metadata = metadata,
+       // Built once here rather than on each access: the viewer reads this for
+       // the item count and again for every row it builds, so recomputing it
+       // made rendering a file quadratic in its number of lines.
+       rows = List<DiffRow>.unmodifiable(<DiffRow>[
+         ...metadata,
+         for (final hunk in hunks) ...hunk.rows,
+       ]);
 
   final String id;
   final String path;
@@ -58,10 +66,8 @@ class DiffFile {
   final List<DiffRow> metadata;
   final List<DiffHunk> hunks;
 
-  List<DiffRow> get rows => <DiffRow>[
-    ...metadata,
-    ...hunks.expand((h) => h.rows),
-  ];
+  /// Flattened rows in display order.
+  final List<DiffRow> rows;
 }
 
 @immutable
