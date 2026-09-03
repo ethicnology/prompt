@@ -68,6 +68,8 @@ void main() {
         (additionBackground.decoration as BoxDecoration).color,
         isNot(Colors.transparent),
       );
+      // One selection region covers the whole diff, so a copy can span lines.
+      expect(find.byType(SelectionArea), findsOneWidget);
       // A line that already fits offers no wrap affordance at all.
       expect(
         find.byKey(const ValueKey('diff-row-surface-file-1-row-1')),

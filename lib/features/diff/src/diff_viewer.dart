@@ -22,38 +22,43 @@ class _DiffViewerState extends State<DiffViewer> {
       color: Colors.transparent,
       child: SizedBox(
         width: constraints.maxWidth,
-        child: CustomScrollView(
-          key: const ValueKey('diff-scroll'),
-          slivers: [
-            for (final file in widget.document.files) ...[
-              SliverToBoxAdapter(
-                child: _FileHeader(
-                  file: file,
-                  expanded: _expanded[file.id] ?? true,
-                  onToggle: () => setState(
-                    () => _expanded[file.id] = !(_expanded[file.id] ?? true),
+        // One selection region for the whole diff: rows used to hold a
+        // SelectableText each, so a selection could never cross a line and
+        // copying a block of code was impossible.
+        child: SelectionArea(
+          child: CustomScrollView(
+            key: const ValueKey('diff-scroll'),
+            slivers: [
+              for (final file in widget.document.files) ...[
+                SliverToBoxAdapter(
+                  child: _FileHeader(
+                    file: file,
+                    expanded: _expanded[file.id] ?? true,
+                    onToggle: () => setState(
+                      () => _expanded[file.id] = !(_expanded[file.id] ?? true),
+                    ),
                   ),
                 ),
-              ),
-              if (_expanded[file.id] ?? true)
-                SliverList.builder(
-                  key: ValueKey('diff-rows-${file.id}'),
-                  itemCount: file.rows.length,
-                  itemBuilder: (context, index) {
-                    final row = file.rows[index];
-                    return _DiffRowView(
-                      key: ValueKey('diff-row-${row.id}'),
-                      row: row,
-                      wrapped: _wrapped[row.id] ?? false,
-                      onWrap: () => setState(
-                        () => _wrapped[row.id] = !(_wrapped[row.id] ?? false),
-                      ),
-                      path: file.path,
-                    );
-                  },
-                ),
+                if (_expanded[file.id] ?? true)
+                  SliverList.builder(
+                    key: ValueKey('diff-rows-${file.id}'),
+                    itemCount: file.rows.length,
+                    itemBuilder: (context, index) {
+                      final row = file.rows[index];
+                      return _DiffRowView(
+                        key: ValueKey('diff-row-${row.id}'),
+                        row: row,
+                        wrapped: _wrapped[row.id] ?? false,
+                        onWrap: () => setState(
+                          () => _wrapped[row.id] = !(_wrapped[row.id] ?? false),
+                        ),
+                        path: file.path,
+                      );
+                    },
+                  ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     ),
