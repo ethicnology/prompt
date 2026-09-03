@@ -81,20 +81,24 @@ class OpenCodeReviewService implements ReviewExecutionService {
     if (decoded is! List) {
       throw const FormatException('Diff response must be a list.');
     }
+    // The server marks only additions and deletions as required on a file
+    // diff, so a binary or unreadable file can arrive without a patch. Drop
+    // only the entries we cannot anchor, and keep the rest of the snapshot:
+    // failing the whole review over one unusual file loses everything.
     return decoded
-        .map((raw) {
-          if (raw is! Map ||
-              raw['file'] is! String ||
-              raw['patch'] is! String ||
-              raw['status'] is! String) {
-            throw const FormatException('File diff is malformed.');
-          }
-          return ReviewFile(
+        .whereType<Map<Object?, Object?>>()
+        .where(
+          (raw) => raw['file'] is String && (raw['file'] as String).isNotEmpty,
+        )
+        .map(
+          (raw) => ReviewFile(
             path: raw['file'] as String,
-            status: raw['status'] as String,
-            patch: raw['patch'] as String,
-          );
-        })
+            status: raw['status'] is String
+                ? raw['status'] as String
+                : 'modified',
+            patch: raw['patch'] is String ? raw['patch'] as String : '',
+          ),
+        )
         .toList(growable: false);
   }
 

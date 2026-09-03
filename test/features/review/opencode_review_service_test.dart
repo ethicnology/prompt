@@ -53,6 +53,45 @@ ReviewSnapshot snapshot() => ReviewSnapshot(
 
 void main() {
   test(
+    'keeps a snapshot whose entries omit the optional diff fields',
+    () async {
+      // The server schema marks only additions and deletions as required, so a
+      // binary file can arrive without a patch. One such entry must not discard
+      // the whole review.
+      final service = OpenCodeReviewService(
+        OpenCodeTransport(
+          MockClient((incoming) async {
+            if (incoming.url.path == '/session/session/message') {
+              return http.Response('[{"info":{"id":"m1","role":"user"}}]', 200);
+            }
+            if (incoming.url.path == '/session/session/diff') {
+              return http.Response(
+                '[{"file":"assets/logo.png","status":"added",'
+                '"additions":0,"deletions":0},'
+                '{"file":"lib/a.dart","patch":"@@ -1 +1 @@\\n-a\\n+b",'
+                '"additions":1,"deletions":1},'
+                '{"additions":0,"deletions":0}]',
+                200,
+              );
+            }
+            return http.Response('', 500);
+          }),
+        ),
+        credentialsStore: MemoryCredentials(),
+      );
+
+      final result = await service.loadSnapshot(target());
+
+      expect(result.files.map((file) => file.path), [
+        'assets/logo.png',
+        'lib/a.dart',
+      ]);
+      expect(result.files.first.patch, isEmpty);
+      expect(result.files.last.status, 'modified');
+    },
+  );
+
+  test(
     'loads the newest non-empty message diff using the profile credential',
     () async {
       final credentials = MemoryCredentials();
