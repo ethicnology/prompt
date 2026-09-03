@@ -56,7 +56,7 @@ class DiffFile {
        // the item count and again for every row it builds, so recomputing it
        // made rendering a file quadratic in its number of lines.
        rows = List<DiffRow>.unmodifiable(<DiffRow>[
-         ...metadata,
+         ...metadata.where((row) => !_isFileHeaderNoise(row.content)),
          for (final hunk in hunks) ...[
            // Without this the last line of one hunk butts against the first
            // line of the next, hiding the fact that lines were skipped.
@@ -77,7 +77,32 @@ class DiffFile {
   final List<DiffHunk> hunks;
 
   /// Flattened rows in display order.
+  ///
+  /// The patch's own file-header lines are left out: they repeat the path and
+  /// the rename that the file header widget already shows, and on a phone they
+  /// cost four lines of a small screen before any code appears. They remain
+  /// available in [metadata] for anything that needs the raw patch.
   final List<DiffRow> rows;
+
+  static const _fileHeaderPrefixes = <String>[
+    'diff --git ',
+    'index ',
+    '--- ',
+    '+++ ',
+    'new file mode',
+    'deleted file mode',
+    'old mode',
+    'new mode',
+    'similarity index',
+    'dissimilarity index',
+    'rename from',
+    'rename to',
+    'copy from',
+    'copy to',
+  ];
+
+  static bool _isFileHeaderNoise(String content) =>
+      _fileHeaderPrefixes.any(content.startsWith);
 }
 
 @immutable

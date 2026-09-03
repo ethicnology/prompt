@@ -32,6 +32,26 @@ void main() {
     expect(rows[3].newLine, 4);
   });
 
+  test('keeps the patch file header out of the displayed rows', () {
+    final document = UnifiedDiffParser.parse(
+      'diff --git a/lib/a.dart b/lib/a.dart\n'
+      'index 1c4e5a7..98e1257 100644\n'
+      '--- a/lib/a.dart\n+++ b/lib/a.dart\n'
+      '@@ -1 +1 @@\n-old\n+new\n',
+    );
+    final file = document.files.single;
+    // The blob line is still parsed, it just does not take a line of screen.
+    expect(
+      file.metadata.map((row) => row.content),
+      contains('index 1c4e5a7..98e1257 100644'),
+    );
+    expect(
+      file.rows.map((row) => row.content),
+      isNot(contains('index 1c4e5a7..98e1257 100644')),
+    );
+    expect(file.rows.map((row) => row.content), contains('new'));
+  });
+
   test(
     'keeps malformed input displayable and recognizes no-newline metadata',
     () {
