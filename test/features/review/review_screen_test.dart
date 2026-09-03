@@ -637,6 +637,62 @@ void main() {
     },
   );
 
+  testWidgets('renders a snapshot of server-shaped patches', (tester) async {
+    // Real patches from OpenCode open with their own `diff --git` header and
+    // can carry several hunks. Fixtures made of bare @@ blocks exercise a
+    // different branch of the parser and hid a collision between files.
+    final snapshot = ReviewSnapshot.stored(
+      target: _target,
+      files: const [
+        ReviewFile(
+          path: 'lib/features/a.dart',
+          status: 'modified',
+          patch:
+              'diff --git a/lib/features/a.dart b/lib/features/a.dart\n'
+              'index 1111111..2222222 100644\n'
+              '--- a/lib/features/a.dart\n'
+              '+++ b/lib/features/a.dart\n'
+              '@@ -1,3 +1,3 @@\n'
+              ' const first = 1;\n'
+              '-const second = 2;\n'
+              '+const second = 22;\n'
+              '@@ -40,2 +40,3 @@\n'
+              ' const tail = 3;\n'
+              '+const added = 4;\n',
+        ),
+        ReviewFile(
+          path: 'lib/features/b.dart',
+          status: 'added',
+          patch:
+              'diff --git a/lib/features/b.dart b/lib/features/b.dart\n'
+              'new file mode 100644\n'
+              '--- /dev/null\n'
+              '+++ b/lib/features/b.dart\n'
+              '@@ -0,0 +1,2 @@\n'
+              '+const created = true;\n'
+              '+const other = false;\n',
+        ),
+        ReviewFile(path: 'assets/logo.png', status: 'modified', patch: ''),
+      ],
+    );
+    final vm = ReviewViewModel(_FakeRepository(snapshot));
+    await tester.pumpWidget(_screen(vm, _capabilities(_models)));
+    await tester.pump();
+    vm.value = ReviewRun(state: ReviewRunState.completed, snapshot: snapshot);
+    await tester.pump();
+
+    final diffTab = find.text('Diff').first;
+    await tester.ensureVisible(diffTab);
+    await tester.tap(diffTab);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('lib/features/a.dart'), findsOneWidget);
+    expect(find.text('lib/features/b.dart'), findsOneWidget);
+    // Each hunk announces itself so a reader sees where lines were skipped.
+    expect(find.text('@@ -1,3 +1,3 @@'), findsOneWidget);
+  });
+
   testWidgets('review diff keeps raw file paths and independent controls', (
     tester,
   ) async {

@@ -13,6 +13,39 @@ void main() {
 +extra
 ''');
 
+  testWidgets('composes several files whose patches carry their own headers', (
+    tester,
+  ) async {
+    // A review composes one parsed document per file, and a real server patch
+    // opens with its own `diff --git` header.
+    const first =
+        'diff --git a/lib/a.dart b/lib/a.dart\n'
+        '--- a/lib/a.dart\n+++ b/lib/a.dart\n@@ -1 +1 @@\n-old\n+new\n';
+    const second =
+        'diff --git a/lib/b.dart b/lib/b.dart\n'
+        '--- a/lib/b.dart\n+++ b/lib/b.dart\n@@ -1 +1 @@\n-old2\n+new2\n';
+    final composed = DiffDocument(
+      files: [
+        ...UnifiedDiffParser.parseFile('lib/a.dart', first).files,
+        ...UnifiedDiffParser.parseFile('lib/b.dart', second).files,
+      ],
+    );
+
+    expect(composed.files, hasLength(2));
+    expect(composed.files.map((file) => file.id).toSet(), hasLength(2));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: DiffViewer(document: composed)),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('lib/a.dart'), findsOneWidget);
+    expect(find.text('lib/b.dart'), findsOneWidget);
+  });
+
   testWidgets(
     'renders lazy rows, semantic controls, backgrounds, and wraps one line',
     (tester) async {
